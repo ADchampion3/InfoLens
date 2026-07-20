@@ -19,7 +19,6 @@ The application must not fork OpenCLI or copy its browser bridge, Chrome daemon,
 ```text
 Electron Main Process
   Plugin Lifecycle and Status
-  OpenCLI Process Boundary
           |
           v
 Electron Renderer Shell
@@ -39,6 +38,7 @@ Trusted Source Plugins
           v
 Shared Plugin Runtime (One Node Child Process)
   Plugin Backend Modules
+  Plugin Workspace Static Assets
   Plugin-Scoped HTTP Routes
   Plugin Task Scheduler
   Plugin Stores and Refresh Logic
@@ -69,7 +69,7 @@ plugins/zhihu-hot/         bundled Zhihu Hot List plugin (`COOKIE`)
 plugins/product-hunt/      bundled Product Hunt plugin (`INTERCEPT`)
 ```
 
-The repository's root `plugins/` directory is both the development home for bundled plugins and the runtime discovery location for their built packages. External local packages use the same runtime shape after installation.
+The repository's fixed `plugins/` directory is the sole development and runtime discovery location for built packages. The MVP does not distinguish official and user-installed package locations; every discovered package has the same lifecycle and removal semantics.
 
 The Electron host renderer uses React, Vite, and TypeScript. It renders a persistent left plugin-navigation rail, a right-side workspace frame for the selected plugin, and plugin-management/application-settings entries at the bottom of navigation. It owns navigation, lifecycle status, and host-level error states; it does not render a content dashboard or plugin business content.
 
@@ -104,7 +104,7 @@ plugin/
       assets/
 ```
 
-Every plugin must provide a built static Web workspace at `web/dist/index.html`; the host does not require a specific frontend framework inside that bundle. The Electron host and the bundled MVP plugins use React and Vite to reuse existing TractIt frontend code.
+Every plugin must provide a built static Web workspace at `web/dist/index.html`; all workspace asset URLs must be relative to that entry so the bundle remains valid when Runtime mounts it below `/plugins/<pluginId>/workspace/`. The host does not require a specific frontend framework inside that bundle. The Electron host and the bundled MVP plugins use React and Vite to reuse existing TractIt frontend code.
 
 The initial manifest contract declares at least:
 
@@ -114,15 +114,17 @@ The initial manifest contract declares at least:
 - `ui.entry` for the built plugin workspace
 - the plugin's OpenCLI command mapping
 
-Before copying a local package into the managed plugin directory, the host checks that `contractVersion` is supported and that its own semantic version satisfies `minHostVersion`. It rejects an incompatible package with the reason before any installation changes. The host otherwise performs only structural package validation needed for discovery and startup. Installed local plugins are trusted by default: there is no permission approval, package review, data-generation system, or governed upgrade transaction.
+An OpenCLI command mapping is an object keyed by `commandKey`. Each entry declares `site`, an immutable `command` path, `strategy` (`PUBLIC`, `COOKIE`, or `INTERCEPT`), `access: "read"`, `outputFormat: "json"`, and a semantic-version `openCliVersionRange`. Plugin Runtime rejects unsupported strategies and non-read mappings, verifies that its pinned OpenCLI runtime satisfies the range and resolves the declared `site` and command path, then uses the declared strategy for scheduling. `UI` is not accepted by the current plugin package contract. Task argument validation remains direct plugin-module code, not a serialized manifest schema or a second Runtime protocol.
 
-At startup, the host scans the project's fixed `plugins/` directory for plugin packages. It installs a prebuilt plugin selected from a local folder by copying it into that managed discovery location. MVP development builds and runs official plugins in their repository directories; it does not support external development links, symbolic links, or plugin hot reload.
+Before copying a local package into the managed plugin directory, the host checks that `contractVersion` is supported, that its own semantic version satisfies `minHostVersion`, and that every declared command mapping is supported. The host repeats those checks for every package during startup discovery. It rejects an incompatible package with the reason before any installation changes or module activation. A rejected discovered package is not activated or shown in ordinary navigation, but remains visible in plugin management for inspection and removal. The host otherwise performs only structural package validation needed for discovery and startup. Installed local plugins are trusted by default: there is no permission approval, package review, data-generation system, or governed upgrade transaction.
+
+At startup, the host scans the project's fixed `plugins/` directory for plugin packages. It installs a prebuilt plugin selected from a local folder by copying it into that managed discovery location and enables it immediately after successful validation. A valid discovered plugin with no prior host state is enabled by default; a user-disabled plugin remains disabled. MVP development builds and runs official plugins in their repository directories; it does not support external development links, symbolic links, or plugin hot reload.
 
 The host does not upgrade or replace an installed plugin in place. A local installation whose manifest ID already exists is rejected with a message directing the user to remove the existing plugin through the plugin-management surface before installing another package with that ID. There is no automatic package rollback or data migration transaction.
 
 Explicit plugin removal asks the shared runtime to deactivate the plugin module, cancel its tasks, and unregister its routes before deleting both its package and its plugin-owned data directory. If the module does not settle within a short grace period, the host restarts the shared runtime without that module before deletion. The host does not retain source data across a manual replacement because a newly installed plugin package may use an incompatible data format.
 
-The Electron main process serves each plugin's built Web workspace from a local static server. The Electron renderer opens the selected workspace in an iframe; the plugin controls the iframe body while the host controls navigation around it. The host starts one Plugin Runtime process, activates enabled backend modules within it, and opens a workspace on selection.
+Plugin Runtime serves each plugin's built Web workspace at `http://127.0.0.1:<runtimePort>/plugins/<pluginId>/workspace/` and its API below `http://127.0.0.1:<runtimePort>/plugins/<pluginId>/api/`. The Electron renderer opens the workspace URL in an iframe; the plugin controls the iframe body while the host controls navigation around it. The common Runtime origin lets a workspace call its API without CORS or an Electron security exception. The host starts one Plugin Runtime process, activates enabled backend modules within it, and opens a workspace on selection.
 
 ## Minimal Plugin Lifecycle Contract
 
@@ -134,11 +136,11 @@ To stop or remove a plugin, the host asks Plugin Runtime to abort that module's 
 
 ## Plugin UI and Backend Communication
 
-Each backend module registers a plugin-scoped local HTTP API in the shared Plugin Runtime at `/plugins/<pluginId>/`. When opening an iframe, the host places `pluginId` and that plugin-scoped `apiBaseUrl` in its URL query parameters; workspace helpers read those values and call the plugin API directly for content, refresh actions, and plugin-defined interactions. The Electron host does not route, validate, or translate business requests. When the shared runtime restarts, the host reloads affected iframes with the new API address.
+Each backend module registers a plugin-scoped local HTTP API in the shared Plugin Runtime below `/plugins/<pluginId>/api/`; its health endpoint is `GET /plugins/<pluginId>/health`. When opening an iframe, the host places `pluginId` and that plugin-scoped same-origin `apiBaseUrl` in its URL query parameters; workspace helpers read those values and call the plugin API directly for content, refresh actions, and plugin-defined interactions. The Electron host does not route, validate, or translate business requests. When the shared runtime restarts, the host reloads affected iframes with the new API address.
 
 The host also supplies the initial theme in the iframe URL and sends theme changes as a minimal `postMessage` payload. Workspace SDK helpers read the initial value and subscribe to updates. This is an appearance-only convention, not a host business RPC channel.
 
-The Electron host runs one shared Plugin Runtime as a Node child process. The runtime dynamically loads every enabled backend module, scopes its routes and task state by plugin ID, and invokes OpenCLI through local CLI child processes. A backend module owns its source-specific persistence and HTTP handlers, while the runtime owns lifecycle, task scheduling, resource permits, and route dispatch. The host may verify readiness and retain lifecycle status, but it does not proxy OpenCLI commands or expose a shared business RPC surface.
+The Electron host runs one shared Plugin Runtime as a Node child process. The runtime dynamically loads every enabled backend module, scopes its routes and task state by plugin ID, serves workspace assets, and invokes OpenCLI through local CLI child processes. A backend module owns its source-specific persistence and HTTP handlers, while the runtime owns lifecycle, task scheduling, resource permits, static workspace delivery, and route dispatch. The host may verify readiness and retain lifecycle status, but it does not proxy OpenCLI commands or expose a shared business RPC surface.
 
 ## Plugin Backend Module Interface
 
@@ -146,7 +148,9 @@ Every `backend.entry` exports an `activate(context)` function. The runtime calls
 
 A backend module opens and migrates its own SQLite store from its data directory. It registers routes under its own prefix and registers handlers for long-running work. It reads its refresh setting from its own store and registers the selected schedule through the context; it must not create an independent timer or scheduler. The runtime supplies task cancellation and enforces execution permits.
 
-`opencli.run` accepts only a command key declared in that plugin's manifest mapping. The runtime resolves the mapping, obtains the appropriate resource permit, and starts the bundled OpenCLI process. A backend module must not listen on its own port, create an OpenCLI subprocess directly, or manage an independent scheduler. Its cleanup result cancels source-owned resources such as database handles and subscriptions during deactivation.
+`opencli.run` accepts only a command key declared in that plugin's manifest mapping. The loaded backend module passes its already-validated task arguments directly as the command's argument vector; Runtime does not introduce a serialized argument schema or a second task-transfer protocol. The runtime resolves the immutable command path, verifies the pinned OpenCLI version and command availability, obtains the appropriate resource permit, and starts the bundled OpenCLI process with JSON output. A backend module must not listen on its own port, create an OpenCLI subprocess directly, or manage an independent scheduler. Its cleanup result cancels source-owned resources such as database handles and subscriptions during deactivation.
+
+The runtime wraps module activation, route handlers, task handlers, and cleanup in plugin-scoped error boundaries. An ordinary plugin exception marks only that plugin unavailable or failed and leaves sibling modules running. A Runtime-level exit can briefly interrupt all plugin APIs while the host restarts and reactivates enabled modules. The MVP does not attempt to prevent a trusted plugin from deliberately terminating the Runtime process or causing a native-process crash.
 
 ## Local Diagnostics
 
@@ -156,11 +160,11 @@ The activation-context logger writes a bounded rotating log for each plugin in t
 
 ## Plugin Task Execution
 
-During activation, a backend module registers named task handlers with the Plugin Runtime. A task enqueue request contains only plugin ID, task name, validated input, and trigger reason; its crawler implementation remains an in-memory handler in the backend module and is never sent over HTTP or serialized into the queue.
+During activation, a backend module registers named task handlers with the Plugin Runtime. A task enqueue request contains only plugin ID, task name, input, and trigger reason; the loaded handler validates its own input and its crawler implementation remains in-memory plugin code rather than being sent over HTTP or serialized into the queue.
 
 Plugin workspaces invoke their own routes to enqueue long-running work such as refreshes. Plugin-local schedules use the same enqueue path. Short SQLite reads and detail queries execute directly in their plugin route handlers.
 
-The runtime permits at most one active collection task per plugin and coalesces duplicate refresh requests for that plugin. Across plugins, it permits at most three `PUBLIC` collection commands at once and one browser-backed `COOKIE` or `INTERCEPT` command at once. The runtime derives the required permit from the plugin manifest's declared OpenCLI command mapping before spawning OpenCLI. A task failure updates only that plugin's status; if the runtime itself exits, the host restarts it and reactivates enabled modules.
+The runtime permits at most one active collection task per plugin and coalesces duplicate refresh requests for that plugin. Across plugins, it permits at most three `PUBLIC` collection commands at once and one browser-backed `COOKIE` or `INTERCEPT` command at once. The runtime derives the required permit from the plugin manifest's declared OpenCLI command mapping before spawning OpenCLI. A task failure updates only that plugin's status; if the runtime itself exits, the host restarts it and reactivates enabled modules. `UI` mappings are rejected, so no unclassified browser work can enter this scheduler.
 
 ## Plugin Collection Contract
 
@@ -175,7 +179,7 @@ For the MVP, each trusted plugin maps its source to the corresponding OpenCLI re
 
 The bundled MVP is not complete until it includes normally working, user-visible official source plugins for its three OpenCLI website collection strategies: Hacker News and GitHub Trending for `PUBLIC`, Zhihu Hot List for `COOKIE`, and Product Hunt Today's Top Launches for `INTERCEPT`. These are official daily-use workspaces, not hidden strategy-verification fixtures. The strategy is declared in each plugin's OpenCLI command mapping and must match its real adapter execution.
 
-OpenCLI's `UI` strategy remains valid in the generic plugin package and runtime contract, but no `UI` representative is required or bundled in the MVP. A later plugin may declare it without changing the host contract.
+OpenCLI's `UI` strategy is outside the current plugin package and runtime contract. It is neither bundled nor accepted for local installation in the MVP. Supporting it later requires a contract revision that defines its interactive execution and resource policy.
 
 Release verification runs all four MVP plugins through the bundled OpenCLI runtime in a real source environment on a release-candidate developer machine. The environment has Browser Bridge connected and the required browser session available. A representative passes only when its OpenCLI command produces a usable result, the plugin persists that result in its own SQLite store, and its workspace renders the retained result. Fake OpenCLI output is permitted for isolated automated tests but is not evidence that a strategy representative works.
 
@@ -185,7 +189,7 @@ CI runs credential-free unit and contract tests only. It does not retain website
 
 ### Start Application
 
-1. The host discovers installed plugin packages and their enabled state.
+1. The host discovers plugin packages, validates their package and OpenCLI compatibility, and determines their enabled state. Compatible packages without prior host state are enabled by default; rejected packages remain available only in plugin management.
 2. The host starts one shared Plugin Runtime and activates every enabled plugin backend module.
 3. Each plugin reports readiness through its scoped local API path; the host records its lifecycle state.
 4. A running plugin follows its own refresh policy for the duration of the application session.
@@ -235,7 +239,7 @@ All newly installed plugins begin in manual-only mode. A plugin performs automat
 ## Reliability Principles
 
 - Plugin-owned cached content is the primary read path; collection is asynchronous work.
-- A plugin failure is isolated and must not block host navigation or other plugins.
+- An ordinary plugin activation, route, task, or cleanup failure is isolated and must not block host navigation or other plugins. A Runtime-level crash may briefly interrupt plugin APIs before recovery.
 - A plugin keeps its newest successful content until it replaces it successfully.
 - The host exposes concise lifecycle and last-refresh status, while a plugin chooses its own detailed refresh UI.
 - OpenCLI may report an uncertain browser-command outcome. The plugin records it as uncertain or failed and does not silently replay the collection.

@@ -1,0 +1,3 @@
+# Bounded OpenCLI Command Mappings
+
+Each manifest command key will declare `site`, immutable `command`, `strategy`, `access: read`, `outputFormat: json`, and `openCliVersionRange`. Plugin Runtime validates declarations, bundled-runtime compatibility, and command availability, derives resource permits from strategy, and launches only the declared command path. Loaded plugin code validates task arguments and passes them directly to its in-memory handler and `opencli.run`; Runtime does not add a serialized argument schema or task-transfer protocol. This is a reliability and compatibility contract, not a plugin security-review mechanism.

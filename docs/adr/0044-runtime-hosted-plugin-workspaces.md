@@ -1,0 +1,3 @@
+# Runtime-Hosted Plugin Workspaces
+
+Plugin Runtime will serve every plugin's built workspace bundle and scoped API from the same loopback origin. Workspaces are available below `/plugins/<pluginId>/workspace/`, APIs below `/plugins/<pluginId>/api/`, and health remains at `/plugins/<pluginId>/health`. Workspace bundles must use entry-relative asset URLs so assets remain inside that mount path. The Electron host embeds the Runtime workspace URL in its iframe and never proxies plugin business requests. This removes a cross-origin CORS dependency while keeping a plugin as code loaded by Runtime rather than an independent service.

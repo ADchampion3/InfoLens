@@ -20,6 +20,10 @@ _Avoid_: Hidden test fixture, generic command launcher
 One of OpenCLI's four browser and website collection mechanisms: `PUBLIC`, `COOKIE`, `INTERCEPT`, or `UI`.
 _Avoid_: Plugin category, host permission level
 
+**Supported Plugin Strategy**:
+An OpenCLI strategy accepted by the current Infolens plugin package contract: `PUBLIC`, `COOKIE`, or `INTERCEPT`. `UI` is an OpenCLI strategy but is not accepted by the MVP package contract.
+_Avoid_: Permanent OpenCLI limitation
+
 **Source**:
 A provider of external information that a plugin collects from.
 _Avoid_: Plugin, website
@@ -51,7 +55,7 @@ The `pluginId` and `apiBaseUrl` values the host supplies in a workspace iframe U
 _Avoid_: Business RPC, host data API
 
 **Plugin API**:
-The HTTP routes a plugin backend module registers below its own `/plugins/<pluginId>/` prefix in the shared Plugin Runtime, exclusively for that plugin workspace.
+The HTTP routes a plugin backend module registers below its own `/plugins/<pluginId>/api/` prefix in the shared Plugin Runtime, exclusively for that plugin workspace.
 _Avoid_: Host RPC, cross-plugin business API
 
 **Plugin Runtime**:
@@ -71,11 +75,11 @@ The backend-module readiness signal returned from `GET /plugins/<pluginId>/healt
 _Avoid_: Authenticated handshake, host RPC
 
 **Plugin Task**:
-An in-memory scheduled request containing plugin ID, task name, validated input, and trigger reason. Its handler remains inside the plugin backend module.
-_Avoid_: Serialized crawler code, shared cross-plugin job
+An in-memory scheduled request containing plugin ID, task name, input, and trigger reason. Its handler remains inside the plugin backend module and validates its own input directly in code.
+_Avoid_: Serialized crawler code, separate task-transfer protocol
 
 **Enabled Plugin**:
-A discovered plugin that the host starts for the current application session.
+A compatible discovered plugin that the host starts for the current application session. A compatible plugin with no prior host state is enabled by default; installation enables it immediately.
 _Avoid_: Selected plugin, visible workspace
 
 **Plugin Directory**:
@@ -97,6 +101,10 @@ _Avoid_: Ordinary installation, copied package, MVP plugin workflow
 **Plugin Manifest**:
 The small package descriptor used by the host to discover, identify, and start a plugin.
 _Avoid_: Permission policy, source schema
+
+**OpenCLI Command Mapping**:
+A manifest entry keyed by command key, declaring a source `site`, immutable CLI `command` path, supported `strategy`, `access: read`, JSON output format, and `openCliVersionRange`. Plugin Runtime validates mapping compatibility and command availability before it launches OpenCLI; the loaded plugin handler validates task arguments directly in code.
+_Avoid_: Arbitrary shell command, serialized argument schema
 
 **Plugin Contract Version**:
 The manifest version identifying the supported Infolens plugin-package contract. A package with an unsupported value cannot be installed.

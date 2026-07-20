@@ -44,7 +44,7 @@ The first release ships with at least three curated, trusted, user-visible sourc
 2. `COOKIE` -- collection through an existing Chrome login session
 3. `INTERCEPT` -- collection by capturing a page-initiated request
 
-OpenCLI's `UI` strategy remains supported by the plugin contract but is deferred from the MVP and is not a release gate.
+OpenCLI's `UI` strategy is outside the current plugin package contract. It is neither bundled nor accepted for local installation in the MVP; supporting it later requires a contract revision.
 
 The MVP official plugins and their OpenCLI mappings are:
 
@@ -65,13 +65,13 @@ Each bundled plugin uses an independent SQLite database with its own schema and 
 - A complete plugin-owned workspace in the right main-content area after a plugin is selected.
 - Plugin management and application settings entries at the bottom of navigation, with no host content dashboard.
 - Host theme controls for system, light, and dark preference; bundled plugins follow the selected theme.
-- Discovery of local plugin packages from the project's fixed `plugins/` directory through a small manifest, backend entry, and built Web workspace.
+- Discovery of local plugin packages only from the fixed `plugins/` directory through a small manifest, backend entry, and built Web workspace. The MVP does not distinguish official and user-installed package locations. Discovery applies the same compatibility checks as installation; rejected packages are shown only in plugin management with their rejection reason.
 - Installation of a prebuilt plugin package from a user-selected local folder without a review flow; ordinary installation copies the package into the fixed plugin directory.
 - MVP development uses the repository's fixed plugin directories after a local build; it does not support external development links, symbolic links, or plugin hot reload.
-- Basic install-time compatibility validation using a plugin contract version and minimum host version, with a clear rejection reason for incompatible packages.
-- A simple plugin-management view for installed plugins, including explicit removal before replacing a plugin with the same ID.
+- Compatibility validation during installation and discovery using a plugin contract version, minimum host version, compatible OpenCLI version range, and declared command availability, with a clear rejection reason for incompatible packages.
+- A simple plugin-management view for installed plugins, including explicit removal before replacing a plugin with the same ID. A successfully installed compatible plugin is enabled immediately; a valid discovered plugin with no prior host state is enabled by default.
 - Plugin-manager diagnostics showing current state, last successful refresh, and the most recent failure summary, with a copyable per-plugin diagnostic report.
-- A static built Web workspace for every plugin; the bundled plugins use React and Vite.
+- A static built Web workspace for every plugin; Plugin Runtime serves its assets and API from the same loopback origin. The bundled plugins use React and Vite.
 - A first-run check for the Chrome Browser Bridge extension; users do not need to install OpenCLI globally.
 - Startup of one shared Plugin Runtime that activates all enabled plugin backend modules so plugin-defined background refresh can run during the application session.
 - Plugin-owned refresh settings with manual-only, disabled, and fixed-interval options for bundled plugins.
@@ -85,8 +85,8 @@ Each bundled plugin uses an independent SQLite database with its own schema and 
 
 - All collection runs use OpenCLI mechanisms. Neither the host nor plugins reimplement crawling, browser automation, or cookie management.
 - A plugin backend module invokes OpenCLI through the shared Plugin Runtime's local CLI process boundary with machine-readable JSON output.
-- A plugin workspace directly calls its own API path in the shared Plugin Runtime; the Electron host does not proxy plugin business requests.
-- The shared runtime runs at most one collection task for each plugin at a time and coalesces duplicate refresh requests. It permits bounded cross-plugin work, with `PUBLIC` collection allowed in parallel and browser-backed `COOKIE` and `INTERCEPT` collection serialized initially.
+- A plugin workspace directly calls its own same-origin API path in the shared Plugin Runtime; the Electron host does not proxy plugin business requests.
+- The shared runtime runs at most one collection task for each plugin at a time and coalesces duplicate refresh requests. It permits bounded cross-plugin work, with `PUBLIC` collection allowed in parallel and browser-backed `COOKIE` and `INTERCEPT` collection serialized initially. The current plugin contract rejects `UI` strategy packages.
 - Each plugin persists and updates its own records, using its own source model and refresh policy.
 - Refresh settings are stored in the plugin, while the shared Plugin Runtime executes the plugin-registered schedule through its queue and resource limits; the host only receives resulting lifecycle status.
 - A plugin's failed collection must not remove its latest successful content or make other plugins unavailable.
