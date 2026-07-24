@@ -1,0 +1,24 @@
+{
+  "id": "hn",
+  "name": "Hacker News",
+  "version": "0.1.0",
+  "icon": "web/dist/icon.png",
+  "contractVersion": "1",
+  "minHostVersion": "0.1.0",
+  "backend": {
+    "entry": "backend/index.js"
+  },
+  "ui": {
+    "entry": "web/dist/index.html"
+  },
+  "openCliCommands": {
+    "topStories": {
+      "site": "hacker-news",
+      "command": ["hacker-news", "top-stories"],
+      "strategy": "PUBLIC",
+      "access": "read",
+      "outputFormat": "json",
+      "openCliVersionRange": ">=0.1.0 <1.0.0"
+    }
+  }
+}

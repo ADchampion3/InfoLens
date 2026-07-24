@@ -1,0 +1,35 @@
+{
+  "name": "infolens",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "apps/desktop/main.cjs",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "plugins/*"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --config apps/desktop/vite.config.ts",
+    "build": "vite build --config apps/desktop/vite.config.ts",
+    "start": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "test:sprint1": "node --test tests/sprint1-smoke.test.mjs",
+    "typecheck": "tsc --noEmit -p apps/desktop/tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0"
+  },
+  "dependencies": {
+    "electron": "^43.2.0",
+    "lucide-react": "^0.525.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  }
+}
