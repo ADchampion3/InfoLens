@@ -18,7 +18,7 @@ function startRuntime() {
         INFOLENS_PROJECT_ROOT: projectRoot,
         INFOLENS_RUNTIME_PORT: "0",
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
 
@@ -59,7 +59,8 @@ function stopRuntime() {
       clearTimeout(timeout);
       resolve();
     });
-    child.kill();
+    child.stdin.write("shutdown\n");
+    child.stdin.end();
   });
 }
 

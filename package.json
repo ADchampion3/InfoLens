@@ -16,7 +16,10 @@
     "start": "electron .",
     "test": "node --test tests/*.test.mjs",
     "test:sprint1": "node --test tests/sprint1-smoke.test.mjs",
-    "typecheck": "tsc --noEmit -p apps/desktop/tsconfig.json"
+    "test:sprint2": "node --test tests/sprint2-contract.test.mjs",
+    "typecheck": "npm run typecheck:desktop && npm run typecheck:sdk",
+    "typecheck:desktop": "tsc --noEmit -p apps/desktop/tsconfig.json",
+    "typecheck:sdk": "tsc --noEmit -p packages/plugin-sdk/tsconfig.json"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

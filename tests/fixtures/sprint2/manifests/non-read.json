@@ -1,0 +1,5 @@
+{
+  "id": "non-read", "name": "Non Read", "version": "1.0.0", "contractVersion": "1", "minHostVersion": "0.1.0",
+  "backend": { "entry": "backend/index.mjs" }, "ui": { "entry": "web/index.html" },
+  "openCliCommands": { "write": { "site": "fixture", "command": ["fixture", "read"], "strategy": "PUBLIC", "access": "write", "outputFormat": "json", "openCliVersionRange": "*" } }
+}

@@ -1,0 +1,7 @@
+{
+  "version": "0.1.0",
+  "executable": "bin/opencli.mjs",
+  "commands": [
+    ["hacker-news", "top-stories"]
+  ]
+}

@@ -1,0 +1,90 @@
+export type OpenCliStrategy = "PUBLIC" | "COOKIE" | "INTERCEPT";
+
+export interface OpenCliCommandMapping {
+  site: string;
+  command: readonly [string, ...string[]];
+  strategy: OpenCliStrategy;
+  access: "read";
+  outputFormat: "json";
+  openCliVersionRange: string;
+}
+
+export interface PluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  icon?: string;
+  contractVersion: "1";
+  minHostVersion: string;
+  backend: { entry: string };
+  ui: { entry: string };
+  openCliCommands: Record<string, OpenCliCommandMapping>;
+}
+
+export interface PluginHealth {
+  state: "ready" | "starting" | "refreshing" | "failed" | "unavailable" | "disabled";
+  badge?: string;
+  lastSuccessfulRefresh?: string;
+  message?: string;
+}
+
+export interface PluginLogger {
+  debug(message: string, fields?: Record<string, unknown>): Promise<void>;
+  info(message: string, fields?: Record<string, unknown>): Promise<void>;
+  warn(message: string, fields?: Record<string, unknown>): Promise<void>;
+  error(message: string, fields?: Record<string, unknown>): Promise<void>;
+}
+
+export interface TaskOptions {
+  reason?: string;
+  coalesceKey?: string;
+}
+
+export interface ScheduleOptions<Input = unknown> {
+  intervalMs: number;
+  input?: Input;
+  reason?: string;
+  runImmediately?: boolean;
+}
+
+export interface PluginActivationContext {
+  readonly pluginId: string;
+  readonly dataDir: string;
+  resolveDataPath(relativePath: string): string;
+  route(method: string, route: string, handler: (request: PluginRouteRequest) => unknown | Promise<unknown>): void;
+  task<Input = unknown, Output = unknown>(name: string, handler: (input: Input, task: PluginTaskContext) => Output | Promise<Output>): void;
+  enqueue<Input = unknown, Output = unknown>(name: string, input: Input, options?: TaskOptions): Promise<Output>;
+  schedule<Input = unknown>(name: string, options: ScheduleOptions<Input>): () => void;
+  setHealth(health: PluginHealth): void;
+  readonly logger: PluginLogger;
+  readonly opencli: {
+    run<Output = unknown>(commandKey: string, args?: readonly string[], signal?: AbortSignal): Promise<Output>;
+  };
+}
+
+export interface PluginRouteRequest {
+  method?: string;
+  url: URL;
+  headers: Record<string, string | string[] | undefined>;
+}
+
+export interface PluginTaskContext {
+  signal: AbortSignal;
+  reason: string;
+}
+
+export interface PluginLifecycle {
+  badge?: string;
+  health?: PluginHealth;
+  deactivate?(): void | Promise<void>;
+}
+
+export type ActivatePlugin = (context: PluginActivationContext) => PluginLifecycle | void | Promise<PluginLifecycle | void>;
+
+export function defineManifest<const Manifest extends PluginManifest>(manifest: Manifest): Manifest;
+export function defineBackend(activate: ActivatePlugin): { activate: ActivatePlugin };
+export function healthResponse(state?: PluginHealth["state"], details?: Omit<PluginHealth, "state">): PluginHealth;
+export function pluginHealthUrl(origin: string, pluginId: string): string;
+export function pluginWorkspaceUrl(origin: string, pluginId: string): string;
+export function pluginApiUrl(origin: string, pluginId: string, route?: string): string;
+export function workspaceRuntimeConfig(location?: Pick<Location, "search">): { pluginId: string; apiBaseUrl: string };
