@@ -1,38 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light dark" />
-    <title>Hacker News 热门文章</title>
-    <link rel="stylesheet" href="./styles.css" />
-  </head>
-  <body>
-    <div class="workspace">
-      <header class="workspace-header">
-        <div class="workspace-title">
-          <h1>Hacker News</h1>
-          <span class="refresh-time" id="refresh-time">正在加载保留内容...</span>
-        </div>
-        <div class="header-actions">
-          <button class="icon-button" type="button" aria-label="刷新 Hacker News" disabled>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
-          </button>
-          <button class="icon-button" type="button" aria-label="打开刷新设置" disabled>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34A1.7 1.7 0 0 0 14 20.9V21h-4v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63 1.7 1.7 0 0 0 10 3.08V3h4v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9 1.7 1.7 0 0 0 20.92 10H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></svg>
-          </button>
-        </div>
-      </header>
-      <main>
-        <ol class="story-list" id="story-list" aria-live="polite">
-          <li class="loading-row">正在加载保留内容...</li>
-        </ol>
-        <div class="error-state" id="error-state" hidden>
-          <h2>内容暂不可用</h2>
-          <p>插件 API 未能返回保留内容。</p>
-        </div>
-      </main>
-    </div>
-    <script type="module" src="./workspace.js"></script>
-  </body>
-</html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Hacker News</title><link rel="stylesheet" href="./styles.css"></head>
+<body><div class="workspace">
+  <header class="workspace-header"><div class="workspace-title"><span class="source-mark">Y</span><div><h1>Hacker News</h1><span id="refresh-time" class="refresh-time">正在读取保留内容...</span></div></div><div class="header-actions"><button id="refresh" class="icon-button" title="刷新" aria-label="刷新 Hacker News"><svg viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg></button><button id="settings" class="icon-button" title="刷新设置" aria-label="打开刷新设置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l-2.83 2.83a1.7 1.7 0 0 0-1.88-.34A1.7 1.7 0 0 0 14 20.9h-4A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-2.83-2.83A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14v-4A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l2.83-2.83A1.7 1.7 0 0 0 9 4.63 1.7 1.7 0 0 0 10 3.08h4A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l2.83 2.83A1.7 1.7 0 0 0 19.37 9 1.7 1.7 0 0 0 20.92 10v4A1.7 1.7 0 0 0 19.4 15Z"/></svg></button></div></header>
+  <div id="warning" class="warning" role="alert" hidden><span><strong>刷新失败。</strong> 当前显示上次成功保留的内容。</span><button id="retry" type="button">重试</button></div>
+  <main><ol id="story-list" class="story-list" aria-live="polite"><li class="loading-row">正在读取保留内容...</li></ol><div id="empty" class="empty" hidden><h2>还没有保留内容</h2><p>首次刷新后，内容会保存在此设备上。</p><button id="empty-refresh" class="primary" type="button">立即刷新</button></div></main>
+</div>
+<div id="scrim" class="scrim" hidden></div><aside id="sheet" class="sheet" aria-labelledby="sheet-title" hidden><header><h2 id="sheet-title">刷新设置</h2><button id="close-settings" class="icon-button" aria-label="关闭设置">×</button></header><form id="settings-form"><label><input type="radio" name="policy" value="manual"> <span>仅手动</span></label><label><input type="radio" name="policy" value="disabled"> <span>停用刷新</span></label><label><input type="radio" name="policy" value="fixed"> <span>固定间隔</span></label><select id="interval" name="intervalMinutes"><option value="15">每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440">每天</option></select><div class="sheet-actions"><button id="cancel-settings" type="button">取消</button><button class="primary" type="submit">保存</button></div></form></aside>
+<script type="module" src="./workspace.js"></script></body></html>

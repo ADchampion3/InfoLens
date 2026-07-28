@@ -1,7 +1,13 @@
 {
-  "version": "0.1.0",
-  "executable": "bin/opencli.mjs",
+  "version": "1.8.6",
+  "executable": "node_modules/@jackwener/opencli/dist/src/main.js",
+  "package": {
+    "name": "@jackwener/opencli",
+    "version": "1.8.6",
+    "manifest": "node_modules/@jackwener/opencli/package.json"
+  },
   "commands": [
-    ["hacker-news", "top-stories"]
+    ["hackernews", "top"],
+    ["github-trending", "repos"]
   ]
 }

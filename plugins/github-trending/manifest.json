@@ -1,0 +1,19 @@
+{
+  "id": "github-trending",
+  "name": "GitHub Trending",
+  "version": "0.1.0",
+  "contractVersion": "1",
+  "minHostVersion": "0.1.0",
+  "backend": { "entry": "backend/index.js" },
+  "ui": { "entry": "web/dist/index.html" },
+  "openCliCommands": {
+    "trendingRepositories": {
+      "site": "github-trending",
+      "command": ["github-trending", "repos"],
+      "strategy": "PUBLIC",
+      "access": "read",
+      "outputFormat": "json",
+      "openCliVersionRange": ">=1.8.6 <2.0.0"
+    }
+  }
+}

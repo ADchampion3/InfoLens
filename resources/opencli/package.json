@@ -1,0 +1,8 @@
+{
+  "name": "@infolens/bundled-opencli",
+  "version": "1.8.6",
+  "private": true,
+  "dependencies": {
+    "@jackwener/opencli": "1.8.6"
+  }
+}

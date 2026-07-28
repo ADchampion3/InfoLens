@@ -60,7 +60,9 @@ export function App() {
               onClick={() => setSelectedId(plugin.id)}
               type="button"
             >
-              <span className="source-icon source-icon--hn" aria-hidden="true">Y</span>
+              <span className={`source-icon source-icon--${plugin.id}`} aria-hidden="true">
+                {plugin.id === "hn" ? "Y" : plugin.id === "github-trending" ? "GH" : plugin.name.slice(0, 2)}
+              </span>
               <span className="nav-label">{plugin.name}</span>
               {plugin.badge ? <span className="nav-badge">{plugin.badge}</span> : <span />}
               <span className="status-icon" aria-label="运行中" />

@@ -18,8 +18,20 @@ export async function loadBundledOpenCli(distributionRoot) {
   const relative = path.relative(distributionRoot, executablePath);
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Bundled OpenCLI executable escapes its distribution");
   await readFile(executablePath);
+  let packageName;
+  if (metadata.package) {
+    const manifestPath = path.resolve(distributionRoot, metadata.package.manifest ?? "");
+    const manifestRelative = path.relative(distributionRoot, manifestPath);
+    if (manifestRelative.startsWith("..") || path.isAbsolute(manifestRelative)) throw new Error("Bundled OpenCLI package manifest escapes its distribution");
+    const packageManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    if (packageManifest.name !== metadata.package.name || packageManifest.version !== metadata.package.version || packageManifest.version !== metadata.version) {
+      throw new Error("Bundled OpenCLI package identity does not match pinned runtime metadata");
+    }
+    packageName = packageManifest.name;
+  }
   return {
     version: metadata.version,
+    packageName,
     executablePath,
     availableCommands: new Set(metadata.commands.map((command) => command.join(" "))),
   };
@@ -31,11 +43,11 @@ export function createOpenCliAdapter(runtime) {
       if (!Array.isArray(args) || args.some((argument) => typeof argument !== "string")) {
         throw new TypeError("OpenCLI arguments must be an array of strings");
       }
-      if (args.some((argument) => argument === "--output" || argument.startsWith("--output="))) {
+      if (args.some((argument) => argument === "--format" || argument === "-f" || argument.startsWith("--format="))) {
         throw new Error("OpenCLI output format is fixed by the plugin contract");
       }
       const command = processCommand(runtime.executablePath);
-      const processArgs = [...command.prefix, ...mapping.command, ...args, "--output=json"];
+      const processArgs = [...command.prefix, ...mapping.command, ...args, "-f", "json"];
       return new Promise((resolve, reject) => {
         const child = spawn(command.file, processArgs, {
           cwd: path.dirname(runtime.executablePath),

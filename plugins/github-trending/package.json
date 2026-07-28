@@ -1,0 +1,6 @@
+{
+  "name": "@infolens/plugin-github-trending",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module"
+}

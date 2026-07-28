@@ -12,11 +12,16 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:web": "vite --config apps/desktop/vite.config.ts",
+    "acceptance:sprint3": "node scripts/acceptance-sprint3.mjs",
+    "live:sprint3": "node scripts/live-sprint3.mjs",
+    "install:opencli": "npm install --prefix resources/opencli --ignore-scripts",
+    "postinstall": "npm run install:opencli",
     "build": "vite build --config apps/desktop/vite.config.ts",
     "start": "electron .",
     "test": "node --test tests/*.test.mjs",
     "test:sprint1": "node --test tests/sprint1-smoke.test.mjs",
     "test:sprint2": "node --test tests/sprint2-contract.test.mjs",
+    "test:sprint3": "node --test tests/sprint3-public-plugins.test.mjs",
     "typecheck": "npm run typecheck:desktop && npm run typecheck:sdk",
     "typecheck:desktop": "tsc --noEmit -p apps/desktop/tsconfig.json",
     "typecheck:sdk": "tsc --noEmit -p packages/plugin-sdk/tsconfig.json"

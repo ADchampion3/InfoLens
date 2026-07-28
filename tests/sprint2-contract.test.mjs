@@ -109,7 +109,7 @@ test("Sprint 2 contracts execute through the actual Plugin Runtime", async () =>
 
     const opencli = await fetch(`${origin}/plugins/valid-contract/api/opencli`).then((response) => response.json());
     assert.equal(opencli.bundled, true);
-    assert.deepEqual(opencli.args, ["fixture", "read", "--limit", "2", "--output=json"]);
+    assert.deepEqual(opencli.args, ["fixture", "read", "--limit", "2", "-f", "json"]);
 
     await fetch(`${origin}/plugins/valid-contract/api/log`);
     const logFiles = await readdir(path.join(dataRoot, "valid-contract", "logs"));

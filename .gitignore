@@ -4,3 +4,8 @@ node_modules/
 coverage/
 *.log
 .infolens-data/
+.infolens-acceptance/
+.infolens-live/
+.agents/
+.claude/
+skills-lock.json

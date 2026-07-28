@@ -317,6 +317,7 @@ let stopping = false;
 async function shutdown() {
   if (stopping) return;
   stopping = true;
+  process.stdin.pause();
   await new Promise((resolve) => server.close(resolve));
   for (const plugin of activePlugins) {
     await plugin.taskManager.stop();
@@ -331,7 +332,7 @@ async function shutdown() {
     }
     await plugin.logger.flush();
   }
-  process.exitCode = 0;
+  process.exit(0);
 }
 
 process.on("SIGINT", shutdown);

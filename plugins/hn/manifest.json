@@ -1,7 +1,7 @@
 {
   "id": "hn",
   "name": "Hacker News",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "icon": "web/dist/icon.png",
   "contractVersion": "1",
   "minHostVersion": "0.1.0",
@@ -13,12 +13,12 @@
   },
   "openCliCommands": {
     "topStories": {
-      "site": "hacker-news",
-      "command": ["hacker-news", "top-stories"],
+      "site": "hackernews",
+      "command": ["hackernews", "top"],
       "strategy": "PUBLIC",
       "access": "read",
       "outputFormat": "json",
-      "openCliVersionRange": ">=0.1.0 <1.0.0"
+      "openCliVersionRange": ">=1.8.6 <2.0.0"
     }
   }
 }
