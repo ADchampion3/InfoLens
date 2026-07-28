@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { LoaderCircle, Plug, Settings } from "lucide-react";
+import { AlertCircle, LoaderCircle, Plug, Settings } from "lucide-react";
 
 type Status = "loading" | "ready" | "error";
 
@@ -34,6 +34,12 @@ export function App() {
       });
   }, []);
 
+  useEffect(() => {
+    if (status !== "ready") return;
+    const timer = window.setInterval(() => getRuntimeInfo().then(setRuntime).catch(() => {}), 1_500);
+    return () => window.clearInterval(timer);
+  }, [status]);
+
   const selected = useMemo(
     () => runtime?.plugins.find((plugin) => plugin.id === selectedId),
     [runtime, selectedId],
@@ -64,8 +70,13 @@ export function App() {
                 {plugin.id === "hn" ? "Y" : plugin.id === "github-trending" ? "GH" : plugin.name.slice(0, 2)}
               </span>
               <span className="nav-label">{plugin.name}</span>
+              {(plugin.state === "unavailable" || plugin.state === "failed")
+                ? <AlertCircle className={`lifecycle-state lifecycle-state--${plugin.state}`} aria-label={plugin.state === "failed" ? "Failed" : "Unavailable"} size={15} />
+                : plugin.state === "refreshing"
+                  ? <LoaderCircle className="lifecycle-state spinner" aria-label="Refreshing" size={15} />
+                  : <span />}
               {plugin.badge ? <span className="nav-badge">{plugin.badge}</span> : <span />}
-              <span className="status-icon" aria-label="运行中" />
+              <span className={`status-icon status-icon--${plugin.state}`} aria-hidden="true" />
             </button>
           ))}
         </nav>

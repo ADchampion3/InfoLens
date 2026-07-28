@@ -38,7 +38,7 @@ button, input, select { font: inherit; letter-spacing: 0; }
 .nav-item {
   position: relative;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -61,9 +61,13 @@ button, input, select { font: inherit; letter-spacing: 0; }
 .source-icon, .utility-icon { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 5px; color: var(--fg); background: var(--surface); font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; font-weight: 600; }
 .source-icon--hn { border-color: #ff6600; background: #ff6600; color: white; }
 .source-icon--github-trending { border-color: #24292f; background: #24292f; color: white; font-size: 8px; }
+.source-icon--zhihu-hot { border-color: #1772f6; background: #1772f6; color: white; }
+.lifecycle-state { color: #d98c10; }
+.lifecycle-state--unavailable, .lifecycle-state--failed { color: #c33b3b; }
 .nav-badge { min-width: 20px; padding: 1px 6px; border-radius: 999px; color: var(--surface); background: var(--fg); font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; line-height: 18px; text-align: center; }
 .status-icon { display: grid; place-items: center; width: 16px; height: 16px; }
 .status-icon::before { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); content: ""; }
+.status-icon--unavailable, .status-icon--failed, .status-icon--refreshing { visibility: hidden; }
 
 .main-area { position: relative; min-width: 0; height: 100%; background: var(--bg); }
 .workspace-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }

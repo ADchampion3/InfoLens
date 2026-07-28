@@ -1,0 +1,27 @@
+{
+  "id": "zhihu-hot",
+  "name": "Zhihu Hot List",
+  "version": "0.1.0",
+  "contractVersion": "1",
+  "minHostVersion": "0.1.0",
+  "backend": { "entry": "backend/index.js" },
+  "ui": { "entry": "web/dist/index.html" },
+  "openCliCommands": {
+    "authStatus": {
+      "site": "zhihu",
+      "command": ["zhihu", "whoami"],
+      "strategy": "COOKIE",
+      "access": "read",
+      "outputFormat": "json",
+      "openCliVersionRange": ">=1.8.6 <2.0.0"
+    },
+    "hotQuestions": {
+      "site": "zhihu",
+      "command": ["zhihu", "hot"],
+      "strategy": "COOKIE",
+      "access": "read",
+      "outputFormat": "json",
+      "openCliVersionRange": ">=1.8.6 <2.0.0"
+    }
+  }
+}

@@ -7,6 +7,7 @@ import { HOST_VERSION, ContractError, validatePluginPackage } from "./contract.m
 import { createPluginLogger } from "./logger.mjs";
 import { createOpenCliAdapter, loadBundledOpenCli } from "./opencli-adapter.mjs";
 import { PluginTaskManager } from "./task-manager.mjs";
+import { redactSensitiveText, redactSensitiveValue } from "./redaction.mjs";
 
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
   ? path.resolve(process.env.INFOLENS_PROJECT_ROOT)
@@ -29,8 +30,8 @@ let eventSequence = 0;
 
 function errorDetails(error) {
   return {
-    code: error instanceof ContractError ? error.code : "PLUGIN_ERROR",
-    message: error instanceof Error ? error.message : String(error),
+    code: typeof error?.code === "string" ? error.code : error instanceof ContractError ? error.code : "PLUGIN_ERROR",
+    message: redactSensitiveText(error instanceof Error ? error.message : String(error)),
   };
 }
 
@@ -41,7 +42,7 @@ function emitStatus(type, pluginId, details = {}) {
     sequence: ++eventSequence,
     timestamp: new Date().toISOString(),
     pluginId,
-    ...details,
+    ...redactSensitiveValue(details),
   };
   statusEvents.push(event);
   if (statusEvents.length > 200) statusEvents.shift();
@@ -103,7 +104,7 @@ async function activatePlugin(validated, packageRoot) {
   const taskManager = new PluginTaskManager(manifest.id, (type, details) => {
     const safeDetails = details.error ? { ...details, ...errorDetails(details.error), error: undefined } : details;
     if (type === "task-started") setPluginStatus(plugin, "refreshing");
-    if (type === "task-completed") setPluginStatus(plugin, "running");
+    if (type === "task-completed" && plugin.status.state === "refreshing") setPluginStatus(plugin, "running");
     if (type === "task-failed") setPluginStatus(plugin, "failed", { failure: errorDetails(details.error) });
     emitStatus(type, manifest.id, safeDetails);
     logger[type === "task-failed" ? "error" : "info"](type, safeDetails);

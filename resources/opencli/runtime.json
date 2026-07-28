@@ -8,6 +8,8 @@
   },
   "commands": [
     ["hackernews", "top"],
-    ["github-trending", "repos"]
+    ["github-trending", "repos"],
+    ["zhihu", "whoami"],
+    ["zhihu", "hot"]
   ]
 }

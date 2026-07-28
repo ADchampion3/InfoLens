@@ -87,7 +87,15 @@ function createWindow() {
   else window.loadFile(path.join(__dirname, "dist", "index.html"));
 }
 
-ipcMain.handle("runtime:get-info", () => runtimeInfo);
+ipcMain.handle("runtime:get-info", async () => {
+  if (!runtimeInfo?.origin) return runtimeInfo;
+  try {
+    const response = await fetch(`${runtimeInfo.origin}/runtime/info`);
+    return response.ok ? response.json() : runtimeInfo;
+  } catch {
+    return runtimeInfo;
+  }
+});
 
 app.whenReady().then(async () => {
   await startRuntime();

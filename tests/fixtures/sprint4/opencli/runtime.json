@@ -1,0 +1,5 @@
+{
+  "version": "1.8.6",
+  "executable": "bin/opencli.mjs",
+  "commands": [["hackernews", "top"], ["github-trending", "repos"], ["zhihu", "whoami"], ["zhihu", "hot"]]
+}

@@ -1,6 +1,26 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { redactSensitiveText } from "./redaction.mjs";
+
+export class OpenCliError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "OpenCliError";
+    this.code = code;
+  }
+}
+
+function classifyFailure(stderr, code) {
+  const details = String(stderr);
+  if (code === 69 || /Browser Bridge extension not connected|Extension not connected|No Browser Bridge profiles connected|ECONNREFUSED[^\n]*19825/i.test(details)) {
+    return new OpenCliError("BROWSER_BRIDGE_DISCONNECTED", "Browser Bridge is not connected");
+  }
+  if (code === 77 || /AUTH_REQUIRED|AuthRequiredError|not[_ -]?logged[_ -]?in|login (?:is )?required|requires? (?:an? )?(?:authenticated|logged-in) (?:browser )?session/i.test(details)) {
+    return new OpenCliError("SITE_LOGIN_REQUIRED", "The source login is required");
+  }
+  return new OpenCliError("OPENCLI_FAILED", `Bundled OpenCLI exited with code ${code}: ${redactSensitiveText(details.trim() || "no error output")}`);
+}
 
 function processCommand(executablePath) {
   return executablePath.endsWith(".js") || executablePath.endsWith(".mjs")
@@ -63,7 +83,7 @@ export function createOpenCliAdapter(runtime) {
         child.once("error", reject);
         child.once("close", (code) => {
           if (code !== 0) {
-            reject(new Error(`Bundled OpenCLI exited with code ${code}: ${stderr.trim() || "no error output"}`));
+            reject(classifyFailure(stderr, code));
             return;
           }
           try { resolve(JSON.parse(stdout)); }

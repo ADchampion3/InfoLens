@@ -20,7 +20,7 @@ function render(next) {
   $("#refresh").disabled=next.settings?.policy==="disabled";
 }
 async function load(){ if(!api) throw new Error("缺少插件 API 配置"); render(await request("summary")); }
-async function refresh(){ const button=$("#refresh"); button.disabled=true; button.classList.add("spinning"); $("#refresh-time").textContent="正在刷新..."; try{render(await request("refresh",{method:"POST"}));}finally{button.classList.remove("spinning"); button.disabled=data?.settings?.policy==="disabled";} }
+async function refresh(){ const button=$("#refresh"); button.disabled=true; button.classList.add("spinning"); $("#refresh-time").textContent="正在刷新..."; try{await request("refresh",{method:"POST"});render(await request("summary"));}catch(error){const latest=await request("summary").catch(()=>data);render({...latest,lastError:latest?.lastError??error.message});}finally{button.classList.remove("spinning"); button.disabled=data?.settings?.policy==="disabled";} }
 function showSettings(show){ $("#sheet").hidden=!show; $("#scrim").hidden=!show; if(show){ const settings=data.settings; document.querySelector(`[name=policy][value=${settings.policy}]`).checked=true; $("#interval").value=settings.intervalMinutes; $("#interval").disabled=settings.policy!=="fixed"; $("#sheet input:checked").focus(); } else $("#settings").focus(); }
 $("#refresh").onclick=$("#retry").onclick=$("#empty-refresh").onclick=refresh; $("#settings").onclick=()=>showSettings(true); $("#close-settings").onclick=$("#cancel-settings").onclick=$("#scrim").onclick=()=>showSettings(false);
 document.querySelectorAll("[name=policy]").forEach((radio)=>radio.onchange=()=>$("#interval").disabled=radio.value!=="fixed");

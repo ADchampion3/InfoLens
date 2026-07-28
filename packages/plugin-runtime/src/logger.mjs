@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, rm, stat, writeFile, appendFile } from "node:fs/promises";
 import path from "node:path";
+import { redactSensitiveText, redactSensitiveValue } from "./redaction.mjs";
 
 const LEVELS = ["debug", "info", "warn", "error"];
 
@@ -25,7 +26,7 @@ export async function createPluginLogger(dataDir, options = {}) {
   }
 
   function write(level, message, fields = {}) {
-    const entry = `${JSON.stringify({ ...fields, timestamp: new Date().toISOString(), level, message })}\n`;
+    const entry = `${JSON.stringify({ ...redactSensitiveValue(fields), timestamp: new Date().toISOString(), level, message: redactSensitiveText(message) })}\n`;
     writes = writes.then(async () => {
       await rotate(Buffer.byteLength(entry));
       await appendFile(logPath, entry, "utf8");
