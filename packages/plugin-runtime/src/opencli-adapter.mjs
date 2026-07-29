@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { redactSensitiveText } from "./redaction.mjs";
 
 export class OpenCliError extends Error {
@@ -23,9 +24,14 @@ function classifyFailure(stderr, code) {
 }
 
 function processCommand(executablePath) {
-  return executablePath.endsWith(".js") || executablePath.endsWith(".mjs")
-    ? { file: process.execPath, prefix: [executablePath] }
-    : { file: executablePath, prefix: [] };
+  if (!executablePath.endsWith(".js") && !executablePath.endsWith(".mjs")) {
+    return { file: executablePath, prefix: [], electronNodeMode: false };
+  }
+  if (process.versions.electron) {
+    const launcherPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "electron-node-launcher.mjs");
+    return { file: process.execPath, prefix: [launcherPath, executablePath], electronNodeMode: true };
+  }
+  return { file: process.execPath, prefix: [executablePath], electronNodeMode: false };
 }
 
 export async function loadBundledOpenCli(distributionRoot) {
@@ -71,7 +77,11 @@ export function createOpenCliAdapter(runtime) {
       return new Promise((resolve, reject) => {
         const child = spawn(command.file, processArgs, {
           cwd: path.dirname(runtime.executablePath),
-          env: { ...process.env, INFOLENS_OPENCLI_BUNDLED: "1" },
+          env: {
+            ...process.env,
+            INFOLENS_OPENCLI_BUNDLED: "1",
+            ...(command.electronNodeMode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+          },
           signal,
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,

@@ -167,3 +167,23 @@ test("removal requests a Runtime restart before deleting a module that will not 
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
+
+test("bundled OpenCLI receives Node-shaped arguments from an Electron-hosted Runtime", async () => {
+  const electronExecutable = path.join(root, "node_modules", "electron", "dist", process.platform === "win32" ? "electron.exe" : "electron");
+  const runner = path.join(root, "tests", "fixtures", "sprint6", "electron-adapter-runner.mjs");
+  const child = spawn(electronExecutable, [runner], {
+    cwd: root,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", resolve);
+  });
+  assert.equal(code, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout).args, ["fixture", "read", "-f", "json"]);
+});
