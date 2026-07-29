@@ -1,0 +1,6 @@
+{
+  "name": "@infolens/plugin-product-hunt",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module"
+}

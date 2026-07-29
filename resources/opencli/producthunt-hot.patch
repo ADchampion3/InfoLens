@@ -1,0 +1,10 @@
+--- node_modules/@jackwener/opencli/clis/producthunt/hot.js
++++ node_modules/@jackwener/opencli/clis/producthunt/hot.js
+@@ -21,7 +21,6 @@
+         const count = Math.min(Number(args.limit) || 20, 50);
+         await page.installInterceptor('producthunt.com');
+         await page.goto('https://www.producthunt.com');
+-        await page.waitForCapture(5);
+         const domItems = await page.evaluate(`
+       (() => {
+         const seen = new Set();

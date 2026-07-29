@@ -25,6 +25,9 @@
     "test:sprint2": "node --test tests/sprint2-contract.test.mjs",
     "test:sprint3": "node --test tests/sprint3-public-plugins.test.mjs",
     "test:sprint4": "node --test tests/sprint4-browser-collection.test.mjs",
+    "test:sprint5": "node --test tests/sprint5-intercept-scheduling.test.mjs",
+    "acceptance:sprint5": "node scripts/acceptance-sprint5.mjs",
+    "live:sprint5": "node scripts/live-sprint5.mjs",
     "typecheck": "npm run typecheck:desktop && npm run typecheck:sdk",
     "typecheck:desktop": "tsc --noEmit -p apps/desktop/tsconfig.json",
     "typecheck:sdk": "tsc --noEmit -p packages/plugin-sdk/tsconfig.json"

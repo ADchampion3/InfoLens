@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { HOST_VERSION, ContractError, validatePluginPackage } from "./contract.mjs";
 import { createPluginLogger } from "./logger.mjs";
 import { createOpenCliAdapter, loadBundledOpenCli } from "./opencli-adapter.mjs";
-import { PluginTaskManager } from "./task-manager.mjs";
+import { PluginTaskManager, SharedTaskQueue } from "./task-manager.mjs";
 import { redactSensitiveText, redactSensitiveValue } from "./redaction.mjs";
 
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
@@ -26,6 +26,7 @@ const validationRuntime = {
 const activePlugins = [];
 const rejectedPlugins = [];
 const statusEvents = [];
+const taskQueue = new SharedTaskQueue();
 let eventSequence = 0;
 
 function errorDetails(error) {
@@ -101,11 +102,15 @@ async function activatePlugin(validated, packageRoot) {
     logger,
     status: { state: "starting", updatedAt: new Date().toISOString() },
   };
-  const taskManager = new PluginTaskManager(manifest.id, (type, details) => {
+  const strategies = new Set(Object.values(manifest.openCliCommands).map((mapping) => mapping.strategy));
+  const taskResource = [...strategies].every((strategy) => strategy === "PUBLIC") ? "PUBLIC" : "BROWSER";
+  const taskManager = new PluginTaskManager(manifest.id, taskResource, taskQueue, (type, details) => {
     const safeDetails = details.error ? { ...details, ...errorDetails(details.error), error: undefined } : details;
+    if (type === "task-queued") setPluginStatus(plugin, "queued");
     if (type === "task-started") setPluginStatus(plugin, "refreshing");
     if (type === "task-completed" && plugin.status.state === "refreshing") setPluginStatus(plugin, "running");
     if (type === "task-failed") setPluginStatus(plugin, "failed", { failure: errorDetails(details.error) });
+    if (type === "task-cancelled") setPluginStatus(plugin, "cancelled", { outcome: details.outcome });
     emitStatus(type, manifest.id, safeDetails);
     logger[type === "task-failed" ? "error" : "info"](type, safeDetails);
   });
@@ -210,6 +215,23 @@ function findPlugin(id) {
   return activePlugins.find((plugin) => plugin.manifest.id === id);
 }
 
+async function deactivatePlugin(plugin) {
+  await plugin.taskManager.stop();
+  plugin.routes.clear();
+  try {
+    await plugin.lifecycle?.deactivate?.();
+    await plugin.logger.info("plugin-deactivated");
+    emitStatus("deactivated", plugin.manifest.id);
+  } catch (error) {
+    setPluginStatus(plugin, "failed", { failure: errorDetails(error) });
+    await plugin.logger.error("cleanup-failed", errorDetails(error));
+    emitStatus("cleanup-failed", plugin.manifest.id, errorDetails(error));
+  }
+  await plugin.logger.flush();
+  const index = activePlugins.indexOf(plugin);
+  if (index >= 0) activePlugins.splice(index, 1);
+}
+
 async function serveWorkspace(response, plugin, relativePath) {
   const requested = relativePath || "index.html";
   const filePath = path.resolve(plugin.workspaceRoot, requested);
@@ -237,6 +259,18 @@ const server = createServer(async (request, response) => {
   }
   if (url.pathname === "/runtime/events") {
     json(response, 200, { events: statusEvents });
+    return;
+  }
+  if (url.pathname === "/runtime/tasks") {
+    json(response, 200, taskQueue.snapshot());
+    return;
+  }
+  const deactivateMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)$/);
+  if (deactivateMatch && request.method === "DELETE") {
+    const plugin = findPlugin(deactivateMatch[1]);
+    if (!plugin) { json(response, 404, { error: "Plugin not found" }); return; }
+    await deactivatePlugin(plugin);
+    json(response, 200, { ok: true, pluginId: deactivateMatch[1] });
     return;
   }
   if (url.pathname === "/runtime/info") {
@@ -319,20 +353,9 @@ async function shutdown() {
   if (stopping) return;
   stopping = true;
   process.stdin.pause();
+  taskQueue.stop();
   await new Promise((resolve) => server.close(resolve));
-  for (const plugin of activePlugins) {
-    await plugin.taskManager.stop();
-    try {
-      await plugin.lifecycle?.deactivate?.();
-      await plugin.logger.info("plugin-deactivated");
-      emitStatus("deactivated", plugin.manifest.id);
-    } catch (error) {
-      setPluginStatus(plugin, "failed", { failure: errorDetails(error) });
-      await plugin.logger.error("cleanup-failed", errorDetails(error));
-      emitStatus("cleanup-failed", plugin.manifest.id, errorDetails(error));
-    }
-    await plugin.logger.flush();
-  }
+  for (const plugin of [...activePlugins]) await deactivatePlugin(plugin);
   process.exit(0);
 }
 

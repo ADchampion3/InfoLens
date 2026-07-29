@@ -6,7 +6,7 @@ interface RuntimePlugin {
   version: string;
   icon?: string;
   badge?: string;
-  state: "starting" | "ready" | "running" | "refreshing" | "failed" | "unavailable" | "disabled";
+  state: "starting" | "ready" | "running" | "queued" | "refreshing" | "cancelled" | "failed" | "unavailable" | "disabled";
   workspaceUrl: string;
   apiBaseUrl: string;
 }

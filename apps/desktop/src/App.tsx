@@ -72,7 +72,7 @@ export function App() {
               <span className="nav-label">{plugin.name}</span>
               {(plugin.state === "unavailable" || plugin.state === "failed")
                 ? <AlertCircle className={`lifecycle-state lifecycle-state--${plugin.state}`} aria-label={plugin.state === "failed" ? "Failed" : "Unavailable"} size={15} />
-                : plugin.state === "refreshing"
+                : plugin.state === "refreshing" || plugin.state === "queued"
                   ? <LoaderCircle className="lifecycle-state spinner" aria-label="Refreshing" size={15} />
                   : <span />}
               {plugin.badge ? <span className="nav-badge">{plugin.badge}</span> : <span />}
