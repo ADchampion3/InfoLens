@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, readFile, readdir } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import { createPluginLogger } from "./logger.mjs";
 import { createOpenCliAdapter, loadBundledOpenCli } from "./opencli-adapter.mjs";
 import { PluginTaskManager, SharedTaskQueue } from "./task-manager.mjs";
 import { redactSensitiveText, redactSensitiveValue } from "./redaction.mjs";
+import { HostStateStore } from "./host-state.mjs";
 
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
   ? path.resolve(process.env.INFOLENS_PROJECT_ROOT)
@@ -15,6 +16,7 @@ const projectRoot = process.env.INFOLENS_PROJECT_ROOT
 const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? path.join(projectRoot, "plugins"));
 const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(projectRoot, ".infolens-data", "plugins"));
 const openCliRoot = path.resolve(process.env.INFOLENS_BUNDLED_OPENCLI_ROOT ?? path.join(projectRoot, "resources", "opencli"));
+const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
 const openCliRuntime = await loadBundledOpenCli(openCliRoot);
 const openCliAdapter = createOpenCliAdapter(openCliRuntime);
 const validationRuntime = {
@@ -24,10 +26,13 @@ const validationRuntime = {
 };
 
 const activePlugins = [];
+const compatiblePlugins = [];
 const rejectedPlugins = [];
 const statusEvents = [];
 const taskQueue = new SharedTaskQueue();
 let eventSequence = 0;
+const hostState = new HostStateStore(hostStatePath);
+await hostState.load();
 
 function errorDetails(error) {
   return {
@@ -73,6 +78,16 @@ function contentType(filePath) {
 
 function setPluginStatus(plugin, state, details = {}) {
   plugin.status = { ...plugin.status, state, ...details, updatedAt: new Date().toISOString() };
+  const snapshot = {
+    state,
+    updatedAt: plugin.status.updatedAt,
+    ...(plugin.status.lastSuccessfulRefresh ? { lastSuccessfulRefreshAt: plugin.status.lastSuccessfulRefresh } : {}),
+    ...(plugin.status.failure ? { failure: plugin.status.failure } : {}),
+  };
+  void hostState.update((current) => ({
+    ...current,
+    statusSnapshots: { ...current.statusSnapshots, [plugin.manifest.id]: snapshot },
+  })).catch((error) => process.stderr.write(`[host-state] ${error.message}\n`));
 }
 
 function resolveDataPath(dataDir, relativePath) {
@@ -172,6 +187,20 @@ async function activatePlugin(validated, packageRoot) {
   }
 }
 
+function manifestDetails(manifest = {}) {
+  return {
+    ...(typeof manifest.id === "string" ? { id: manifest.id } : {}),
+    ...(typeof manifest.name === "string" ? { name: manifest.name } : {}),
+    ...(typeof manifest.version === "string" ? { version: manifest.version } : {}),
+  };
+}
+
+async function rejectedDetails(packageRoot, packageName, error) {
+  let manifest = {};
+  try { manifest = JSON.parse(await readFile(path.join(packageRoot, "manifest.json"), "utf8")); } catch {}
+  return { package: packageName, packagePath: packageRoot, ...manifestDetails(manifest), ...errorDetails(error) };
+}
+
 async function discoverPlugins() {
   await mkdir(dataRoot, { recursive: true });
   let entries = [];
@@ -187,9 +216,19 @@ async function discoverPlugins() {
       if (activePlugins.some((plugin) => plugin.manifest.id === validated.manifest.id)) {
         throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${validated.manifest.id}' is already discovered`);
       }
-      await activatePlugin(validated, packageRoot);
+      if (compatiblePlugins.some((plugin) => plugin.validated.manifest.id === validated.manifest.id)) {
+        throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${validated.manifest.id}' is already discovered`);
+      }
+      const descriptor = { validated, packageRoot };
+      compatiblePlugins.push(descriptor);
+      const id = validated.manifest.id;
+      const current = hostState.snapshot();
+      if (!current.statusSnapshots[id]) {
+        await hostState.update((state) => ({ ...state, enabledPluginIds: [...state.enabledPluginIds, id] }));
+      }
+      if (hostState.snapshot().enabledPluginIds.includes(id)) await activatePlugin(validated, packageRoot);
     } catch (error) {
-      const rejection = { package: entry.name, ...errorDetails(error) };
+      const rejection = await rejectedDetails(packageRoot, entry.name, error);
       rejectedPlugins.push(rejection);
       emitStatus("package-rejected", entry.name, rejection);
     }
@@ -208,11 +247,33 @@ function publicPlugin(plugin, origin) {
     failure: plugin.status.failure,
     workspaceUrl: `${origin}/plugins/${id}/workspace/`,
     apiBaseUrl: `${origin}/plugins/${id}/api/`,
+    packagePath: plugin.packageRoot,
+    enabled: true,
+    browserDependent: Object.values(plugin.manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC"),
+    statusSnapshot: hostState.snapshot().statusSnapshots[id],
+  };
+}
+
+function publicCompatiblePlugin(descriptor, origin) {
+  const id = descriptor.validated.manifest.id;
+  const active = findPlugin(id);
+  if (active) return publicPlugin(active, origin);
+  const manifest = descriptor.validated.manifest;
+  return {
+    id, name: manifest.name, version: manifest.version, icon: manifest.icon,
+    state: "disabled", enabled: false, packagePath: descriptor.packageRoot,
+    browserDependent: Object.values(manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC"),
+    workspaceUrl: `${origin}/plugins/${id}/workspace/`, apiBaseUrl: `${origin}/plugins/${id}/api/`,
+    statusSnapshot: hostState.snapshot().statusSnapshots[id],
   };
 }
 
 function findPlugin(id) {
   return activePlugins.find((plugin) => plugin.manifest.id === id);
+}
+
+function findCompatible(id) {
+  return compatiblePlugins.find((plugin) => plugin.validated.manifest.id === id);
 }
 
 async function deactivatePlugin(plugin) {
@@ -230,6 +291,116 @@ async function deactivatePlugin(plugin) {
   await plugin.logger.flush();
   const index = activePlugins.indexOf(plugin);
   if (index >= 0) activePlugins.splice(index, 1);
+}
+
+async function readJsonBody(request) {
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    bytes += chunk.length;
+    if (bytes > 64 * 1024) throw new Error("Request body is too large");
+    chunks.push(chunk);
+  }
+  if (!chunks.length) return {};
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function setPluginEnabled(id, enabled) {
+  const descriptor = findCompatible(id);
+  if (!descriptor) throw new ContractError("PLUGIN_NOT_FOUND", `plugin '${id}' is not installed and compatible`);
+  const active = findPlugin(id);
+  descriptor.deactivated = false;
+  if (enabled && !active) await activatePlugin(descriptor.validated, descriptor.packageRoot);
+  if (!enabled && active) await deactivatePlugin(active);
+  await hostState.update((state) => ({
+    ...state,
+    enabledPluginIds: enabled ? [...state.enabledPluginIds, id] : state.enabledPluginIds.filter((pluginId) => pluginId !== id),
+    statusSnapshots: {
+      ...state.statusSnapshots,
+      [id]: enabled
+        ? state.statusSnapshots[id] ?? { state: "starting", updatedAt: new Date().toISOString() }
+        : { ...state.statusSnapshots[id], state: "disabled", updatedAt: new Date().toISOString() },
+    },
+  }));
+}
+
+async function installPlugin(sourcePath) {
+  if (typeof sourcePath !== "string" || !path.isAbsolute(sourcePath)) {
+    throw new ContractError("INVALID_INSTALL_PATH", "Select an absolute local plugin folder");
+  }
+  const sourceRoot = path.resolve(sourcePath);
+  const validated = await validatePluginPackage(sourceRoot, validationRuntime);
+  const id = validated.manifest.id;
+  if (compatiblePlugins.some((plugin) => plugin.validated.manifest.id === id) || rejectedPlugins.some((plugin) => plugin.id === id)) {
+    throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${id}' is already installed; remove the installed plugin first`);
+  }
+  const destination = path.join(pluginsRoot, id);
+  try { await readFile(path.join(destination, "manifest.json")); throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${id}' is already installed; remove the installed plugin first`); }
+  catch (error) { if (error instanceof ContractError || error.code !== "ENOENT") throw error; }
+  const temporary = path.join(pluginsRoot, `.install-${id}-${Date.now()}`);
+  await cp(sourceRoot, temporary, { recursive: true, errorOnExist: true });
+  try {
+    const copied = await validatePluginPackage(temporary, validationRuntime);
+    await rename(temporary, destination);
+    const descriptor = { validated: { ...copied, backendPath: path.join(destination, path.relative(temporary, copied.backendPath)), workspaceEntry: path.join(destination, path.relative(temporary, copied.workspaceEntry)), workspaceRoot: path.join(destination, path.relative(temporary, copied.workspaceRoot)) }, packageRoot: destination };
+    compatiblePlugins.push(descriptor);
+    await hostState.update((state) => ({ ...state, enabledPluginIds: [...state.enabledPluginIds, id] }));
+    await activatePlugin(descriptor.validated, destination);
+    return id;
+  } catch (error) {
+    await rm(temporary, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function removePlugin(identifier) {
+  const descriptor = findCompatible(identifier);
+  const rejection = rejectedPlugins.find((plugin) => plugin.id === identifier || plugin.package === identifier);
+  if (!descriptor && !rejection) throw new ContractError("PLUGIN_NOT_FOUND", `plugin '${identifier}' is not installed`);
+  const id = descriptor?.validated.manifest.id ?? rejection.id ?? rejection.package;
+  const packageRoot = descriptor?.packageRoot ?? rejection.packagePath;
+  const relativePackage = path.relative(pluginsRoot, packageRoot);
+  if (relativePackage.startsWith("..") || path.isAbsolute(relativePackage)) throw new Error("Refusing to remove a package outside the managed plugin directory");
+  const active = findPlugin(id);
+  if (active) {
+    const graceMs = Number(process.env.INFOLENS_DEACTIVATION_GRACE_MS) || 2_500;
+    const settled = await Promise.race([
+      deactivatePlugin(active).then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), graceMs)),
+    ]);
+    if (!settled) throw new ContractError("RUNTIME_RESTART_REQUIRED", `plugin '${id}' did not deactivate within ${graceMs}ms; restart Runtime before deletion`);
+  }
+  await rm(packageRoot, { recursive: true, force: true });
+  await rm(path.join(dataRoot, id), { recursive: true, force: true });
+  if (descriptor) compatiblePlugins.splice(compatiblePlugins.indexOf(descriptor), 1);
+  if (rejection) rejectedPlugins.splice(rejectedPlugins.indexOf(rejection), 1);
+  await hostState.update((state) => {
+    const statusSnapshots = { ...state.statusSnapshots };
+    delete statusSnapshots[id];
+    return {
+      ...state,
+      enabledPluginIds: state.enabledPluginIds.filter((pluginId) => pluginId !== id),
+      lastSelection: state.lastSelection === id ? null : state.lastSelection,
+      statusSnapshots,
+    };
+  });
+  emitStatus("removed", id);
+}
+
+async function pluginDiagnostics(id) {
+  const descriptor = findCompatible(id);
+  const plugin = findPlugin(id);
+  if (!descriptor) throw new ContractError("PLUGIN_NOT_FOUND", `plugin '${id}' is not installed and compatible`);
+  let logs = plugin ? await plugin.logger.readRecent() : "";
+  if (!plugin) {
+    try { logs = await readFile(path.join(dataRoot, id, "logs", "plugin.log"), "utf8"); } catch {}
+  }
+  const report = {
+    plugin: { id, name: descriptor.validated.manifest.name, version: descriptor.validated.manifest.version },
+    status: hostState.snapshot().statusSnapshots[id] ?? { state: "disabled" },
+    logs: logs.split(/\r?\n/).filter(Boolean).slice(-100).map((line) => redactSensitiveText(line)),
+  };
+  return `${JSON.stringify(report, null, 2)}\n`;
 }
 
 async function serveWorkspace(response, plugin, relativePath) {
@@ -253,6 +424,10 @@ await discoverPlugins();
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  response.setHeader("access-control-allow-origin", "*");
+  response.setHeader("access-control-allow-headers", "content-type");
+  response.setHeader("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  if (request.method === "OPTIONS") { response.writeHead(204); response.end(); return; }
   if (url.pathname === "/runtime/health") {
     json(response, 200, { state: "running", pluginCount: activePlugins.length, rejectedCount: rejectedPlugins.length });
     return;
@@ -265,22 +440,71 @@ const server = createServer(async (request, response) => {
     json(response, 200, taskQueue.snapshot());
     return;
   }
+  if (url.pathname === "/runtime/host-state" && request.method === "PATCH") {
+    try {
+      const body = await readJsonBody(request);
+      const next = await hostState.update((state) => ({
+        ...state,
+        ...(body.theme !== undefined ? { theme: body.theme } : {}),
+        ...(body.lastSelection !== undefined ? { lastSelection: body.lastSelection } : {}),
+      }));
+      json(response, 200, next);
+    } catch (error) { json(response, 400, { error: errorDetails(error).message }); }
+    return;
+  }
+  if (url.pathname === "/runtime/browser-status") {
+    const affected = compatiblePlugins
+      .filter((plugin) => Object.values(plugin.validated.manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC"))
+      .map((plugin) => ({ id: plugin.validated.manifest.id, name: plugin.validated.manifest.name, state: findPlugin(plugin.validated.manifest.id)?.status.state ?? "disabled" }));
+    json(response, 200, { connected: affected.every((plugin) => !["unavailable", "disconnected"].includes(plugin.state)), affected });
+    return;
+  }
+  if (url.pathname === "/runtime/plugins/install" && request.method === "POST") {
+    try {
+      const id = await installPlugin((await readJsonBody(request)).sourcePath);
+      json(response, 201, { ok: true, pluginId: id });
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : 400, { error: failure.message, code: failure.code });
+    }
+    return;
+  }
+  const enabledMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)\/enabled$/);
+  if (enabledMatch && request.method === "POST") {
+    try { await setPluginEnabled(decodeURIComponent(enabledMatch[1]), Boolean((await readJsonBody(request)).enabled)); json(response, 200, { ok: true }); }
+    catch (error) { const failure = errorDetails(error); json(response, 400, { error: failure.message, code: failure.code }); }
+    return;
+  }
+  const diagnosticsMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)\/diagnostics$/);
+  if (diagnosticsMatch && request.method === "GET") {
+    try { json(response, 200, { diagnostics: await pluginDiagnostics(decodeURIComponent(diagnosticsMatch[1])) }); }
+    catch (error) { const failure = errorDetails(error); json(response, 404, { error: failure.message, code: failure.code }); }
+    return;
+  }
+  const removalMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)\/remove$/);
+  if (removalMatch && request.method === "DELETE") {
+    try { await removePlugin(decodeURIComponent(removalMatch[1])); json(response, 200, { ok: true, pluginId: removalMatch[1] }); }
+    catch (error) { const failure = errorDetails(error); json(response, failure.code === "RUNTIME_RESTART_REQUIRED" ? 503 : 404, { error: failure.message, code: failure.code }); }
+    return;
+  }
   const deactivateMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)$/);
   if (deactivateMatch && request.method === "DELETE") {
-    const plugin = findPlugin(deactivateMatch[1]);
+    const plugin = findPlugin(decodeURIComponent(deactivateMatch[1]));
     if (!plugin) { json(response, 404, { error: "Plugin not found" }); return; }
     await deactivatePlugin(plugin);
+    const descriptor = findCompatible(decodeURIComponent(deactivateMatch[1]));
+    if (descriptor) descriptor.deactivated = true;
     json(response, 200, { ok: true, pluginId: deactivateMatch[1] });
     return;
   }
   if (url.pathname === "/runtime/info") {
     const origin = `http://${request.headers.host}`;
-    response.setHeader("access-control-allow-origin", "*");
     json(response, 200, {
       type: "runtime-ready",
       origin,
-      plugins: activePlugins.map((plugin) => publicPlugin(plugin, origin)),
+      plugins: compatiblePlugins.filter((plugin) => !plugin.deactivated).map((plugin) => publicCompatiblePlugin(plugin, origin)),
       rejectedPlugins,
+      hostState: hostState.snapshot(),
     });
     return;
   }
@@ -343,8 +567,9 @@ server.listen(port, "127.0.0.1", () => {
   process.stdout.write(`${JSON.stringify({
     type: "runtime-ready",
     origin,
-    plugins: activePlugins.map((plugin) => publicPlugin(plugin, origin)),
+    plugins: compatiblePlugins.filter((plugin) => !plugin.deactivated).map((plugin) => publicCompatiblePlugin(plugin, origin)),
     rejectedPlugins,
+    hostState: hostState.snapshot(),
   })}\n`);
 });
 

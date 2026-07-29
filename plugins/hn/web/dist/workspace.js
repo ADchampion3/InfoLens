@@ -1,3 +1,4 @@
+const infolensThemeParams=new URLSearchParams(location.search);const applyInfolensTheme=(theme)=>document.documentElement.dataset.theme=theme==="dark"?"dark":"light";applyInfolensTheme(infolensThemeParams.get("theme"));addEventListener("message",(event)=>{if(event.data?.type==="infolens:theme")applyInfolensTheme(event.data.theme)});
 const api = new URLSearchParams(location.search).get("apiBaseUrl");
 const $ = (selector) => document.querySelector(selector);
 let data;

@@ -88,3 +88,6 @@ export function pluginHealthUrl(origin: string, pluginId: string): string;
 export function pluginWorkspaceUrl(origin: string, pluginId: string): string;
 export function pluginApiUrl(origin: string, pluginId: string, route?: string): string;
 export function workspaceRuntimeConfig(location?: Pick<Location, "search">): { pluginId: string; apiBaseUrl: string };
+export type WorkspaceTheme = "light" | "dark";
+export function workspaceTheme(location?: Pick<Location, "search">): WorkspaceTheme;
+export function observeWorkspaceTheme(listener: (theme: WorkspaceTheme) => void, target?: Pick<Window, "addEventListener" | "removeEventListener">): () => void;

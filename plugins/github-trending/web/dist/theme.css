@@ -1,0 +1,1 @@
+:root[data-theme="dark"]{--bg:oklch(18% .012 250);--surface:oklch(22% .012 250);--fg:oklch(92% .008 250);--muted:oklch(70% .012 250);--border:oklch(32% .012 250);color-scheme:dark}:root[data-theme="light"]{color-scheme:light}
