@@ -62,6 +62,8 @@ interface Window {
     selectPluginFolder(): Promise<string | null>;
     copyText(value: string): Promise<void>;
     removePlugin(id: string): Promise<void>;
+    testReadClipboard(): Promise<string>;
+    testTerminateRuntime(): Promise<void>;
     onRuntimeStatus(listener: (event: RuntimeStatusEvent) => void): () => void;
   };
 }

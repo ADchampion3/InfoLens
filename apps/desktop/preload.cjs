@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld("infolens", {
   selectPluginFolder: () => ipcRenderer.invoke("plugin:select-folder"),
   copyText: (value) => ipcRenderer.invoke("clipboard:write-text", value),
   removePlugin: (id) => ipcRenderer.invoke("plugin:remove", id),
+  testReadClipboard: () => ipcRenderer.invoke("test:read-clipboard"),
+  testTerminateRuntime: () => ipcRenderer.invoke("test:terminate-runtime"),
   onRuntimeStatus: (listener) => {
     const handler = (_event, value) => listener(value);
     ipcRenderer.on("runtime:status", handler);

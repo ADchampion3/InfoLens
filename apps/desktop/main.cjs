@@ -1,10 +1,12 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
-const { mkdir, readFile, rename, rm, writeFile } = require("node:fs/promises");
+const { access, cp, mkdir, readFile, readdir, rename, rm, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const readline = require("node:readline");
 
 const projectRoot = path.resolve(__dirname, "../..");
+const bundledPluginsRoot = path.join(projectRoot, "plugins");
+if (process.env.INFOLENS_USER_DATA_ROOT) app.setPath("userData", path.resolve(process.env.INFOLENS_USER_DATA_ROOT));
 let runtimeProcess;
 let runtimeInfo;
 let mainWindow;
@@ -16,15 +18,39 @@ function publishRuntimeStatus(status, details = {}) {
   if (!mainWindow?.isDestroyed()) mainWindow.webContents.send("runtime:status", { status, ...details });
 }
 
+function managedPaths() {
+  const profileRoot = app.isPackaged ? app.getPath("userData") : path.join(projectRoot, ".infolens-data");
+  const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? (app.isPackaged ? path.join(profileRoot, "plugins") : bundledPluginsRoot));
+  const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(profileRoot, app.isPackaged ? "plugins-data" : "plugins"));
+  const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(profileRoot, "host-state.json"));
+  return { pluginsRoot, dataRoot, hostStatePath };
+}
+
+async function seedBundledPlugins() {
+  if (!app.isPackaged || process.env.INFOLENS_PLUGINS_ROOT) return;
+  const { pluginsRoot } = managedPaths();
+  await mkdir(pluginsRoot, { recursive: true });
+  for (const entry of await readdir(bundledPluginsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const destination = path.join(pluginsRoot, entry.name);
+    try { await access(destination); }
+    catch { await cp(path.join(bundledPluginsRoot, entry.name), destination, { recursive: true }); }
+  }
+}
+
 function startRuntime() {
   return new Promise((resolve, reject) => {
     const runtimeEntry = path.join(projectRoot, "packages", "plugin-runtime", "src", "server.mjs");
+    const { pluginsRoot, dataRoot, hostStatePath } = managedPaths();
     runtimeProcess = spawn(process.execPath, [runtimeEntry], {
       cwd: projectRoot,
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: "1",
         INFOLENS_PROJECT_ROOT: projectRoot,
+        INFOLENS_PLUGINS_ROOT: pluginsRoot,
+        INFOLENS_PLUGIN_DATA_ROOT: dataRoot,
+        INFOLENS_HOST_STATE_PATH: hostStatePath,
         INFOLENS_RUNTIME_PORT: "0",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -88,13 +114,6 @@ function stopRuntime() {
     child.stdin.write("shutdown\n");
     child.stdin.end();
   });
-}
-
-function managedPaths() {
-  const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? path.join(projectRoot, "plugins"));
-  const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(projectRoot, ".infolens-data", "plugins"));
-  const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
-  return { pluginsRoot, dataRoot, hostStatePath };
 }
 
 function assertManagedPath(root, target) {
@@ -175,13 +194,26 @@ ipcMain.handle("runtime:get-info", async () => {
   }
 });
 ipcMain.handle("plugin:select-folder", async () => {
+  if (process.env.INFOLENS_TEST_CONTROL === "1" && process.env.INFOLENS_TEST_INSTALL_PATH) {
+    return path.resolve(process.env.INFOLENS_TEST_INSTALL_PATH);
+  }
   const result = await dialog.showOpenDialog(mainWindow, { title: "Install plugin", properties: ["openDirectory"] });
   return result.canceled ? null : result.filePaths[0];
 });
 ipcMain.handle("clipboard:write-text", (_event, value) => { clipboard.writeText(String(value)); });
 ipcMain.handle("plugin:remove", (_event, id) => removePlugin(String(id)));
+ipcMain.handle("test:read-clipboard", () => {
+  if (process.env.INFOLENS_TEST_CONTROL !== "1") throw new Error("Test control is disabled");
+  return clipboard.readText();
+});
+ipcMain.handle("test:terminate-runtime", () => {
+  if (process.env.INFOLENS_TEST_CONTROL !== "1") throw new Error("Test control is disabled");
+  if (!runtimeProcess) throw new Error("Plugin Runtime is not running");
+  runtimeProcess.kill();
+});
 
 app.whenReady().then(async () => {
+  await seedBundledPlugins();
   createWindow();
   try { await startRuntime(); publishRuntimeStatus("running", { info: runtimeInfo }); }
   catch (error) { publishRuntimeStatus("unavailable", { message: error instanceof Error ? error.message : String(error) }); restartRuntime(); }

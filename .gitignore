@@ -6,6 +6,7 @@ coverage/
 .infolens-data/
 .infolens-acceptance/
 .infolens-live/
+release/
 .agents/
 .claude/
 skills-lock.json
