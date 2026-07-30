@@ -3,7 +3,7 @@
   "name": "Hacker News",
   "version": "0.2.0",
   "icon": "web/dist/icon.png",
-  "contractVersion": "1",
+  "contractVersion": "2",
   "minHostVersion": "0.1.0",
   "backend": {
     "entry": "backend/index.js"
@@ -11,14 +11,15 @@
   "ui": {
     "entry": "web/dist/index.html"
   },
+  "openCliAdapters": {},
   "openCliCommands": {
     "topStories": {
       "site": "hackernews",
+      "adapter": "builtin",
       "command": ["hackernews", "top"],
       "strategy": "PUBLIC",
       "access": "read",
-      "outputFormat": "json",
-      "openCliVersionRange": ">=1.8.6 <2.0.0"
+      "outputFormat": "json"
     }
   }
 }

@@ -14,6 +14,8 @@ export class SharedTaskQueue {
     this.activePlugins = new Set();
     this.queued = [];
     this.running = new Set();
+    this.taskQueued = [];
+    this.taskRunning = new Map();
     this.stopped = false;
   }
 
@@ -28,6 +30,20 @@ export class SharedTaskQueue {
     return promise;
   }
 
+  submitTask({ pluginId, run }) {
+    if (this.stopped) return Promise.reject(new TaskCancelledError("Runtime task queue is stopped", "not-started"));
+    let resolvePromise;
+    let rejectPromise;
+    const promise = new Promise((resolve, reject) => { resolvePromise = resolve; rejectPromise = reject; });
+    this.taskQueued.push({ pluginId, run, resolve: resolvePromise, reject: rejectPromise });
+    this.drainTasks();
+    return promise;
+  }
+
+  withPermit({ pluginId, resource }, run) {
+    return this.submit({ pluginId, resource, run });
+  }
+
   cancelPlugin(pluginId) {
     const retained = [];
     for (const entry of this.queued) {
@@ -36,6 +52,13 @@ export class SharedTaskQueue {
     }
     this.queued = retained;
     for (const entry of this.running) if (entry.pluginId === pluginId) entry.controller.abort();
+    const retainedTasks = [];
+    for (const entry of this.taskQueued) {
+      if (entry.pluginId === pluginId) entry.reject(new TaskCancelledError(`Plugin '${pluginId}' queued task was cancelled`, "not-started"));
+      else retainedTasks.push(entry);
+    }
+    this.taskQueued = retainedTasks;
+    this.taskRunning.get(pluginId)?.controller.abort();
   }
 
   stop() {
@@ -43,6 +66,9 @@ export class SharedTaskQueue {
     for (const entry of this.queued) entry.reject(new TaskCancelledError("Runtime stopped before task started", "not-started"));
     this.queued = [];
     for (const entry of this.running) entry.controller.abort();
+    for (const entry of this.taskQueued) entry.reject(new TaskCancelledError("Runtime stopped before task started", "not-started"));
+    this.taskQueued = [];
+    for (const entry of this.taskRunning.values()) entry.controller.abort();
   }
 
   snapshot() {
@@ -50,7 +76,37 @@ export class SharedTaskQueue {
       queued: this.queued.map(({ pluginId, resource }) => ({ pluginId, resource })),
       active: { ...this.active },
       activePlugins: [...this.activePlugins],
+      tasks: {
+        queued: this.taskQueued.map(({ pluginId }) => ({ pluginId })),
+        activePlugins: [...this.taskRunning.keys()],
+      },
     };
+  }
+
+  drainTasks() {
+    if (this.stopped) return;
+    for (let index = 0; index < this.taskQueued.length;) {
+      const entry = this.taskQueued[index];
+      if (this.taskRunning.has(entry.pluginId)) { index += 1; continue; }
+      this.taskQueued.splice(index, 1);
+      this.startTask(entry);
+    }
+  }
+
+  async startTask(entry) {
+    entry.controller = new AbortController();
+    this.taskRunning.set(entry.pluginId, entry);
+    try {
+      const result = await entry.run(entry.controller.signal);
+      if (entry.controller.signal.aborted) throw new TaskCancelledError(`Plugin '${entry.pluginId}' active task was cancelled`);
+      entry.resolve(result);
+    } catch (error) {
+      if (entry.controller.signal.aborted && error?.code !== "TASK_CANCELLED") entry.reject(new TaskCancelledError(`Plugin '${entry.pluginId}' active task was cancelled`));
+      else entry.reject(error);
+    } finally {
+      this.taskRunning.delete(entry.pluginId);
+      this.drainTasks();
+    }
   }
 
   drain() {
@@ -88,9 +144,8 @@ export class SharedTaskQueue {
 }
 
 export class PluginTaskManager {
-  constructor(pluginId, resource, queue, onEvent) {
+  constructor(pluginId, queue, onEvent) {
     this.pluginId = pluginId;
-    this.resource = resource;
     this.queue = queue;
     this.onEvent = onEvent;
     this.handlers = new Map();
@@ -111,20 +166,20 @@ export class PluginTaskManager {
     if (!handler) return Promise.reject(new Error(`Task '${name}' is not registered`));
     const key = `${name}:${options.coalesceKey ?? "default"}`;
     if (this.pending.has(key)) {
-      this.onEvent("task-coalesced", { task: name, reason: options.reason ?? "manual", resource: this.resource });
+      this.onEvent("task-coalesced", { task: name, reason: options.reason ?? "manual" });
       return this.pending.get(key);
     }
 
     const reason = options.reason ?? "manual";
-    this.onEvent("task-queued", { task: name, reason, resource: this.resource });
-    const promise = this.queue.submit({ pluginId: this.pluginId, resource: this.resource, run: async (signal) => {
-      this.onEvent("task-started", { task: name, reason, resource: this.resource });
+    this.onEvent("task-queued", { task: name, reason });
+    const promise = this.queue.submitTask({ pluginId: this.pluginId, run: async (signal) => {
+      this.onEvent("task-started", { task: name, reason });
       return handler(input, { signal, reason });
     } });
     this.pending.set(key, promise);
     promise.then(
-      () => this.onEvent("task-completed", { task: name, resource: this.resource }),
-      (error) => this.onEvent(error?.code === "TASK_CANCELLED" ? "task-cancelled" : "task-failed", { task: name, resource: this.resource, error, outcome: error?.outcome }),
+      () => this.onEvent("task-completed", { task: name }),
+      (error) => this.onEvent(error?.code === "TASK_CANCELLED" ? "task-cancelled" : "task-failed", { task: name, error, outcome: error?.outcome }),
     ).finally(() => this.pending.delete(key));
     return promise;
   }

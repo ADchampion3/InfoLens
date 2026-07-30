@@ -1,0 +1,6 @@
+{
+  "name": "io.infolens.producthunt",
+  "version": "1.0.0",
+  "description": "Infolens Product Hunt daily launch collection",
+  "opencli": ">=1.8.6 <2.0.0"
+}

@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
-import { cp, mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -9,6 +10,7 @@ import { createOpenCliAdapter, loadBundledOpenCli } from "./opencli-adapter.mjs"
 import { PluginTaskManager, SharedTaskQueue } from "./task-manager.mjs";
 import { redactSensitiveText, redactSensitiveValue } from "./redaction.mjs";
 import { HostStateStore } from "./host-state.mjs";
+import { garbageCollectAdapterStore, preparePluginAdapterScope, removePluginAdapterScope } from "./adapter-scope.mjs";
 
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
   ? path.resolve(process.env.INFOLENS_PROJECT_ROOT)
@@ -17,6 +19,7 @@ const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? path.join(
 const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(projectRoot, ".infolens-data", "plugins"));
 const openCliRoot = path.resolve(process.env.INFOLENS_BUNDLED_OPENCLI_ROOT ?? path.join(projectRoot, "resources", "opencli"));
 const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
+const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? path.join(path.dirname(dataRoot), "opencli-adapters"));
 const openCliRuntime = await loadBundledOpenCli(openCliRoot);
 const openCliAdapter = createOpenCliAdapter(openCliRuntime);
 const validationRuntime = {
@@ -24,10 +27,23 @@ const validationRuntime = {
   openCliVersion: openCliRuntime.version,
   availableCommands: openCliRuntime.availableCommands,
 };
+function adapterScopeOptions(registryRoot) {
+  return {
+    prepareAdapterScope: ({ packageRoot, manifest }) => preparePluginAdapterScope({
+      packageRoot,
+      manifest,
+      runtime: openCliRuntime,
+      registryRoot,
+      inspect: (pluginPaths) => openCliAdapter.inspect(pluginPaths),
+    }),
+  };
+}
+const contractOptions = adapterScopeOptions(adapterRegistryRoot);
 
 const activePlugins = [];
 const compatiblePlugins = [];
 const rejectedPlugins = [];
+const installingPluginIds = new Set();
 const statusEvents = [];
 const taskQueue = new SharedTaskQueue();
 let eventSequence = 0;
@@ -117,9 +133,7 @@ async function activatePlugin(validated, packageRoot) {
     logger,
     status: { state: "starting", updatedAt: new Date().toISOString() },
   };
-  const strategies = new Set(Object.values(manifest.openCliCommands).map((mapping) => mapping.strategy));
-  const taskResource = [...strategies].every((strategy) => strategy === "PUBLIC") ? "PUBLIC" : "BROWSER";
-  const taskManager = new PluginTaskManager(manifest.id, taskResource, taskQueue, (type, details) => {
+  const taskManager = new PluginTaskManager(manifest.id, taskQueue, (type, details) => {
     const safeDetails = details.error ? { ...details, ...errorDetails(details.error), error: undefined } : details;
     if (type === "task-queued") setPluginStatus(plugin, "queued");
     if (type === "task-started") setPluginStatus(plugin, "refreshing");
@@ -158,7 +172,8 @@ async function activatePlugin(validated, packageRoot) {
         if (!mapping) throw new Error(`OpenCLI command '${commandKey}' is not declared by plugin '${manifest.id}'`);
         await logger.info("opencli-started", { commandKey, strategy: mapping.strategy });
         try {
-          const result = await openCliAdapter.run(mapping, args, signal);
+          const resource = mapping.strategy === "PUBLIC" ? "PUBLIC" : "BROWSER";
+          const result = await taskQueue.withPermit({ pluginId: manifest.id, resource, signal }, () => openCliAdapter.run(mapping, args, signal, validated.adapterScope.adapters.map((adapter) => adapter.path)));
           await logger.info("opencli-completed", { commandKey });
           return result;
         } catch (error) {
@@ -208,11 +223,18 @@ async function discoverPlugins() {
   catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  for (const entry of entries) {
+  const claimedPluginIds = new Set();
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory()) continue;
     const packageRoot = path.join(pluginsRoot, entry.name);
     try {
-      const validated = await validatePluginPackage(packageRoot, validationRuntime);
+      let candidateManifest;
+      try { candidateManifest = JSON.parse(await readFile(path.join(packageRoot, "manifest.json"), "utf8")); } catch {}
+      if (typeof candidateManifest?.id === "string") {
+        if (claimedPluginIds.has(candidateManifest.id)) throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${candidateManifest.id}' is already discovered`);
+        claimedPluginIds.add(candidateManifest.id);
+      }
+      const validated = await validatePluginPackage(packageRoot, validationRuntime, contractOptions);
       if (activePlugins.some((plugin) => plugin.manifest.id === validated.manifest.id)) {
         throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${validated.manifest.id}' is already discovered`);
       }
@@ -233,6 +255,7 @@ async function discoverPlugins() {
       emitStatus("package-rejected", entry.name, rejection);
     }
   }
+  await garbageCollectAdapterStore(adapterRegistryRoot);
 }
 
 function publicPlugin(plugin, origin) {
@@ -329,18 +352,30 @@ async function installPlugin(sourcePath) {
     throw new ContractError("INVALID_INSTALL_PATH", "Select an absolute local plugin folder");
   }
   const sourceRoot = path.resolve(sourcePath);
-  const validated = await validatePluginPackage(sourceRoot, validationRuntime);
+  let candidateManifest;
+  try { candidateManifest = JSON.parse(await readFile(path.join(sourceRoot, "manifest.json"), "utf8")); } catch {}
+  const candidateId = candidateManifest?.id;
+  if (typeof candidateId === "string" && (compatiblePlugins.some((plugin) => plugin.validated.manifest.id === candidateId) || rejectedPlugins.some((plugin) => plugin.id === candidateId))) {
+    throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${candidateId}' is already installed; remove the installed plugin first`);
+  }
+  if (typeof candidateId === "string" && /^[a-z0-9][a-z0-9-]*$/.test(candidateId)) {
+    try { await readFile(path.join(pluginsRoot, candidateId, "manifest.json")); throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${candidateId}' is already installed; remove the installed plugin first`); }
+    catch (error) { if (error instanceof ContractError || error.code !== "ENOENT") throw error; }
+  }
+  const preflightRegistryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-adapter-preflight-"));
+  let validated;
+  try { validated = await validatePluginPackage(sourceRoot, validationRuntime, adapterScopeOptions(preflightRegistryRoot)); }
+  finally { await rm(preflightRegistryRoot, { recursive: true, force: true }); }
   const id = validated.manifest.id;
-  if (compatiblePlugins.some((plugin) => plugin.validated.manifest.id === id) || rejectedPlugins.some((plugin) => plugin.id === id)) {
+  if (compatiblePlugins.some((plugin) => plugin.validated.manifest.id === id) || rejectedPlugins.some((plugin) => plugin.id === id) || installingPluginIds.has(id)) {
     throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${id}' is already installed; remove the installed plugin first`);
   }
+  installingPluginIds.add(id);
   const destination = path.join(pluginsRoot, id);
-  try { await readFile(path.join(destination, "manifest.json")); throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${id}' is already installed; remove the installed plugin first`); }
-  catch (error) { if (error instanceof ContractError || error.code !== "ENOENT") throw error; }
   const temporary = path.join(pluginsRoot, `.install-${id}-${Date.now()}`);
-  await cp(sourceRoot, temporary, { recursive: true, errorOnExist: true });
   try {
-    const copied = await validatePluginPackage(temporary, validationRuntime);
+    await cp(sourceRoot, temporary, { recursive: true, errorOnExist: true });
+    const copied = await validatePluginPackage(temporary, validationRuntime, contractOptions);
     await rename(temporary, destination);
     const descriptor = { validated: { ...copied, backendPath: path.join(destination, path.relative(temporary, copied.backendPath)), workspaceEntry: path.join(destination, path.relative(temporary, copied.workspaceEntry)), workspaceRoot: path.join(destination, path.relative(temporary, copied.workspaceRoot)) }, packageRoot: destination };
     compatiblePlugins.push(descriptor);
@@ -349,7 +384,10 @@ async function installPlugin(sourcePath) {
     return id;
   } catch (error) {
     await rm(temporary, { recursive: true, force: true });
+    await removePluginAdapterScope(adapterRegistryRoot, id);
     throw error;
+  } finally {
+    installingPluginIds.delete(id);
   }
 }
 
@@ -372,6 +410,7 @@ async function removePlugin(identifier) {
   }
   await rm(packageRoot, { recursive: true, force: true });
   await rm(path.join(dataRoot, id), { recursive: true, force: true });
+  await removePluginAdapterScope(adapterRegistryRoot, id);
   if (descriptor) compatiblePlugins.splice(compatiblePlugins.indexOf(descriptor), 1);
   if (rejection) rejectedPlugins.splice(rejectedPlugins.indexOf(rejection), 1);
   await hostState.update((state) => {

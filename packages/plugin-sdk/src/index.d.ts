@@ -1,12 +1,18 @@
 export type OpenCliStrategy = "PUBLIC" | "COOKIE" | "INTERCEPT";
 
 export interface OpenCliCommandMapping {
+  adapter: "builtin" | string;
   site: string;
   command: readonly [string, ...string[]];
   strategy: OpenCliStrategy;
   access: "read";
   outputFormat: "json";
-  openCliVersionRange: string;
+}
+
+export interface OpenCliAdapterDeclaration {
+  id: string;
+  version: string;
+  path: string;
 }
 
 export interface PluginManifest {
@@ -14,10 +20,11 @@ export interface PluginManifest {
   name: string;
   version: string;
   icon?: string;
-  contractVersion: "1";
+  contractVersion: "2";
   minHostVersion: string;
   backend: { entry: string };
   ui: { entry: string };
+  openCliAdapters: Record<string, OpenCliAdapterDeclaration>;
   openCliCommands: Record<string, OpenCliCommandMapping>;
 }
 

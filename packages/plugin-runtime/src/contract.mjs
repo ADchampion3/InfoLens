@@ -2,7 +2,7 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import semver from "semver";
 
-export const CONTRACT_VERSION = "1";
+export const CONTRACT_VERSION = "2";
 export const HOST_VERSION = "0.1.0";
 const SUPPORTED_STRATEGIES = new Set(["PUBLIC", "COOKIE", "INTERCEPT"]);
 
@@ -31,7 +31,7 @@ function resolvePackagePath(packageRoot, relativePath, field) {
   return resolved;
 }
 
-export async function validatePluginPackage(packageRoot, runtime) {
+export async function validatePluginPackage(packageRoot, runtime, options = {}) {
   let manifest;
   try {
     manifest = JSON.parse(await readFile(path.join(packageRoot, "manifest.json"), "utf8"));
@@ -57,20 +57,26 @@ export async function validatePluginPackage(packageRoot, runtime) {
     throw new ContractError("INVALID_PACKAGE_STRUCTURE", "backend.entry and ui.entry must point to existing files");
   }
 
+  reject(!manifest.openCliAdapters || typeof manifest.openCliAdapters !== "object" || Array.isArray(manifest.openCliAdapters), "INVALID_ADAPTERS", "openCliAdapters must be an object");
+  reject(Object.keys(manifest.openCliAdapters).length > 0 && typeof options.prepareAdapterScope !== "function", "ADAPTER_SCOPE_UNAVAILABLE", "provided adapters require an Adapter Scope resolver");
   reject(!manifest.openCliCommands || typeof manifest.openCliCommands !== "object" || Array.isArray(manifest.openCliCommands), "INVALID_COMMANDS", "openCliCommands must be an object");
   for (const [key, mapping] of Object.entries(manifest.openCliCommands)) {
     requireString(key, "openCliCommands key");
     reject(!mapping || typeof mapping !== "object" || Array.isArray(mapping), "INVALID_COMMAND", `command '${key}' must be an object`);
     requireString(mapping.site, `openCliCommands.${key}.site`);
+    requireString(mapping.adapter, `openCliCommands.${key}.adapter`);
     reject(!Array.isArray(mapping.command) || mapping.command.length === 0 || mapping.command.some((part) => typeof part !== "string" || !part), "INVALID_COMMAND", `command '${key}' must declare a non-empty command path`);
     reject(mapping.command.some((part) => part.startsWith("-")), "INVALID_COMMAND", `command '${key}' path cannot contain options`);
     reject(mapping.access !== "read", "UNSUPPORTED_ACCESS", `command '${key}' must declare access 'read'`);
     reject(mapping.outputFormat !== "json", "UNSUPPORTED_OUTPUT", `command '${key}' must declare outputFormat 'json'`);
     reject(!SUPPORTED_STRATEGIES.has(mapping.strategy), "UNSUPPORTED_STRATEGY", `command '${key}' uses unsupported strategy '${mapping.strategy}'`);
-    reject(!semver.validRange(mapping.openCliVersionRange), "INVALID_OPENCLI_RANGE", `command '${key}' has invalid openCliVersionRange '${mapping.openCliVersionRange}'`);
-    reject(!semver.satisfies(runtime.openCliVersion, mapping.openCliVersionRange), "INCOMPATIBLE_OPENCLI", `command '${key}' requires OpenCLI '${mapping.openCliVersionRange}'; bundled version is ${runtime.openCliVersion}`);
-    reject(!runtime.availableCommands.has(mapping.command.join(" ")), "UNAVAILABLE_COMMAND", `command '${key}' is unavailable in bundled OpenCLI: ${mapping.command.join(" ")}`);
+    reject(mapping.site !== mapping.command[0], "INVALID_COMMAND", `command '${key}' site must match its command path`);
+    reject(mapping.adapter !== "builtin" && !Object.hasOwn(manifest.openCliAdapters, mapping.adapter), "UNKNOWN_ADAPTER", `command '${key}' references unknown adapter '${mapping.adapter}'`);
+    reject(mapping.adapter === "builtin" && !runtime.availableCommands.has(mapping.command.join(" ")), "UNAVAILABLE_COMMAND", `command '${key}' is unavailable in bundled OpenCLI: ${mapping.command.join(" ")}`);
   }
 
-  return { manifest, backendPath, workspaceEntry, workspaceRoot: path.dirname(workspaceEntry) };
+  const adapterScope = options.prepareAdapterScope
+    ? await options.prepareAdapterScope({ packageRoot, manifest })
+    : { adapters: [], commands: [] };
+  return { manifest, backendPath, workspaceEntry, workspaceRoot: path.dirname(workspaceEntry), adapterScope };
 }

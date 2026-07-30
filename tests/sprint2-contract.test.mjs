@@ -92,8 +92,8 @@ test("Sprint 2 contracts execute through the actual Plugin Runtime", async () =>
 
     const rejectionCodes = new Set(message.rejectedPlugins.map((plugin) => plugin.code));
     for (const code of [
-      "INVALID_PACKAGE_STRUCTURE", "INCOMPATIBLE_CONTRACT", "INCOMPATIBLE_HOST", "INCOMPATIBLE_OPENCLI",
-      "INVALID_OPENCLI_RANGE", "UNSUPPORTED_STRATEGY", "UNSUPPORTED_ACCESS", "UNSUPPORTED_OUTPUT", "UNAVAILABLE_COMMAND",
+      "INVALID_PACKAGE_STRUCTURE", "INCOMPATIBLE_CONTRACT", "INCOMPATIBLE_HOST",
+      "UNSUPPORTED_STRATEGY", "UNSUPPORTED_ACCESS", "UNSUPPORTED_OUTPUT", "UNAVAILABLE_COMMAND",
     ]) assert.ok(rejectionCodes.has(code), `Expected rejection code ${code}`);
 
     const origin = message.origin;

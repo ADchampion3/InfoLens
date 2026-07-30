@@ -1,5 +1,5 @@
 {
-  "id": "unavailable-command", "name": "Unavailable Command", "version": "1.0.0", "contractVersion": "1", "minHostVersion": "0.1.0",
+  "id": "unavailable-command", "name": "Unavailable Command", "version": "1.0.0", "contractVersion": "2", "minHostVersion": "0.1.0",
   "backend": { "entry": "backend/index.mjs" }, "ui": { "entry": "web/index.html" },
-  "openCliCommands": { "missing": { "site": "fixture", "command": ["fixture", "missing"], "strategy": "PUBLIC", "access": "read", "outputFormat": "json", "openCliVersionRange": "*" } }
+  "openCliAdapters": {}, "openCliCommands": { "missing": { "adapter": "builtin", "site": "fixture", "command": ["fixture", "missing"], "strategy": "PUBLIC", "access": "read", "outputFormat": "json" } }
 }

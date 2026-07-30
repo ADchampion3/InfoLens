@@ -10,7 +10,6 @@
     ["hackernews", "top"],
     ["github-trending", "repos"],
     ["zhihu", "whoami"],
-    ["zhihu", "hot"],
-    ["producthunt", "hot"]
+    ["zhihu", "hot"]
   ]
 }

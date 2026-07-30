@@ -38,7 +38,8 @@
     "verify:sprint8:real": "node scripts/verify-sprint8-real-source.mjs",
     "typecheck": "npm run typecheck:desktop && npm run typecheck:sdk",
     "typecheck:desktop": "tsc --noEmit -p apps/desktop/tsconfig.json",
-    "typecheck:sdk": "tsc --noEmit -p packages/plugin-sdk/tsconfig.json"
+    "typecheck:sdk": "tsc --noEmit -p packages/plugin-sdk/tsconfig.json",
+    "plugin": "node packages/plugin-sdk/bin/infolens-plugin.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

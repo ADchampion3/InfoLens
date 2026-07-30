@@ -6,6 +6,7 @@ coverage/
 .infolens-data/
 .infolens-acceptance/
 .infolens-live/
+.infolens-dev/
 release/
 .agents/
 .claude/

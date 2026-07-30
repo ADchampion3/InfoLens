@@ -45,6 +45,7 @@ export async function loadBundledOpenCli(distributionRoot) {
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Bundled OpenCLI executable escapes its distribution");
   await readFile(executablePath);
   let packageName;
+  let packageRoot;
   if (metadata.package) {
     const manifestPath = path.resolve(distributionRoot, metadata.package.manifest ?? "");
     const manifestRelative = path.relative(distributionRoot, manifestPath);
@@ -54,51 +55,64 @@ export async function loadBundledOpenCli(distributionRoot) {
       throw new Error("Bundled OpenCLI package identity does not match pinned runtime metadata");
     }
     packageName = packageManifest.name;
+    packageRoot = path.dirname(manifestPath);
   }
   return {
     version: metadata.version,
     packageName,
+    packageRoot,
     executablePath,
     availableCommands: new Set(metadata.commands.map((command) => command.join(" "))),
   };
 }
 
 export function createOpenCliAdapter(runtime) {
+  function spawnJson(processArgs, signal, extraEnvironment = {}) {
+    const command = processCommand(runtime.executablePath);
+    return new Promise((resolve, reject) => {
+      const child = spawn(command.file, [...command.prefix, ...processArgs], {
+        cwd: path.dirname(runtime.executablePath),
+        env: {
+          ...process.env,
+          INFOLENS_OPENCLI_BUNDLED: "1",
+          ...extraEnvironment,
+          ...(command.electronNodeMode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+        },
+        signal,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.once("error", reject);
+      child.once("close", (code) => {
+        if (code !== 0) { reject(classifyFailure(stderr, code)); return; }
+        try { resolve(JSON.parse(stdout)); }
+        catch { reject(new Error("Bundled OpenCLI did not return valid JSON")); }
+      });
+    });
+  }
+
   return {
-    run(mapping, args = [], signal) {
+    inspect(pluginPaths) {
+      return spawnJson([], undefined, {
+        OPENCLI_DISABLE_USER_DISCOVERY: "1",
+        OPENCLI_PLUGIN_PATHS: pluginPaths.join(path.delimiter),
+        OPENCLI_REGISTRATION_REPORT: "1",
+      });
+    },
+    run(mapping, args = [], signal, pluginPaths = []) {
       if (!Array.isArray(args) || args.some((argument) => typeof argument !== "string")) {
         throw new TypeError("OpenCLI arguments must be an array of strings");
       }
       if (args.some((argument) => argument === "--format" || argument === "-f" || argument.startsWith("--format="))) {
         throw new Error("OpenCLI output format is fixed by the plugin contract");
       }
-      const command = processCommand(runtime.executablePath);
-      const processArgs = [...command.prefix, ...mapping.command, ...args, "-f", "json"];
-      return new Promise((resolve, reject) => {
-        const child = spawn(command.file, processArgs, {
-          cwd: path.dirname(runtime.executablePath),
-          env: {
-            ...process.env,
-            INFOLENS_OPENCLI_BUNDLED: "1",
-            ...(command.electronNodeMode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
-          },
-          signal,
-          stdio: ["ignore", "pipe", "pipe"],
-          windowsHide: true,
-        });
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", (chunk) => { stdout += chunk; });
-        child.stderr.on("data", (chunk) => { stderr += chunk; });
-        child.once("error", reject);
-        child.once("close", (code) => {
-          if (code !== 0) {
-            reject(classifyFailure(stderr, code));
-            return;
-          }
-          try { resolve(JSON.parse(stdout)); }
-          catch { reject(new Error("Bundled OpenCLI did not return valid JSON")); }
-        });
+      return spawnJson([...mapping.command, ...args, "-f", "json"], signal, {
+        OPENCLI_DISABLE_USER_DISCOVERY: "1",
+        ...(pluginPaths.length > 0 ? { OPENCLI_PLUGIN_PATHS: pluginPaths.join(path.delimiter) } : {}),
       });
     },
   };

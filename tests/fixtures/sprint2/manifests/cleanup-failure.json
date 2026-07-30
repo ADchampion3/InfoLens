@@ -1,4 +1,4 @@
 {
-  "id": "cleanup-failure", "name": "Cleanup Failure", "version": "1.0.0", "contractVersion": "1", "minHostVersion": "0.1.0",
-  "backend": { "entry": "backend/index.mjs" }, "ui": { "entry": "web/index.html" }, "fixtureBackend": "cleanup-failure", "openCliCommands": {}
+  "id": "cleanup-failure", "name": "Cleanup Failure", "version": "1.0.0", "contractVersion": "2", "minHostVersion": "0.1.0",
+  "backend": { "entry": "backend/index.mjs" }, "ui": { "entry": "web/index.html" }, "fixtureBackend": "cleanup-failure", "openCliAdapters": {}, "openCliCommands": {}
 }

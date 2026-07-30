@@ -4,7 +4,7 @@ export const sprint8Plugins = [
   { id: "hn", name: "Hacker News", strategy: "PUBLIC", command: "hackernews top", field: "stories", rowSelector: ".story-row", database: "hacker-news.sqlite" },
   { id: "github-trending", name: "GitHub Trending", strategy: "PUBLIC", command: "github-trending repos", field: "repositories", rowSelector: ".repo-row", database: "github-trending.sqlite" },
   { id: "zhihu-hot", name: "Zhihu Hot List", strategy: "COOKIE", command: "zhihu whoami + zhihu hot", field: "questions", rowSelector: ".question-row", database: "zhihu-hot.sqlite" },
-  { id: "product-hunt", name: "Product Hunt", strategy: "INTERCEPT", command: "producthunt hot", field: "products", rowSelector: ".product", database: "product-hunt.sqlite" },
+  { id: "product-hunt", name: "Product Hunt", strategy: "INTERCEPT", command: "infolens-producthunt today", field: "products", rowSelector: ".product", database: "product-hunt.sqlite" },
 ];
 
 export function safeEvidence(value) {

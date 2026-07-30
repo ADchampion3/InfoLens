@@ -1,5 +1,10 @@
 import { appendFile, readFile } from "node:fs/promises";
 
+if (process.env.OPENCLI_REGISTRATION_REPORT === "1") {
+  process.stdout.write(JSON.stringify({ commands: [], hooks: [], collisions: [] }));
+  process.exit(0);
+}
+
 const command = process.argv.slice(2, 4).join(" ");
 const state = JSON.parse(await readFile(process.env.INFOLENS_TEST_OPENCLI_STATE, "utf8"));
 await appendFile(`${process.env.INFOLENS_TEST_OPENCLI_STATE}.calls`, `${JSON.stringify(process.argv.slice(2))}\n`);

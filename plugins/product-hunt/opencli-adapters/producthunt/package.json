@@ -1,0 +1,9 @@
+{
+  "name": "@infolens/opencli-producthunt",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "peerDependencies": {
+    "@jackwener/opencli": ">=1.8.6 <2.0.0"
+  }
+}

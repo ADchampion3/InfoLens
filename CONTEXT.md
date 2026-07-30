@@ -20,6 +20,26 @@ _Avoid_: Hidden test fixture, generic command launcher
 One of OpenCLI's four browser and website collection mechanisms: `PUBLIC`, `COOKIE`, `INTERCEPT`, or `UI`.
 _Avoid_: Plugin category, host permission level
 
+**OpenCLI Adapter**:
+A reusable, site-specific OpenCLI component that implements commands for collecting information from one external source. It is not identity- or lifecycle-bound to an Infolens Plugin and may serve multiple plugins.
+_Avoid_: OpenCLI plugin, Infolens Plugin
+
+**OpenCLI Adapter Requirement**:
+A named, version-constrained OpenCLI Adapter capability that an Infolens Plugin needs to collect from its source.
+_Avoid_: Implicit host command, companion installation
+
+**Provided OpenCLI Adapter**:
+An ordinary, portable OpenCLI Adapter package distributed inside a trusted Infolens Plugin package to satisfy an adapter requirement during the same atomic installation. It inherits that package's trust and contains inspectable source and ready-to-run code, requiring no install script, network fetch, or compilation.
+_Avoid_: Post-install patch, hidden dependency
+
+**Managed Adapter Store**:
+The Infolens-owned collection of installed OpenCLI Adapters exposed only to Infolens's bundled OpenCLI runtime.
+_Avoid_: OpenCLI `node_modules`, user-global OpenCLI plugins
+
+**Resolved Adapter Set**:
+The exact OpenCLI Adapter versions made available to one Infolens Plugin when it invokes the bundled OpenCLI runtime.
+_Avoid_: Global adapter set, installation-order override
+
 **Supported Plugin Strategy**:
 An OpenCLI strategy accepted by the current Infolens plugin package contract: `PUBLIC`, `COOKIE`, or `INTERCEPT`. `UI` is an OpenCLI strategy but is not accepted by the MVP package contract.
 _Avoid_: Permanent OpenCLI limitation
@@ -103,7 +123,7 @@ The small package descriptor used by the host to discover, identify, and start a
 _Avoid_: Permission policy, source schema
 
 **OpenCLI Command Mapping**:
-A manifest entry keyed by command key, declaring a source `site`, immutable CLI `command` path, supported `strategy`, `access: read`, JSON output format, and `openCliVersionRange`. Plugin Runtime validates mapping compatibility and command availability before it launches OpenCLI; the loaded plugin handler validates task arguments directly in code.
+A Version 2 manifest entry keyed by command key, declaring an explicit `adapter` source, source `site`, immutable CLI `command` path, supported `strategy`, `access: read`, and JSON output format. `adapter: builtin` resolves against the bundled runtime inventory; any other value resolves against the plugin's locked Adapter Scope. Plugin Runtime validates mapping compatibility and command availability before it launches OpenCLI; the loaded plugin handler validates task arguments directly in code.
 _Avoid_: Arbitrary shell command, serialized argument schema
 
 **Plugin Contract Version**:

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { renderEvidenceMarkdown, safeEvidence, sprint8Plugins } from "../scripts/sprint8-evidence.mjs";
-import { patchProductHuntHot } from "../scripts/apply-opencli-overrides.mjs";
+import { applyOpenCliOverrides, patchOpenCliDiscovery } from "../scripts/apply-opencli-overrides.mjs";
 
 const require = createRequire(import.meta.url);
 const { firstHttpProxy, runtimeProxyEnvironment } = require("../apps/desktop/runtime-network.cjs");
@@ -27,11 +30,28 @@ test("Sprint 8 evidence covers every strategy and redacts authentication materia
   assert.match(markdown, /INTERCEPT/);
 });
 
-test("Product Hunt override waits for real cards and applies idempotently", () => {
-  const upstream = `import { pickVoteCount } from './utils.js';\ncli({\n    func: async (page) => {\n        await page.goto('https://www.producthunt.com');\n        await page.waitForCapture(5);\n    },\n});\n`;
-  const patched = patchProductHuntHot(upstream);
-  assert.match(patched, /async function waitForProductCards/);
-  assert.match(patched, /await waitForProductCards\(page\)/);
-  assert.doesNotMatch(patched, /waitForCapture/);
-  assert.equal(patchProductHuntHot(patched), patched);
+test("Product Hunt ships a portable provided adapter and OpenCLI discovery patch is idempotent", async () => {
+  const adapter = await readFile(new URL("../plugins/product-hunt/opencli-adapters/producthunt/today.js", import.meta.url), "utf8");
+  assert.match(adapter, /site: "infolens-producthunt"/);
+  assert.match(adapter, /name: "today"/);
+  assert.match(adapter, /await waitForProductCards\(page\)/);
+  const upstream = `/**\n * Flat scan: read ts/js files directly in a plugin directory.\n */`;
+  const patched = patchOpenCliDiscovery(upstream);
+  assert.match(patched, /discoverPluginPaths/);
+  assert.equal(patchOpenCliDiscovery(patched), patched);
+});
+
+test("OpenCLI overrides reject an unpinned package version before patching source", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-opencli-version-"));
+  try {
+    const packageRoot = path.join(temporaryRoot, "resources", "opencli", "node_modules", "@jackwener", "opencli");
+    await mkdir(packageRoot, { recursive: true });
+    await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "@jackwener/opencli", version: "1.8.7" }));
+    await assert.rejects(
+      applyOpenCliOverrides(temporaryRoot),
+      /requires @jackwener\/opencli 1\.8\.6; found @jackwener\/opencli 1\.8\.7/,
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
 });

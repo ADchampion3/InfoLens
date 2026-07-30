@@ -5,6 +5,8 @@
 - One local-first Electron host for Hacker News, GitHub Trending, Zhihu Hot List, and Product Hunt.
 - Independent plugin workspaces, SQLite stores, refresh settings, read state, and failure boundaries.
 - Pinned OpenCLI 1.8.6 collection with `PUBLIC`, `COOKIE`, and `INTERCEPT` strategy support.
+- Plugin Contract V2 with portable Provided OpenCLI Adapters, immutable multi-version storage, plugin-specific Scope Locks, and collision-safe registration probes.
+- `infolens-plugin validate`, `dev`, `pack`, and `adapters list` tooling for Adapter authors.
 - Shared bounded task scheduling with coalescing, cancellation, and browser-work serialization.
 - Plugin installation, compatibility rejection, diagnostics, enable/disable, and confirmed removal.
 - System, light, and dark themes with restored selection and retained content after restart.

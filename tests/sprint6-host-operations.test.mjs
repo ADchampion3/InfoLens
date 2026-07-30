@@ -9,15 +9,17 @@ import { observeWorkspaceTheme, workspaceTheme } from "@infolens/plugin-sdk";
 
 const root = path.resolve(import.meta.dirname, "..");
 const openCliRoot = path.join(root, "tests/fixtures/sprint2/opencli");
+const providedOpenCliRoot = path.join(root, "tests/fixtures/sprint5/opencli");
 
 async function packageFixture(packageRoot, id, { valid = true } = {}) {
   await mkdir(path.join(packageRoot, "backend"), { recursive: true });
   await mkdir(path.join(packageRoot, "web"), { recursive: true });
   const manifest = {
     id, name: id === "daily-reader" ? "Daily Reader" : "Existing Plugin", version: "1.0.0",
-    contractVersion: "1", minHostVersion: "0.1.0",
+    contractVersion: "2", minHostVersion: "0.1.0",
     backend: { entry: "backend/index.mjs" }, ui: { entry: "web/index.html" },
-    openCliCommands: { read: { site: "fixture", command: ["fixture", "read"], strategy: "PUBLIC", access: "read", outputFormat: "json", openCliVersionRange: ">=0.1.0 <1.0.0" } },
+    openCliAdapters: {},
+    openCliCommands: { read: { adapter: "builtin", site: "fixture", command: ["fixture", "read"], strategy: "PUBLIC", access: "read", outputFormat: "json" } },
   };
   await writeFile(path.join(packageRoot, "manifest.json"), JSON.stringify(manifest, null, 2));
   await writeFile(path.join(packageRoot, "web/index.html"), "<!doctype html><title>Fixture</title>");
@@ -31,6 +33,23 @@ async function packageFixture(packageRoot, id, { valid = true } = {}) {
       return { deactivate() {} };
     }
   `);
+}
+
+async function packageProvidedFixture(packageRoot, id, adapterVersion) {
+  await packageFixture(packageRoot, id);
+  const manifestPath = path.join(packageRoot, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.openCliAdapters = {
+    productHunt: { id: "io.infolens.producthunt", version: adapterVersion, path: "opencli-adapters/producthunt" },
+  };
+  manifest.openCliCommands = {
+    today: { adapter: "productHunt", site: "infolens-producthunt", command: ["infolens-producthunt", "today"], strategy: "INTERCEPT", access: "read", outputFormat: "json" },
+  };
+  const adapterRoot = path.join(packageRoot, "opencli-adapters", "producthunt");
+  await mkdir(adapterRoot, { recursive: true });
+  await writeFile(path.join(adapterRoot, "opencli-plugin.json"), JSON.stringify({ name: "io.infolens.producthunt", version: adapterVersion, opencli: ">=1.8.6 <2.0.0" }));
+  await writeFile(path.join(adapterRoot, "today.js"), `export const version = "${adapterVersion}";`);
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 }
 
 function startRuntime(temporaryRoot, environment = {}) {
@@ -164,6 +183,29 @@ test("removal requests a Runtime restart before deleting a module that will not 
     const exit = new Promise((resolve) => running.child.once("exit", resolve));
     running.child.kill();
     await exit;
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("duplicate plugin ids are rejected before an existing Adapter Scope is changed", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-sprint6-duplicate-scope-"));
+  const firstRoot = path.join(temporaryRoot, "managed-plugins", "a-first");
+  const duplicateRoot = path.join(temporaryRoot, "managed-plugins", "z-duplicate");
+  await packageProvidedFixture(firstRoot, "shared-id", "1.0.0");
+  await packageProvidedFixture(duplicateRoot, "shared-id", "2.0.0");
+  const adapterRegistryRoot = path.join(temporaryRoot, "data", "opencli-adapters");
+  const running = await startRuntime(temporaryRoot, {
+    INFOLENS_BUNDLED_OPENCLI_ROOT: providedOpenCliRoot,
+    INFOLENS_ADAPTER_REGISTRY_ROOT: adapterRegistryRoot,
+  });
+  try {
+    assert.equal(running.info.plugins.filter(({ id }) => id === "shared-id").length, 1);
+    assert.equal(running.info.rejectedPlugins.find(({ package: packageName }) => packageName === "z-duplicate")?.code, "DUPLICATE_PLUGIN_ID");
+    const lock = JSON.parse(await readFile(path.join(adapterRegistryRoot, "scopes", "shared-id", "scope.lock.json"), "utf8"));
+    assert.equal(lock.adapters[0].version, "1.0.0");
+    await access(lock.adapters[0].path);
+  } finally {
+    await stopRuntime(running.child);
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
