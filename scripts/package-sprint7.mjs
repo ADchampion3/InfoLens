@@ -21,6 +21,7 @@ await rename(path.join(outputRoot, "electron.exe"), path.join(outputRoot, "Infol
 const copies = [
   ["apps/desktop/main.cjs", "apps/desktop/main.cjs"],
   ["apps/desktop/preload.cjs", "apps/desktop/preload.cjs"],
+  ["apps/desktop/runtime-network.cjs", "apps/desktop/runtime-network.cjs"],
   ["apps/desktop/dist", "apps/desktop/dist"],
   ["packages/plugin-runtime", "packages/plugin-runtime"],
   ["packages/plugin-sdk", "packages/plugin-sdk"],

@@ -1,10 +1,29 @@
 --- node_modules/@jackwener/opencli/clis/producthunt/hot.js
 +++ node_modules/@jackwener/opencli/clis/producthunt/hot.js
-@@ -21,7 +21,6 @@
+@@ -7,6 +7,19 @@
+ import { CliError } from '@jackwener/opencli/errors';
+ import { pickVoteCount } from './utils.js';
++
++async function waitForProductCards(page, timeoutMs = 30000) {
++    const deadline = Date.now() + timeoutMs;
++    while (Date.now() < deadline) {
++        const ready = await page.evaluate(`Boolean(document.querySelector('a[href^="/products/"]'))`).catch(() => false);
++        if (ready)
++            return;
++        await new Promise((resolve) => setTimeout(resolve, 500));
++    }
++    throw new CliError('NO_DATA', 'Product Hunt did not finish loading top posts', 'Complete any Product Hunt security verification in the connected browser, then retry');
++}
++
+ cli({
+     site: 'producthunt',
+     name: 'hot',
+@@ -21,7 +34,7 @@
          const count = Math.min(Number(args.limit) || 20, 50);
          await page.installInterceptor('producthunt.com');
          await page.goto('https://www.producthunt.com');
 -        await page.waitForCapture(5);
++        await waitForProductCards(page);
          const domItems = await page.evaluate(`
        (() => {
          const seen = new Set();

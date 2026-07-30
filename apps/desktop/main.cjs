@@ -1,8 +1,9 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, session } = require("electron");
 const { spawn } = require("node:child_process");
 const { access, cp, mkdir, readFile, readdir, rename, rm, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const readline = require("node:readline");
+const { runtimeProxyEnvironment } = require("./runtime-network.cjs");
 
 const projectRoot = path.resolve(__dirname, "../..");
 const bundledPluginsRoot = path.join(projectRoot, "plugins");
@@ -38,7 +39,10 @@ async function seedBundledPlugins() {
   }
 }
 
-function startRuntime() {
+async function startRuntime() {
+  let proxyRules = "DIRECT";
+  try { proxyRules = await session.defaultSession.resolveProxy("https://github.com"); } catch {}
+  const networkEnvironment = runtimeProxyEnvironment(process.env, proxyRules);
   return new Promise((resolve, reject) => {
     const runtimeEntry = path.join(projectRoot, "packages", "plugin-runtime", "src", "server.mjs");
     const { pluginsRoot, dataRoot, hostStatePath } = managedPaths();
@@ -46,6 +50,7 @@ function startRuntime() {
       cwd: projectRoot,
       env: {
         ...process.env,
+        ...networkEnvironment,
         ELECTRON_RUN_AS_NODE: "1",
         INFOLENS_PROJECT_ROOT: projectRoot,
         INFOLENS_PLUGINS_ROOT: pluginsRoot,
