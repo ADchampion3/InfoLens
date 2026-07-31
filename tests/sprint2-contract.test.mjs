@@ -86,6 +86,13 @@ test("Sprint 2 contracts execute through the actual Plugin Runtime", async () =>
   try {
     const activeById = new Map(message.plugins.map((plugin) => [plugin.id, plugin]));
     assert.equal(activeById.get("activation-failure").state, "failed");
+    const activationStatus = activeById.get("activation-failure").statusSnapshot.failure;
+    assert.equal(typeof activationStatus.logId, "string");
+    assert.equal(typeof activationStatus.operationId, "string");
+    const activationLines = (await readFile(path.join(dataRoot, "activation-failure", "logs", "plugin.log"), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+    const activationOperation = activationLines.filter((entry) => entry.operationId === activationStatus.operationId);
+    assert.deepEqual(activationOperation.map(({ message }) => message), ["plugin-activation-started", "activation-failed {\"message\":\"fixture activation exploded\"}"]);
+    assert.equal(activationOperation.at(-1).id, activationStatus.logId);
     assert.equal(activeById.get("valid-contract").state, "ready");
     assert.equal(activeById.get("route-failure").state, "running");
     assert.equal(activeById.get("cleanup-failure").state, "running");
@@ -126,7 +133,21 @@ test("Sprint 2 contracts execute through the actual Plugin Runtime", async () =>
 
     const taskFailure = await fetch(`${origin}/plugins/valid-contract/api/task-fail`);
     assert.equal(taskFailure.status, 500);
-    assert.equal((await fetch(`${origin}/plugins/valid-contract/health`).then((response) => response.json())).state, "failed");
+    const taskHealth = await fetch(`${origin}/plugins/valid-contract/health`).then((response) => response.json());
+    assert.equal(taskHealth.state, "failed");
+    assert.equal(typeof taskHealth.failure.logId, "string");
+    assert.equal(typeof taskHealth.failure.operationId, "string");
+    const taskLogRoot = path.join(dataRoot, "valid-contract", "logs");
+    const taskLines = (await Promise.all((await readdir(taskLogRoot)).filter((name) => name.startsWith("plugin.log")).map((name) => readFile(path.join(taskLogRoot, name), "utf8"))))
+      .flatMap((content) => content.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse))
+      .sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id));
+    const taskOperation = taskLines.filter((entry) => entry.operationId === taskHealth.failure.operationId);
+    assert.deepEqual(taskOperation.map(({ message }) => message).sort(), [
+      "task-queued {\"reason\":\"acceptance\",\"task\":\"explode\"}",
+      "task-started {\"reason\":\"acceptance\",\"task\":\"explode\"}",
+      "task-failed {\"message\":\"fixture task exploded\",\"task\":\"explode\"}",
+    ].sort());
+    assert.equal(taskOperation.find(({ message }) => message.startsWith("task-failed")).id, taskHealth.failure.logId);
     assert.equal((await fetch(`${origin}/plugins/cleanup-failure/api/ok`).then((response) => response.json())).healthy, true);
     const undeclared = await fetch(`${origin}/plugins/valid-contract/api/undeclared`);
     assert.equal(undeclared.status, 500);

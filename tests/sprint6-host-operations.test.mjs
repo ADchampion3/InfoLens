@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -138,6 +138,14 @@ test("host state, package lifecycle, diagnostics, and removal run through Runtim
     await assert.rejects(access(path.join(temporaryRoot, "data", "plugins", "daily-reader")));
     const afterRemoval = await request(origin, "/runtime/info");
     assert(!afterRemoval.body.plugins.some(({ id }) => id === "daily-reader"));
+    const runtimeLogRoot = path.join(temporaryRoot, "data", "plugins", "_runtime", "logs");
+    const runtimeEntries = (await Promise.all((await readdir(runtimeLogRoot)).filter((name) => name.startsWith("runtime.log")).map((name) => readFile(path.join(runtimeLogRoot, name), "utf8"))))
+      .flatMap((content) => content.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse));
+    for (const messages of [["plugin-install-started", "plugin-install-completed {\"pluginId\":\"daily-reader\"}"], ["plugin-removal-started {\"pluginId\":\"daily-reader\"}", "plugin-removal-completed {\"pluginId\":\"daily-reader\"}"]]) {
+      const completed = runtimeEntries.find((entry) => entry.message === messages[1]);
+      assert(completed?.operationId, `${messages[1]} did not have an operation ID`);
+      assert.deepEqual(runtimeEntries.filter((entry) => entry.operationId === completed.operationId).map(({ message }) => message), messages);
+    }
   } finally {
     await stopRuntime(running.child);
   }

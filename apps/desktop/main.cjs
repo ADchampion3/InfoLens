@@ -1,8 +1,10 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain, session } = require("electron");
 const { spawn } = require("node:child_process");
+const { randomUUID } = require("node:crypto");
 const { access, cp, mkdir, readFile, readdir, rename, rm, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const readline = require("node:readline");
+const { pathToFileURL } = require("node:url");
 const { runtimeProxyEnvironment } = require("./runtime-network.cjs");
 
 const projectRoot = path.resolve(__dirname, "../..");
@@ -14,6 +16,9 @@ let mainWindow;
 let quitting = false;
 let restarting = false;
 let suppressRestart = false;
+let logService;
+let serializeLogEntries;
+let logQueryCount = 0;
 
 function publishRuntimeStatus(status, details = {}) {
   if (!mainWindow?.isDestroyed()) mainWindow.webContents.send("runtime:status", { status, ...details });
@@ -24,7 +29,17 @@ function managedPaths() {
   const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? (app.isPackaged ? path.join(profileRoot, "plugins") : bundledPluginsRoot));
   const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(profileRoot, app.isPackaged ? "plugins-data" : "plugins"));
   const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(profileRoot, "host-state.json"));
-  return { pluginsRoot, dataRoot, hostStatePath };
+  const hostLogsRoot = path.resolve(process.env.INFOLENS_HOST_LOG_ROOT ?? path.join(profileRoot, "logs"));
+  return { pluginsRoot, dataRoot, hostStatePath, hostLogsRoot };
+}
+
+async function initializeLogService() {
+  const modulePath = path.join(projectRoot, "packages", "log-service", "src", "index.mjs");
+  const logModule = await import(pathToFileURL(modulePath).href);
+  const { createLogService } = logModule;
+  serializeLogEntries = logModule.serializeLogEntries;
+  logService = createLogService({ root: managedPaths().hostLogsRoot, sessionId: randomUUID() });
+  await logService.write({ level: "info", message: "Host Shell started" });
 }
 
 async function seedBundledPlugins() {
@@ -40,6 +55,7 @@ async function seedBundledPlugins() {
 }
 
 async function startRuntime() {
+  await logService?.write({ level: "info", message: "Plugin Runtime starting" });
   let proxyRules = "DIRECT";
   try { proxyRules = await session.defaultSession.resolveProxy("https://github.com"); } catch {}
   const networkEnvironment = runtimeProxyEnvironment(process.env, proxyRules);
@@ -71,6 +87,7 @@ async function startRuntime() {
         if (message.type === "runtime-ready") {
           clearTimeout(timeout);
           runtimeInfo = message;
+          logService?.write({ level: "info", message: "Plugin Runtime started" }).catch(console.error);
           resolve(message);
         }
       } catch {
@@ -79,10 +96,14 @@ async function startRuntime() {
     });
 
     runtimeProcess.stderr.on("data", (chunk) => console.error(`[runtime] ${chunk}`));
-    runtimeProcess.once("error", reject);
-    runtimeProcess.once("exit", () => {
+    runtimeProcess.once("error", (error) => {
+      logService?.write({ level: "error", message: `Plugin Runtime failed to start: ${error.message}` }).catch(console.error);
+      reject(error);
+    });
+    runtimeProcess.once("exit", (code, signal) => {
       runtimeProcess = undefined;
       runtimeInfo = undefined;
+      logService?.write({ level: quitting ? "info" : "warn", message: `Plugin Runtime exited code=${code ?? "none"} signal=${signal ?? "none"}` }).catch(console.error);
       if (!quitting && !suppressRestart) restartRuntime();
     });
   });
@@ -139,12 +160,16 @@ async function removeHostStatePlugin(filePath, id) {
 }
 
 async function removePlugin(id) {
+  const operationId = randomUUID();
   if (!runtimeInfo?.origin) throw new Error("Plugin services are unavailable");
   const record = runtimeInfo.plugins?.find((plugin) => plugin.id === id)
     ?? runtimeInfo.rejectedPlugins?.find((plugin) => plugin.id === id || plugin.package === id);
   if (!record?.packagePath) throw new Error(`Plugin '${id}' is not installed`);
-  const response = await fetch(`${runtimeInfo.origin}/runtime/plugins/${encodeURIComponent(id)}/remove`, { method: "DELETE" });
-  if (response.ok) return;
+  const response = await fetch(`${runtimeInfo.origin}/runtime/plugins/${encodeURIComponent(id)}/remove`, { method: "DELETE", headers: { "x-infolens-operation-id": operationId } });
+  if (response.ok) {
+    await logService?.write({ level: "info", message: `Plugin removed id=${id}`, operationId });
+    return;
+  }
   const failure = await response.json();
   if (failure.code !== "RUNTIME_RESTART_REQUIRED") throw new Error(failure.error ?? "Plugin removal failed");
 
@@ -162,6 +187,7 @@ async function removePlugin(id) {
   suppressRestart = false;
   const info = await startRuntime();
   publishRuntimeStatus("running", { info });
+  await logService?.write({ level: "info", message: `Plugin removed id=${record.id ?? id}`, operationId });
 }
 
 function createWindow() {
@@ -198,6 +224,71 @@ ipcMain.handle("runtime:get-info", async () => {
     return runtimeInfo;
   }
 });
+async function retainedLogSources() {
+  const { dataRoot } = managedPaths();
+  const sources = [{ source: "runtime", filePath: path.join(dataRoot, "_runtime", "logs", "runtime.log") }];
+  try {
+    for (const entry of await readdir(dataRoot, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name !== "_runtime") {
+        sources.push({ source: `plugin:${entry.name}`, filePath: path.join(dataRoot, entry.name, "logs", "plugin.log") });
+      }
+    }
+  } catch (error) { if (error?.code !== "ENOENT") throw error; }
+  return sources;
+}
+
+async function queryLogPage(request = {}) {
+  return logService.query({ ...request, sources: await retainedLogSources() });
+}
+
+async function collectLogEntries(filters = {}) {
+  const entries = [];
+  let cursor;
+  do {
+    const page = await queryLogPage({ filters, cursor, limit: 200 });
+    entries.push(...page.entries);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return entries;
+}
+
+ipcMain.handle("logs:query", async (_event, request = {}) => {
+  if (!logService) throw new Error("Host logs are not initialized");
+  logQueryCount += 1;
+  try {
+    return { ok: true, page: await queryLogPage(request) };
+  } catch (error) {
+    if (error?.code === "INVALID_LOG_CURSOR") return { ok: false, error: { code: error.code, message: error.message } };
+    throw error;
+  }
+});
+ipcMain.handle("logs:copy-entry", async (_event, id) => {
+  const entry = (await collectLogEntries()).find((candidate) => candidate.id === String(id));
+  if (!entry) throw new Error("Log entry is no longer retained");
+  clipboard.writeText(serializeLogEntries([entry]));
+  return { count: 1 };
+});
+ipcMain.handle("logs:copy-filtered", async (_event, filters = {}) => {
+  const entries = await collectLogEntries(filters);
+  clipboard.writeText(serializeLogEntries(entries));
+  return { count: entries.length };
+});
+ipcMain.handle("logs:export-filtered", async (_event, filters = {}) => {
+  const entries = await collectLogEntries(filters);
+  let filePath = process.env.INFOLENS_TEST_EXPORT_PATH ? path.resolve(process.env.INFOLENS_TEST_EXPORT_PATH) : undefined;
+  if (!filePath) {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Export filtered logs",
+      defaultPath: `infolens-logs-${new Date().toISOString().slice(0, 10)}.jsonl`,
+      filters: [{ name: "JSON Lines", extensions: ["jsonl"] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true, count: 0 };
+    filePath = result.filePath;
+  }
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, serializeLogEntries(entries), "utf8");
+  return { canceled: false, count: entries.length };
+});
 ipcMain.handle("plugin:select-folder", async () => {
   if (process.env.INFOLENS_TEST_CONTROL === "1" && process.env.INFOLENS_TEST_INSTALL_PATH) {
     return path.resolve(process.env.INFOLENS_TEST_INSTALL_PATH);
@@ -216,8 +307,17 @@ ipcMain.handle("test:terminate-runtime", () => {
   if (!runtimeProcess) throw new Error("Plugin Runtime is not running");
   runtimeProcess.kill();
 });
+ipcMain.handle("test:write-log", async (_event, message) => {
+  if (process.env.INFOLENS_TEST_CONTROL !== "1") throw new Error("Test control is disabled");
+  return logService.write({ level: "info", message: String(message) });
+});
+ipcMain.handle("test:log-query-count", () => {
+  if (process.env.INFOLENS_TEST_CONTROL !== "1") throw new Error("Test control is disabled");
+  return logQueryCount;
+});
 
 app.whenReady().then(async () => {
+  await initializeLogService();
   await seedBundledPlugins();
   createWindow();
   try { await startRuntime(); publishRuntimeStatus("running", { info: runtimeInfo }); }

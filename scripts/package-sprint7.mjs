@@ -24,6 +24,7 @@ const copies = [
   ["apps/desktop/runtime-network.cjs", "apps/desktop/runtime-network.cjs"],
   ["apps/desktop/dist", "apps/desktop/dist"],
   ["packages/plugin-runtime", "packages/plugin-runtime"],
+  ["packages/log-service", "packages/log-service"],
   ["packages/plugin-sdk", "packages/plugin-sdk"],
   ["plugins", "plugins"],
   ["resources/opencli", "resources/opencli"],

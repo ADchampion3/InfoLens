@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -42,6 +43,14 @@ function adapterScopeOptions(registryRoot) {
   };
 }
 const contractOptions = adapterScopeOptions(adapterRegistryRoot);
+const runtimeSessionId = randomUUID();
+const runtimeLogger = await createPluginLogger(path.join(dataRoot, "_runtime"), {
+  source: "runtime",
+  sessionId: runtimeSessionId,
+  fileName: "runtime.log",
+  maxBytes: Number(process.env.INFOLENS_PLUGIN_LOG_MAX_BYTES) || undefined,
+  maxFiles: Number(process.env.INFOLENS_PLUGIN_LOG_MAX_FILES) || undefined,
+});
 
 const activePlugins = [];
 const compatiblePlugins = [];
@@ -121,9 +130,12 @@ function resolveDataPath(dataDir, relativePath) {
 
 async function activatePlugin(validated, packageRoot) {
   const { manifest } = validated;
+  const activationOperationId = randomUUID();
   const dataDir = path.join(dataRoot, manifest.id);
   await mkdir(dataDir, { recursive: true });
   const logger = await createPluginLogger(dataDir, {
+    pluginId: manifest.id,
+    sessionId: runtimeSessionId,
     maxBytes: Number(process.env.INFOLENS_PLUGIN_LOG_MAX_BYTES) || undefined,
     maxFiles: Number(process.env.INFOLENS_PLUGIN_LOG_MAX_FILES) || undefined,
   });
@@ -136,18 +148,25 @@ async function activatePlugin(validated, packageRoot) {
     logger,
     status: { state: "starting", updatedAt: new Date().toISOString() },
   };
-  const taskManager = new PluginTaskManager(manifest.id, taskQueue, (type, details) => {
+  const taskManager = new PluginTaskManager(manifest.id, taskQueue, async (type, details) => {
     const safeDetails = details.error ? { ...details, ...errorDetails(details.error), error: undefined } : details;
     if (type === "task-queued") setPluginStatus(plugin, "queued");
     if (type === "task-started") setPluginStatus(plugin, "refreshing");
-    if (type === "task-completed" && plugin.status.state === "refreshing") setPluginStatus(plugin, "running");
-    if (type === "task-failed") setPluginStatus(plugin, "failed", { failure: errorDetails(details.error) });
     if (type === "task-cancelled") setPluginStatus(plugin, "cancelled", { outcome: details.outcome });
-    emitStatus(type, manifest.id, safeDetails);
-    logger[type === "task-failed" ? "error" : "info"](type, safeDetails);
+    const entry = await logger[type === "task-failed" ? "error" : "info"](type, safeDetails);
+    if (type === "task-completed" && plugin.status.state === "refreshing") setPluginStatus(plugin, "running");
+    if (type === "task-failed") {
+      const failure = { ...errorDetails(details.error), logId: entry.id, operationId: entry.operationId, timestamp: entry.timestamp };
+      if (details.error && typeof details.error === "object") Object.assign(details.error, failure);
+      setPluginStatus(plugin, "failed", { failure });
+      emitStatus(type, manifest.id, { ...safeDetails, logId: entry.id });
+      return;
+    }
+    emitStatus(type, manifest.id, { ...safeDetails, logId: entry.id });
   });
   plugin.taskManager = taskManager;
   activePlugins.push(plugin);
+  await logger.info("plugin-activation-started", { operationId: activationOperationId });
   emitStatus("activating", manifest.id);
 
   const context = {
@@ -194,14 +213,16 @@ async function activatePlugin(validated, packageRoot) {
     const initialHealth = plugin.lifecycle.health;
     if (initialHealth) setPluginStatus(plugin, initialHealth.state, initialHealth);
     else if (plugin.status.state === "starting") setPluginStatus(plugin, "running");
-    await logger.info("plugin-activated", { version: manifest.version });
+    await logger.info("plugin-activated", { operationId: activationOperationId, version: manifest.version });
     emitStatus("activated", manifest.id, { state: plugin.status.state });
   } catch (error) {
     await taskManager.stop();
     plugin.routes.clear();
-    setPluginStatus(plugin, "failed", { failure: errorDetails(error) });
-    await logger.error("activation-failed", errorDetails(error));
-    emitStatus("activation-failed", manifest.id, errorDetails(error));
+    const failure = errorDetails(error);
+    const entry = await logger.error("activation-failed", { ...failure, operationId: activationOperationId });
+    const correlatedFailure = { ...failure, logId: entry.id, operationId: entry.operationId, timestamp: entry.timestamp };
+    setPluginStatus(plugin, "failed", { failure: correlatedFailure });
+    emitStatus("activation-failed", manifest.id, correlatedFailure);
   }
 }
 
@@ -255,6 +276,7 @@ async function discoverPlugins() {
     } catch (error) {
       const rejection = await rejectedDetails(packageRoot, entry.name, error);
       rejectedPlugins.push(rejection);
+      await runtimeLogger.warn("package-rejected", rejection);
       emitStatus("package-rejected", entry.name, rejection);
     }
   }
@@ -529,12 +551,16 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (url.pathname === "/runtime/plugins/install" && request.method === "POST") {
+    const operationId = request.headers["x-infolens-operation-id"] || randomUUID();
+    await runtimeLogger.info("plugin-install-started", { operationId });
     try {
       const id = await installPlugin((await readJsonBody(request)).sourcePath);
-      json(response, 201, { ok: true, pluginId: id });
+      const entry = await runtimeLogger.info("plugin-install-completed", { operationId, pluginId: id });
+      json(response, 201, { ok: true, pluginId: id, logId: entry.id, operationId });
     } catch (error) {
       const failure = errorDetails(error);
-      json(response, failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : 400, { error: failure.message, code: failure.code });
+      const entry = await runtimeLogger.error("plugin-install-failed", { ...failure, operationId });
+      json(response, failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : 400, { error: failure.message, code: failure.code, logId: entry.id, operationId });
     }
     return;
   }
@@ -552,8 +578,18 @@ const server = createServer(async (request, response) => {
   }
   const removalMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)\/remove$/);
   if (removalMatch && request.method === "DELETE") {
-    try { await removePlugin(decodeURIComponent(removalMatch[1])); json(response, 200, { ok: true, pluginId: removalMatch[1] }); }
-    catch (error) { const failure = errorDetails(error); json(response, failure.code === "RUNTIME_RESTART_REQUIRED" ? 503 : 404, { error: failure.message, code: failure.code }); }
+    const pluginId = decodeURIComponent(removalMatch[1]);
+    const operationId = request.headers["x-infolens-operation-id"] || randomUUID();
+    await runtimeLogger.info("plugin-removal-started", { operationId, pluginId });
+    try {
+      await removePlugin(pluginId);
+      const entry = await runtimeLogger.info("plugin-removal-completed", { operationId, pluginId });
+      json(response, 200, { ok: true, pluginId, logId: entry.id, operationId });
+    } catch (error) {
+      const failure = errorDetails(error);
+      const entry = await runtimeLogger.error("plugin-removal-failed", { ...failure, operationId, pluginId });
+      json(response, failure.code === "RUNTIME_RESTART_REQUIRED" ? 503 : 404, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+    }
     return;
   }
   const deactivateMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)$/);
@@ -621,10 +657,18 @@ const server = createServer(async (request, response) => {
     json(response, 200, body);
   } catch (error) {
     const failure = errorDetails(error);
-    setPluginStatus(plugin, "failed", { failure });
-    await plugin.logger.error("route-failed", { route: tail, ...failure });
-    emitStatus("route-failed", pluginId, { route: tail, ...failure });
-    json(response, 500, { error: failure.message, code: failure.code });
+    if (error?.logId && error?.operationId) {
+      const correlatedFailure = { ...failure, logId: error.logId, operationId: error.operationId, timestamp: error.timestamp };
+      setPluginStatus(plugin, "failed", { failure: correlatedFailure });
+      json(response, 500, { error: failure.message, code: failure.code, logId: error.logId, operationId: error.operationId });
+      return;
+    }
+    const operationId = randomUUID();
+    const entry = await plugin.logger.error("route-failed", { route: tail, ...failure, operationId });
+    const correlatedFailure = { ...failure, logId: entry.id, operationId, timestamp: entry.timestamp };
+    setPluginStatus(plugin, "failed", { failure: correlatedFailure });
+    emitStatus("route-failed", pluginId, { route: tail, ...correlatedFailure });
+    json(response, 500, { error: failure.message, code: failure.code, logId: entry.id, operationId });
   }
 });
 
@@ -633,6 +677,7 @@ server.listen(port, "127.0.0.1", () => {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Runtime did not bind a TCP port");
   const origin = `http://127.0.0.1:${address.port}`;
+  runtimeLogger.info("runtime-started", { origin }).catch((error) => process.stderr.write(`[runtime-log] ${error.message}\n`));
   process.stdout.write(`${JSON.stringify({
     type: "runtime-ready",
     origin,
@@ -650,6 +695,8 @@ async function shutdown() {
   taskQueue.stop();
   await new Promise((resolve) => server.close(resolve));
   for (const plugin of [...activePlugins]) await deactivatePlugin(plugin);
+  await runtimeLogger.info("runtime-stopped");
+  await runtimeLogger.flush();
   process.exit(0);
 }
 

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export class TaskCancelledError extends Error {
   constructor(message, outcome = "uncertain") {
     super(message);
@@ -166,21 +168,26 @@ export class PluginTaskManager {
     if (!handler) return Promise.reject(new Error(`Task '${name}' is not registered`));
     const key = `${name}:${options.coalesceKey ?? "default"}`;
     if (this.pending.has(key)) {
-      this.onEvent("task-coalesced", { task: name, reason: options.reason ?? "manual" });
-      return this.pending.get(key);
+      const pending = this.pending.get(key);
+      void this.onEvent("task-coalesced", { task: name, reason: options.reason ?? "manual", operationId: pending.operationId });
+      return pending.promise;
     }
 
     const reason = options.reason ?? "manual";
-    this.onEvent("task-queued", { task: name, reason });
-    const promise = this.queue.submitTask({ pluginId: this.pluginId, run: async (signal) => {
-      this.onEvent("task-started", { task: name, reason });
+    const operationId = options.operationId ?? randomUUID();
+    void this.onEvent("task-queued", { task: name, reason, operationId });
+    const execution = this.queue.submitTask({ pluginId: this.pluginId, run: async (signal) => {
+      await this.onEvent("task-started", { task: name, reason, operationId });
       return handler(input, { signal, reason });
     } });
-    this.pending.set(key, promise);
-    promise.then(
-      () => this.onEvent("task-completed", { task: name }),
-      (error) => this.onEvent(error?.code === "TASK_CANCELLED" ? "task-cancelled" : "task-failed", { task: name, error, outcome: error?.outcome }),
+    const promise = execution.then(
+      async (result) => { await this.onEvent("task-completed", { task: name, operationId }); return result; },
+      async (error) => {
+        await this.onEvent(error?.code === "TASK_CANCELLED" ? "task-cancelled" : "task-failed", { task: name, error, outcome: error?.outcome, operationId });
+        throw error;
+      },
     ).finally(() => this.pending.delete(key));
+    this.pending.set(key, { promise, operationId });
     return promise;
   }
 
@@ -199,6 +206,6 @@ export class PluginTaskManager {
     for (const timer of this.schedules) clearInterval(timer);
     this.schedules.clear();
     this.queue.cancelPlugin(this.pluginId);
-    await Promise.allSettled(this.pending.values());
+    await Promise.allSettled([...this.pending.values()].map(({ promise }) => promise));
   }
 }
