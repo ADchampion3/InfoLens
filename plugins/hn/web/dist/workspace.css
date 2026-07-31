@@ -1,0 +1,15 @@
+/* Hallmark · macrostructure: Workbench · workspace: Hacker News · theme: Cobalt/orange · tone: technical · contrast: pass (40-41) · states: default · hover · focus · active · disabled · loading · error · success */
+@import url("/runtime/plugin-sdk-workspace.css");
+.story-list { max-width: 72rem; margin: var(--space-md) auto 0; padding: 0 max(var(--space-md), env(safe-area-inset-right)) max(var(--space-2xl), env(safe-area-inset-bottom)) max(var(--space-md), env(safe-area-inset-left)); border-block-start: var(--rule-thin) solid var(--color-rule-strong); list-style: none; }
+.story-row { display: grid; grid-template-columns: 2rem minmax(0, 1fr); gap: var(--space-sm); min-height: 5rem; padding: var(--space-sm) var(--space-xs); border-block-end: var(--rule-thin) solid var(--color-rule); }
+.rank, .metadata, .domain, .comments { color: var(--color-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.rank, .comments { font-family: var(--font-mono); }
+.rank { padding-block-start: var(--space-3xs); text-align: end; }
+.story-content { min-width: 0; }
+.story-title { display: inline; min-height: 2.75rem; padding: 0; border: 0; background: var(--color-transparent); color: var(--color-ink); font-family: var(--font-display); font-size: var(--text-base); font-weight: 700; line-height: 1.45; text-align: start; cursor: pointer; }
+.domain { display: block; margin-block-start: var(--space-2xs); overflow-wrap: anywhere; }
+.metadata { margin-block-start: var(--space-xs); line-height: 1.45; }
+.comments { grid-column: 2; justify-self: start; min-height: 2.25rem; padding: 0 var(--space-xs); border: var(--rule-thin) solid var(--color-transparent); border-radius: var(--radius-xs); background: var(--color-transparent); cursor: pointer; white-space: nowrap; }
+.story-row.is-read .story-title, .story-row.is-read .metadata { color: var(--color-muted); }
+@media (hover: hover) and (pointer: fine) { .story-title:hover { color: var(--color-accent); text-decoration: underline; text-decoration-thickness: var(--rule-thin); text-underline-offset: var(--space-2xs); } .comments:hover { border-color: var(--color-rule); background: var(--color-surface-raised); color: var(--color-ink); } }
+@media (min-width: 40rem) { .story-list { padding-inline: var(--space-lg); } .story-row { grid-template-columns: 2.25rem minmax(0, 1fr) 7rem; gap: var(--space-md); } .domain { display: inline; margin-block-start: 0; margin-inline-start: var(--space-xs); } .comments { grid-column: auto; justify-self: end; } }

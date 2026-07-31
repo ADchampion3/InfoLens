@@ -1,0 +1,10 @@
+{
+  "scannedAt": "2026-07-31",
+  "framework": "vanilla HTML/CSS/JavaScript plugin workspaces",
+  "fontStack": "Windows system fonts; Bahnschrift display, Segoe UI Variable Text body, Cascadia Code numeric metadata",
+  "palette": "semantic OKLCH tokens with four plugin-specific anchors",
+  "motion": "motion-cut; transform and opacity state motion only",
+  "spacing": "4-point semantic scale",
+  "themeContract": "@infolens/plugin-sdk workspaceTheme and observeWorkspaceTheme",
+  "targets": ["github-trending", "hn", "product-hunt", "zhihu-hot"]
+}

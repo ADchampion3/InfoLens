@@ -18,6 +18,9 @@ const projectRoot = process.env.INFOLENS_PROJECT_ROOT
 const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? path.join(projectRoot, "plugins"));
 const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(projectRoot, ".infolens-data", "plugins"));
 const openCliRoot = path.resolve(process.env.INFOLENS_BUNDLED_OPENCLI_ROOT ?? path.join(projectRoot, "resources", "opencli"));
+const pluginSdkBrowserEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "index.js");
+const pluginSdkTokenEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace-tokens.css");
+const pluginSdkWorkspaceStyles = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace.css");
 const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
 const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? path.join(path.dirname(dataRoot), "opencli-adapters"));
 const openCliRuntime = await loadBundledOpenCli(openCliRoot);
@@ -467,6 +470,33 @@ const server = createServer(async (request, response) => {
   response.setHeader("access-control-allow-headers", "content-type");
   response.setHeader("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
   if (request.method === "OPTIONS") { response.writeHead(204); response.end(); return; }
+  if (url.pathname === "/runtime/plugin-sdk.js" && request.method === "GET") {
+    try {
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
+      response.end(await readFile(pluginSdkBrowserEntry));
+    } catch {
+      json(response, 404, { error: "Plugin SDK browser entry not found" });
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/plugin-sdk-tokens.css" && request.method === "GET") {
+    try {
+      response.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "no-store" });
+      response.end(await readFile(pluginSdkTokenEntry));
+    } catch {
+      json(response, 404, { error: "Plugin SDK workspace tokens not found" });
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/plugin-sdk-workspace.css" && request.method === "GET") {
+    try {
+      response.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "no-store" });
+      response.end(await readFile(pluginSdkWorkspaceStyles));
+    } catch {
+      json(response, 404, { error: "Plugin SDK workspace styles not found" });
+    }
+    return;
+  }
   if (url.pathname === "/runtime/health") {
     json(response, 200, { state: "running", pluginCount: activePlugins.length, rejectedCount: rejectedPlugins.length });
     return;

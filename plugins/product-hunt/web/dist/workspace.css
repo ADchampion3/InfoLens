@@ -1,0 +1,12 @@
+/* Hallmark · macrostructure: Workbench · workspace: Product Hunt · theme: Cobalt/coral · tone: technical · contrast: pass (40-41) · states: default · hover · focus · active · disabled · loading · error · success */
+@import url("/runtime/plugin-sdk-workspace.css");
+.product-list, main > ol { max-width: 68rem; margin: var(--space-md) auto 0; padding: 0 max(var(--space-md), env(safe-area-inset-right)) max(var(--space-2xl), env(safe-area-inset-bottom)) max(var(--space-md), env(safe-area-inset-left)); border-block-start: var(--rule-thin) solid var(--color-rule-strong); list-style: none; }
+.product { display: grid; grid-template-columns: 2rem minmax(0, 1fr); align-items: center; gap: var(--space-sm); min-height: 5.25rem; padding: var(--space-sm) var(--space-xs); border-block-end: var(--rule-thin) solid var(--color-rule); }
+.rank { color: var(--color-muted); font-family: var(--font-mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; text-align: end; }
+.product-link { display: grid; min-width: 0; gap: var(--space-2xs); padding: var(--space-xs) 0; border: 0; background: var(--color-transparent); text-align: start; cursor: pointer; }
+.product-link strong { overflow-wrap: anywhere; color: var(--color-ink); font-family: var(--font-display); font-size: var(--text-base); }
+.product-link span { color: var(--color-muted); font-family: var(--font-body); font-size: var(--text-xs); }
+.votes { grid-column: 2; justify-self: start; padding: var(--space-2xs) var(--space-xs); border: var(--rule-thin) solid color-mix(in oklch, var(--color-accent) 45%, var(--color-rule)); border-radius: var(--radius-xs); background: var(--color-accent-soft); color: var(--color-accent); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 700; font-variant-numeric: tabular-nums; }
+.product.is-read .product-link strong { color: var(--color-muted); }
+@media (hover: hover) and (pointer: fine) { .product:hover { background: var(--color-surface-raised); } .product-link:hover strong { color: var(--color-accent); text-decoration: underline; text-underline-offset: var(--space-2xs); } }
+@media (min-width: 40rem) { .product-list, main > ol { padding-inline: var(--space-lg); } .product { grid-template-columns: 2rem minmax(0, 1fr) 6rem; gap: var(--space-md); } .votes { grid-column: auto; justify-self: end; } }

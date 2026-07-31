@@ -1,4 +1,6 @@
-const infolensThemeParams=new URLSearchParams(location.search);const applyInfolensTheme=(theme)=>document.documentElement.dataset.theme=theme==="dark"?"dark":"light";applyInfolensTheme(infolensThemeParams.get("theme"));addEventListener("message",(event)=>{if(event.data?.type==="infolens:theme")applyInfolensTheme(event.data.theme)});
+import { observeWorkspaceTheme, workspaceTheme } from "/runtime/plugin-sdk.js";
+const applyInfolensTheme=(theme)=>document.documentElement.dataset.theme=theme;applyInfolensTheme(workspaceTheme());observeWorkspaceTheme(applyInfolensTheme);
+document.querySelectorAll("svg").forEach((icon)=>icon.setAttribute("aria-hidden","true"));
 const api = new URLSearchParams(location.search).get("apiBaseUrl");
 const $ = (selector) => document.querySelector(selector);
 let data;
@@ -21,8 +23,8 @@ function render(next) {
   $("#refresh").disabled=next.settings?.policy==="disabled";
 }
 async function load(){ if(!api) throw new Error("缺少插件 API 配置"); render(await request("summary")); }
-async function refresh(){ const button=$("#refresh"); button.disabled=true; button.classList.add("spinning"); $("#refresh-time").textContent="正在刷新..."; try{await request("refresh",{method:"POST"});render(await request("summary"));}catch(error){const latest=await request("summary").catch(()=>data);render({...latest,lastError:latest?.lastError??error.message});}finally{button.classList.remove("spinning"); button.disabled=data?.settings?.policy==="disabled";} }
-function showSettings(show){ $("#sheet").hidden=!show; $("#scrim").hidden=!show; if(show){ const settings=data.settings; document.querySelector(`[name=policy][value=${settings.policy}]`).checked=true; $("#interval").value=settings.intervalMinutes; $("#interval").disabled=settings.policy!=="fixed"; $("#sheet input:checked").focus(); } else $("#settings").focus(); }
+async function refresh(){ const button=$("#refresh"); button.disabled=true; button.classList.add("spinning"); $("#refresh-time").textContent="正在刷新..."; try{const refreshed=await request("refresh",{method:"POST"});render(await request("summary").catch(()=>refreshed));}catch(error){const latest=await request("summary").catch(()=>data);render({...latest,lastError:latest?.lastError??error.message});}finally{button.classList.remove("spinning"); button.disabled=data?.settings?.policy==="disabled";} }
+function showSettings(show){ $(".workspace").inert=show; $("#sheet").hidden=!show; $("#scrim").hidden=!show; if(show){ const settings=data.settings; document.querySelector(`[name=policy][value=${settings.policy}]`).checked=true; $("#interval").value=settings.intervalMinutes; $("#interval").disabled=settings.policy!=="fixed"; $("#sheet input:checked").focus(); } else $("#settings").focus(); }
 $("#refresh").onclick=$("#retry").onclick=$("#empty-refresh").onclick=refresh; $("#settings").onclick=()=>showSettings(true); $("#close-settings").onclick=$("#cancel-settings").onclick=$("#scrim").onclick=()=>showSettings(false);
 document.querySelectorAll("[name=policy]").forEach((radio)=>radio.onchange=()=>$("#interval").disabled=radio.value!=="fixed");
 $("#settings-form").onsubmit=async(event)=>{event.preventDefault();const form=new FormData(event.currentTarget);await request(`settings?policy=${form.get("policy")}&intervalMinutes=${form.get("intervalMinutes")}`,{method:"POST"});data=await request("summary");render(data);showSettings(false);};
