@@ -58,3 +58,10 @@ test("GitHub workspace renders README without a nested srcdoc frame", async () =
   assert.match(script, /new DOMParser\(\)/);
   assert.match(script, /content\.hidden = false/);
 });
+
+test("GitHub workspace opens README for every current repository row", async () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const script = await readFile(path.join(root, "plugins/github-trending/web/dist/workspace.js"), "utf8");
+  assert.match(script, /repos\.map\(\(repo\) => row\(repo\)\)/);
+  assert.doesNotMatch(script, /repos\.map\(row\)/);
+});

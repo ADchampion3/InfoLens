@@ -60,7 +60,7 @@ function row(repo, readOnly = false) {
 function render(next) {
   data = next;
   const repos = next.repositories ?? [];
-  $("#repo-list").replaceChildren(...repos.map(row));
+  $("#repo-list").replaceChildren(...repos.map((repo) => row(repo)));
   $("#repo-list").hidden = !repos.length;
   $("#empty").hidden = !!repos.length;
   $("#warning").hidden = !next.lastError;
