@@ -1,5 +1,6 @@
 /* Hallmark · macrostructure: Workbench · workspace: Zhihu Hot · theme: Cobalt/blue · tone: technical · contrast: pass (40-41) · states: default · hover · focus · active · disabled · loading · error · success */
 @import url("/runtime/plugin-sdk-workspace.css");
+@import url("/runtime/plugin-workspace-history.css");
 .question-list { max-width: 68rem; margin: var(--space-md) auto 0; padding: 0 max(var(--space-md), env(safe-area-inset-right)) max(var(--space-2xl), env(safe-area-inset-bottom)) max(var(--space-md), env(safe-area-inset-left)); border-block-start: var(--rule-thin) solid var(--color-rule-strong); list-style: none; }
 .question-row { display: grid; grid-template-columns: 2rem minmax(0, 1fr); gap: var(--space-sm); min-height: 6rem; padding: var(--space-md) var(--space-xs); border-block-end: var(--rule-thin) solid var(--color-rule); cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out); }
 .question-row > div { min-width: 0; }

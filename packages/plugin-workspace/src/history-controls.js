@@ -3,7 +3,6 @@ const historyStates = new WeakMap();
 const copy = {
   "zh-CN": {
     history: "\u5386\u53f2",
-    export: "\u5bfc\u51fa",
     calendar: "\u5386\u53f2\u65e5\u5386",
     loading: "\u6b63\u5728\u8bfb\u53d6\u5feb\u7167...",
     empty: "\u5f53\u524d\u4fdd\u7559\u671f\u5185\u6ca1\u6709\u53ef\u7528\u5feb\u7167",
@@ -15,17 +14,12 @@ const copy = {
     older: "\u8f83\u65e9\u7684\u5feb\u7167",
     previousMonth: "\u4e0a\u4e2a\u6708",
     nextMonth: "\u4e0b\u4e2a\u6708",
-    exportWarning: "\u5bfc\u51fa\u6587\u4ef6\u53ef\u80fd\u5305\u542b\u79c1\u6709\u6765\u6e90\u5185\u5bb9\u3002\u7ee7\u7eed\u4e0b\u8f7d\uff1f",
-    continueDownload: "\u7ee7\u7eed\u4e0b\u8f7d",
-    cancel: "\u53d6\u6d88",
-    exportFailed: (message) => `\u5bfc\u51fa\u5931\u8d25\uff1a${message}`,
     historyFailed: (message) => `\u65e0\u6cd5\u8bfb\u53d6\u5386\u53f2\uff1a${message}`,
     ok: "\u77e5\u9053\u4e86",
     close: "\u5173\u95ed",
   },
   en: {
     history: "History",
-    export: "Export",
     calendar: "History calendar",
     loading: "Loading snapshots...",
     empty: "No snapshots are available in the current retention period",
@@ -37,10 +31,6 @@ const copy = {
     older: "Older snapshot",
     previousMonth: "Previous month",
     nextMonth: "Next month",
-    exportWarning: "The export may contain private source content. Continue?",
-    continueDownload: "Continue",
-    cancel: "Cancel",
-    exportFailed: (message) => `Export failed: ${message}`,
     historyFailed: (message) => `Unable to load history: ${message}`,
     ok: "OK",
     close: "Close",
@@ -305,24 +295,6 @@ function clearSelection(state, notify) {
   if (notify) state.config.onCurrent();
 }
 
-async function triggerDownload(state) {
-  const anchor = state.document.createElement("a");
-  try {
-    const response = await fetch(new URL("export", state.config.api));
-    if (!response.ok) throw new Error(`Plugin API returned ${response.status}`);
-    const filename = /filename="?([^";]+)"?/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? `history-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.href = URL.createObjectURL(await response.blob());
-    anchor.download = filename;
-    state.document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(anchor.href);
-  } catch (error) {
-    const strings = labels(state);
-    await confirmQuestion(strings.exportFailed(error.message), strings.ok, strings.close);
-  }
-}
-
 export function installHistoryControls({ api, actions, onSnapshot, onCurrent, locale = "zh-CN" }) {
   if (!api || !actions || typeof onSnapshot !== "function" || typeof onCurrent !== "function") return undefined;
   const document = actions.ownerDocument;
@@ -344,22 +316,8 @@ export function installHistoryControls({ api, actions, onSnapshot, onCurrent, lo
     history.setAttribute("aria-label", strings.calendar);
     history.setAttribute("aria-expanded", "false");
     history.innerHTML = icon("M8 2v3m8-3v3M3 9h18M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2Zm3 9h.01M12 13h.01M16 13h.01M8 17h.01M12 17h.01");
-    const download = document.createElement("button");
-    download.type = "button";
-    download.dataset.historyControl = "export";
-    download.className = className;
-    download.title = strings.export;
-    download.setAttribute("aria-label", strings.export);
-    download.innerHTML = icon("M12 3v12m-4-4 4 4 4-4M5 21h14");
     history.onclick = () => openCalendar(state);
-    download.onclick = async () => {
-      if (!await confirmQuestion(strings.exportWarning, strings.continueDownload, strings.cancel)) return;
-      download.disabled = true;
-      download.setAttribute("aria-busy", "true");
-      try { await triggerDownload(state); }
-      finally { download.disabled = false; download.removeAttribute("aria-busy"); }
-    };
-    actions.prepend(history, download);
+    actions.prepend(history);
   }
   state.trigger = history;
   syncHistoryBar(state);

@@ -20,7 +20,8 @@ const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? path.join(
 const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(projectRoot, ".infolens-data", "plugins"));
 const openCliRoot = path.resolve(process.env.INFOLENS_BUNDLED_OPENCLI_ROOT ?? path.join(projectRoot, "resources", "opencli"));
 const pluginSdkBrowserEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "index.js");
-const pluginSdkHistoryEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace-history.js");
+const pluginWorkspaceHistoryEntry = path.join(projectRoot, "packages", "plugin-workspace", "src", "history-controls.js");
+const pluginWorkspaceHistoryStyles = path.join(projectRoot, "packages", "plugin-workspace", "src", "history.css");
 const pluginSdkTokenEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace-tokens.css");
 const pluginSdkWorkspaceStyles = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace.css");
 const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
@@ -86,6 +87,7 @@ function emitStatus(type, pluginId, details = {}) {
 }
 
 function json(response, status, body) {
+  if (response.destroyed || response.writableEnded) return;
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
 }
@@ -94,21 +96,125 @@ function isDownloadableResponse(value) {
   return value?.type === "infolens:download";
 }
 
-async function download(response, value) {
-  if (typeof value.filename !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(value.filename)) throw new Error("Plugin returned an unsafe download filename");
+const DOWNLOAD_FORMATS = Object.freeze({
+  json: { extension: ".json", contentType: "application/json; charset=utf-8" },
+  csv: { extension: ".csv", contentType: "text/csv; charset=utf-8" },
+  markdown: { extension: ".md", contentType: "text/markdown; charset=utf-8" },
+  text: { extension: ".txt", contentType: "text/plain; charset=utf-8" },
+});
+const MAX_FILENAME_BASE_LENGTH = 120;
+
+function isReservedFilename(value) {
+  const stem = value.split(".", 1)[0].toUpperCase();
+  return new Set(["CON", "PRN", "AUX", "NUL", ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`), ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`)]).has(stem);
+}
+
+function downloadFilename(filenameBase, format) {
+  const details = DOWNLOAD_FORMATS[format];
+  if (!details) throw new Error(`Plugin returned unsupported download format '${String(format)}'`);
+  if (typeof filenameBase !== "string" || !filenameBase.trim()) throw new Error("Plugin returned an empty download filename base");
+  const normalized = filenameBase.normalize("NFC");
+  if ([...normalized].length > MAX_FILENAME_BASE_LENGTH) throw new Error("Plugin returned an excessively long download filename base");
+  if (normalized !== normalized.trim() || normalized === "." || normalized === "..") throw new Error("Plugin returned an unsafe download filename base");
+  if (/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(normalized)) throw new Error("Plugin returned an unsafe download filename base");
+  if (/[\\/:*?"<>|]/u.test(normalized) || /[. ]$/u.test(normalized) || isReservedFilename(normalized)) throw new Error("Plugin returned an unsafe download filename base");
+
+  const fullName = `${normalized}${details.extension}`;
+  let asciiBase = normalized.normalize("NFKD").replace(/[\u0300-\u036f]/gu, "").replace(/[^A-Za-z0-9._-]+/gu, "-").replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/gu, "");
+  if (!asciiBase || isReservedFilename(asciiBase)) asciiBase = "download";
+  const ascii = `${asciiBase}${details.extension}`;
+  const encoded = encodeURIComponent(fullName).replace(/[!'()*]/gu, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return { ...details, ascii, utf8: encoded };
+}
+
+function abortError() {
+  const error = new Error("Plugin download request was cancelled");
+  error.code = "REQUEST_ABORTED";
+  return error;
+}
+
+function nextWithSignal(iterator, signal) {
+  if (signal.aborted) return Promise.reject(abortError());
+  const next = Promise.resolve().then(() => iterator.next());
+  next.catch(() => {});
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    next.then((result) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    }, (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
+function waitForDrain(response, signal) {
+  if (signal.aborted || response.destroyed) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const cleanup = () => {
+      signal.removeEventListener("abort", onAbort);
+      response.off("drain", onDrain);
+      response.off("close", onClose);
+    };
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const onAbort = () => finish(false);
+    const onDrain = () => finish(true);
+    const onClose = () => finish(false);
+    signal.addEventListener("abort", onAbort, { once: true });
+    response.once("drain", onDrain);
+    response.once("close", onClose);
+  });
+}
+
+async function download(response, value, signal) {
+  const filename = downloadFilename(value.filenameBase, value.format);
   const body = value.body;
   if (!body || (typeof body[Symbol.iterator] !== "function" && typeof body[Symbol.asyncIterator] !== "function")) throw new Error("Plugin returned an invalid download body");
+  const iterator = typeof body[Symbol.asyncIterator] === "function" ? body[Symbol.asyncIterator]() : body[Symbol.iterator]();
   response.writeHead(200, {
-    "content-type": "application/json; charset=utf-8",
-    "content-disposition": `attachment; filename="${value.filename}"`,
+    "content-type": filename.contentType,
+    "content-disposition": `attachment; filename="${filename.ascii}"; filename*=UTF-8''${filename.utf8}`,
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
   });
-  for await (const chunk of body) {
-    if (typeof chunk !== "string" && !(chunk instanceof Uint8Array)) throw new Error("Plugin download chunks must be strings or bytes");
-    if (!response.write(chunk)) await new Promise((resolve) => response.once("drain", resolve));
+  try {
+    while (true) {
+      const result = await nextWithSignal(iterator, signal);
+      if (result.done) break;
+      if (typeof result.value !== "string") throw new Error("Plugin download chunks must be strings");
+      if (signal.aborted || response.destroyed) return false;
+      if (!response.write(result.value, "utf8")) {
+        if (!await waitForDrain(response, signal)) return false;
+      }
+    }
+    if (!signal.aborted && !response.destroyed && !response.writableEnded) response.end();
+    return !signal.aborted;
+  } catch (error) {
+    if (signal.aborted || response.destroyed || error?.code === "REQUEST_ABORTED") return false;
+    if (!response.destroyed) response.destroy(error);
+    return false;
+  } finally {
+    if (signal.aborted && typeof iterator.return === "function") await iterator.return().catch(() => {});
   }
-  response.end();
 }
 
 function normalizeRoute(method, route) {
@@ -124,6 +230,24 @@ function contentType(filePath) {
   if (extension === ".json") return "application/json; charset=utf-8";
   if (extension === ".png") return "image/png";
   return "application/octet-stream";
+}
+
+function requestAbortContext(request, response) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const onResponseClose = () => {
+    if (!response.writableFinished) abort();
+  };
+  request.once("aborted", abort);
+  response.once("close", onResponseClose);
+  if (request.aborted || response.destroyed) abort();
+  return {
+    signal: controller.signal,
+    cleanup() {
+      request.off("aborted", abort);
+      response.off("close", onResponseClose);
+    },
+  };
 }
 
 function setPluginStatus(plugin, state, details = {}) {
@@ -524,12 +648,21 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (url.pathname === "/runtime/plugin-sdk-history.js" && request.method === "GET") {
+  if (url.pathname === "/runtime/plugin-workspace-history.js" && request.method === "GET") {
     try {
       response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
-      response.end(await readFile(pluginSdkHistoryEntry));
+      response.end(await readFile(pluginWorkspaceHistoryEntry));
     } catch {
-      json(response, 404, { error: "Plugin SDK history controls not found" });
+      json(response, 404, { error: "Plugin Workspace history controls not found" });
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/plugin-workspace-history.css" && request.method === "GET") {
+    try {
+      response.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "no-store" });
+      response.end(await readFile(pluginWorkspaceHistoryStyles));
+    } catch {
+      json(response, 404, { error: "Plugin Workspace history styles not found" });
     }
     return;
   }
@@ -684,11 +817,14 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  const requestContext = requestAbortContext(request, response);
   try {
-    const body = await handler({ method: request.method, url, headers: request.headers });
-    if (isDownloadableResponse(body)) await download(response, body);
+    const body = await handler({ method: request.method, url, headers: request.headers, signal: requestContext.signal });
+    if (requestContext.signal.aborted || response.destroyed) return;
+    if (isDownloadableResponse(body)) await download(response, body, requestContext.signal);
     else json(response, 200, body);
   } catch (error) {
+    if (requestContext.signal.aborted || response.destroyed || response.headersSent) return;
     const failure = errorDetails(error);
     if (error?.logId && error?.operationId) {
       const correlatedFailure = { ...failure, logId: error.logId, operationId: error.operationId, timestamp: error.timestamp };
@@ -702,6 +838,8 @@ const server = createServer(async (request, response) => {
     setPluginStatus(plugin, "failed", { failure: correlatedFailure });
     emitStatus("route-failed", pluginId, { route: tail, ...correlatedFailure });
     json(response, 500, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+  } finally {
+    requestContext.cleanup();
   }
 });
 

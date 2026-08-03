@@ -1,5 +1,6 @@
 import { observeWorkspaceTheme, workspaceTheme } from "/runtime/plugin-sdk.js";
 import { confirmQuestion, installHistoryControls } from "./history-controls.js";
+import "./export-controls.js";
 
 const applyInfolensTheme = (theme) => document.documentElement.dataset.theme = theme;
 applyInfolensTheme(workspaceTheme());

@@ -19,9 +19,12 @@ const question=(id)=>({url:`https://www.zhihu.com/question/${id}`,rank:1,title:`
 const product=(id)=>({url:`https://www.producthunt.com/products/product-${id}`,rank:1,name:`Product ${id}`,votes:1});
 
 test("downloadable response convention rejects unsafe filenames and non-stream bodies",()=>{
-  assert.throws(()=>downloadableResponse("../private.json",["{}"]),/safe JSON filename/);
-  assert.throws(()=>downloadableResponse("history.json",{}),/iterable/);
-  assert.equal(downloadableResponse("history.json",["{}"]).type,"infolens:download");
+  assert.throws(()=>downloadableResponse("../private.json",["{}"]),/filenameBase/);
+  assert.throws(()=>downloadableResponse({filenameBase:"history",format:"xml",body:["{}"]}),/Unsupported download format/);
+  assert.throws(()=>downloadableResponse({filenameBase:"history",format:"json",body:{}}),/iterable/);
+  assert.throws(()=>downloadableResponse({filenameBase:"history",format:"json",body:[new Uint8Array([1])]}),/iterable of strings/);
+  assert.throws(()=>downloadableResponse({filenameBase:"history",format:"json",body:["{}"]},"legacy"),/requires/);
+  assert.equal(downloadableResponse({filenameBase:"history",format:"json",body:["{}"]}).type,"infolens:download");
 });
 
 test("all plugin stores retain snapshots, share read ledgers, and export only business history",async()=>{
@@ -71,6 +74,28 @@ test("retention uses UTC, preserves latest, requires acknowledgement, and export
   }finally{await rm(temp,{recursive:true,force:true})}
 });
 
+test("retention preserves the newest UTC collected_at snapshot when a backfill has the larger id",async()=>{
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-history-backfill-retention-"));
+  const cases=[
+    ["hn",openHn,story],
+    ["github-trending",openGithub,repo],
+    ["zhihu-hot",openZhihu,question],
+    ["product-hunt",openProductHunt,product],
+  ];
+  try{for(const [pluginId,openStore,record] of cases){
+    const store=openStore(path.join(temp,`${pluginId}.sqlite`));
+    try{
+      store.saveSettings({policy:"manual",intervalMinutes:60,retentionDays:7},{acknowledgeRetentionCleanup:true});
+      store.replace([record(1)],"2026-08-10T00:00:00.000Z");
+      store.replace([record(2)],"2026-08-01T00:00:00.000Z");
+      store.cleanup(new Date("2026-08-20T00:00:00.000Z"));
+      const remaining=store.snapshots({limit:10}).items;
+      assert.equal(remaining.length,1,pluginId);
+      assert.equal(remaining[0].collectedAt,"2026-08-10T00:00:00.000Z",pluginId);
+    }finally{store.close()}
+  }}finally{await rm(temp,{recursive:true,force:true})}
+});
+
 test("malformed snapshots remain listed as unavailable and fail export without mutation",async()=>{
   const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-history-malformed-"));const filename=path.join(temp,"hn.sqlite");
   try{const store=openHn(filename);store.replace([story(1)],"2026-08-01T00:00:00.000Z");const db=new DatabaseSync(filename);db.prepare("UPDATE collection_snapshots SET payload='not-json'").run();db.close();assert.equal(store.snapshots().items[0].available,false);assert.equal(store.snapshot(1).available,false);assert.throws(()=>store.createExport("0.3.0"),/malformed/);assert.equal(store.snapshotCount(),1);store.close()}finally{await rm(temp,{recursive:true,force:true})}
@@ -79,4 +104,4 @@ test("malformed snapshots remain listed as unavailable and fail export without m
 async function startRuntime(dataRoot,stateFile){const child=spawn(process.execPath,[path.join(root,"packages/plugin-runtime/src/server.mjs")],{cwd:root,env:{...process.env,INFOLENS_PROJECT_ROOT:root,INFOLENS_PLUGIN_DATA_ROOT:dataRoot,INFOLENS_BUNDLED_OPENCLI_ROOT:path.join(root,"tests/fixtures/sprint5/opencli"),INFOLENS_TEST_OPENCLI_STATE:stateFile,INFOLENS_RUNTIME_PORT:"0"},stdio:["pipe","pipe","pipe"]});const lines=readline.createInterface({input:child.stdout});return new Promise((resolve,reject)=>{const errors=[];child.stderr.on("data",chunk=>errors.push(chunk));child.once("error",reject);const timeout=setTimeout(()=>reject(new Error(`Runtime start timed out: ${Buffer.concat(errors).toString()}`)),5000);lines.on("line",line=>{const message=JSON.parse(line);if(message.type==="runtime-ready"){clearTimeout(timeout);resolve({child,message})}})})}
 async function stopRuntime(child){if(child.exitCode!==null)return;child.stdin.write("shutdown\n");await new Promise(resolve=>child.once("exit",resolve))}
 
-test("Runtime streams a versioned export with fixed safe download headers",async()=>{const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-history-runtime-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({hn:"success"}));let runtime;try{runtime=await startRuntime(path.join(temp,"data"),stateFile);const origin=runtime.message.origin;assert.equal((await fetch(`${origin}/plugins/hn/api/refresh`,{method:"POST"})).status,200);const response=await fetch(`${origin}/plugins/hn/api/export`);assert.equal(response.status,200);assert.match(response.headers.get("content-type")??"",/^application\/json/);assert.match(response.headers.get("content-disposition")??"",/^attachment; filename="hacker-news-history-\d{4}-\d{2}-\d{2}\.json"$/);assert.equal(response.headers.get("cache-control"),"no-store");const exported=await response.json();assert.equal(exported.pluginId,"hn");assert.equal(exported.snapshots.length,1)}finally{if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}});
+test("Runtime streams a versioned export with fixed safe download headers",async()=>{const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-history-runtime-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({hn:"success"}));let runtime;try{runtime=await startRuntime(path.join(temp,"data"),stateFile);const origin=runtime.message.origin;assert.equal((await fetch(`${origin}/plugins/hn/api/refresh`,{method:"POST"})).status,200);const response=await fetch(`${origin}/plugins/hn/api/export`);assert.equal(response.status,200);assert.match(response.headers.get("content-type")??"",/^application\/json/);assert.match(response.headers.get("content-disposition")??"",/^attachment; filename="hacker-news-history-\d{4}-\d{2}-\d{2}\.json"; filename\*=UTF-8''/);assert.equal(response.headers.get("cache-control"),"no-store");const exported=await response.json();assert.equal(exported.pluginId,"hn");assert.equal(exported.snapshots.length,1)}finally{if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}});

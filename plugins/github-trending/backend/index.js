@@ -1,5 +1,6 @@
 import { openStore } from "./storage.js";
 import { downloadableResponse } from "../../../packages/plugin-sdk/src/index.js";
+import { createExport } from "./export.js";
 
 const POLICIES = new Set(["manual", "disabled", "fixed"]);
 const INTERVALS = new Set([15, 30, 60, 360, 720, 1440]);
@@ -95,7 +96,15 @@ export async function activate(context) {
   context.route("POST", "/view", ({ url }) => { const period=url.searchParams.get("period"); const language=url.searchParams.get("language") ?? "all"; if(!PERIODS.has(period)||!/^[a-zA-Z0-9+#.-]{1,30}$|^all$/.test(language)) throw new Error("Unsupported GitHub Trending filter"); store.saveView({period,language}); return summary(); });
   context.route("GET", "/history", ({url}) => store.snapshots({limit:url.searchParams.get("limit"),offset:url.searchParams.get("offset")}));
   context.route("GET", "/history/snapshot", ({url}) => store.snapshot(url.searchParams.get("id"))??{error:"Snapshot not found"});
-  context.route("GET", "/export", () => downloadableResponse(`github-trending-history-${new Date().toISOString().slice(0,10)}.json`,store.createExport("0.3.0")));
+  context.route("GET", "/export", ({ url }) => {
+    const format = url.searchParams.get("format") ?? "json";
+    const exportedAt = new Date().toISOString();
+    return downloadableResponse({
+      filenameBase: `github-trending-history-${exportedAt.slice(0, 10)}`,
+      format,
+      body: createExport(context.resolveDataPath("github-trending.sqlite"), { pluginId: "github-trending", pluginVersion: "0.3.0", format, exportedAt }),
+    });
+  });
   configureSchedule(); updateHealth();
   return { async deactivate() { cancelSchedule?.(); store.close(); } };
 }

@@ -73,6 +73,7 @@ export interface PluginRouteRequest {
   method?: string;
   url: URL;
   headers: Record<string, string | string[] | undefined>;
+  signal: AbortSignal;
 }
 
 export interface PluginTaskContext {
@@ -88,16 +89,23 @@ export interface PluginLifecycle {
 
 export interface DownloadableResponse {
   readonly type: "infolens:download";
-  readonly filename: string;
-  readonly body: Iterable<string | Uint8Array> | AsyncIterable<string | Uint8Array>;
+  readonly filenameBase: string;
+  readonly format: ExportFormat;
+  readonly body: Iterable<string> | AsyncIterable<string>;
 }
+
+export type ExportFormat = "json" | "csv" | "markdown" | "text";
+export type ExportDeliveryErrorCode = "EXPORT_REQUEST_FAILED" | "EXPORT_TOO_LARGE" | "UNSUPPORTED_EXPORT_TYPE" | "CLIPBOARD_UNAVAILABLE" | "CLIPBOARD_DENIED";
 
 export type ActivatePlugin = (context: PluginActivationContext) => PluginLifecycle | void | Promise<PluginLifecycle | void>;
 
 export function defineManifest<const Manifest extends PluginManifest>(manifest: Manifest): Manifest;
 export function defineBackend(activate: ActivatePlugin): { activate: ActivatePlugin };
 export function healthResponse(state?: PluginHealth["state"], details?: Omit<PluginHealth, "state">): PluginHealth;
-export function downloadableResponse(filename: string, body: DownloadableResponse["body"]): DownloadableResponse;
+export const EXPORT_FORMATS: readonly ExportFormat[];
+export function downloadableResponse(options: { filenameBase: string; format: ExportFormat; body: DownloadableResponse["body"] }): DownloadableResponse;
+export function downloadExport(route: string | URL): Promise<{ initiated: true }>;
+export function copyDownloadable(route: string | URL): Promise<{ copied: true }>;
 export function pluginHealthUrl(origin: string, pluginId: string): string;
 export function pluginWorkspaceUrl(origin: string, pluginId: string): string;
 export function pluginApiUrl(origin: string, pluginId: string, route?: string): string;

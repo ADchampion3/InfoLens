@@ -1,0 +1,9 @@
+{
+  "name": "@infolens/plugin-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./history-controls": "./src/history-controls.js"
+  }
+}

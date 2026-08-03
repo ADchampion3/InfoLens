@@ -20,6 +20,28 @@ let logService;
 let serializeLogEntries;
 let logQueryCount = 0;
 
+function trustedWorkspacePermission(webContents, requestingUrl) {
+  if (!runtimeInfo?.origin || typeof requestingUrl !== "string") return false;
+  let parsed;
+  try { parsed = new URL(requestingUrl); } catch { return false; }
+  if (parsed.origin !== runtimeInfo.origin || !/^\/plugins\/[^/]+\/workspace(?:\/|$)/.test(parsed.pathname)) return false;
+  let pluginId;
+  try { pluginId = decodeURIComponent(parsed.pathname.split("/")[2] ?? ""); } catch { return false; }
+  if (!runtimeInfo.plugins.some((plugin) => plugin.id === pluginId)) return false;
+  return true;
+}
+
+function installWorkspacePermissionHandlers() {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details = {}) => {
+    const writePermission = permission === "clipboard-sanitized-write" || permission === "clipboard-write";
+    callback(writePermission && trustedWorkspacePermission(webContents, details.requestingUrl || webContents?.getURL?.()));
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, _requestingOrigin, details = {}) => {
+    const writePermission = permission === "clipboard-sanitized-write" || permission === "clipboard-write";
+    return writePermission && trustedWorkspacePermission(webContents, details.requestingUrl || webContents?.getURL?.());
+  });
+}
+
 function publishRuntimeStatus(status, details = {}) {
   if (!mainWindow?.isDestroyed()) mainWindow.webContents.send("runtime:status", { status, ...details });
 }
@@ -317,6 +339,7 @@ ipcMain.handle("test:log-query-count", () => {
 });
 
 app.whenReady().then(async () => {
+  installWorkspacePermissionHandlers();
   await initializeLogService();
   await seedBundledPlugins();
   createWindow();

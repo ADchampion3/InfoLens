@@ -395,7 +395,7 @@ export function App() {
         {status === "ready" && view.kind === "plugin" && selected && selected.state === "disabled" && (
           <div className="system-state"><CircleOff size={28} /><h1>{selected.name} is disabled</h1><button className="primary-button" onClick={() => runtime && mutate(() => runtimeRequest(runtime, `/runtime/plugins/${selected.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: true }) }), `${selected.name} enabled`)}>Enable in Plugins</button></div>
         )}
-        {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? "Plugin"} workspace`} />}
+        {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? "Plugin"} workspace`} allow="clipboard-write" />}
         {status === "ready" && view.kind === "plugins" && runtime && (
           <section className="host-page plugin-manager">
             <header className="page-header"><div><h1>Plugins</h1><p>Installed packages and local diagnostics</p></div><button className="primary-button" onClick={install}><FolderPlus size={17} />Install plugin</button></header>

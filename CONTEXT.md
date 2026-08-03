@@ -62,6 +62,10 @@ _Avoid_: CI fixture test, mocked command result
 The complete main-content interface owned and rendered by one plugin.
 _Avoid_: Host page, shared detail view
 
+**Plugin Workspace UI**:
+The separate shared package for presentation-only controls used inside Plugin Workspaces. It may define DOM, localized UI copy, dialogs, interaction, and control styles, while the calling Plugin retains its data and business behavior.
+_Avoid_: Plugin SDK, Host Shell, shared business model
+
 **Workspace Bundle**:
 The built static Web assets a plugin provides at `web/dist` for its workspace.
 _Avoid_: Host UI source, required frontend framework
@@ -135,8 +139,16 @@ The semantic-version minimum host release declared by a plugin manifest. A packa
 _Avoid_: Automatic updater, permission requirement
 
 **Plugin SDK**:
-The thin shared package that implements Infolens runtime conventions without defining plugin business behavior or UI.
+The thin shared package that implements Infolens runtime conventions without defining plugin business behavior, DOM, dialogs, or user-facing UI.
 _Avoid_: Content framework, shared source model
+
+**Plugin Export**:
+A user-initiated, Plugin-owned representation of Plugin business data delivered from its Workspace as a UTF-8 text download or clipboard value.
+_Avoid_: Host export SPI, Plugin Context, Host-owned export workflow
+
+**Plugin Context**:
+A future machine-consumable semantic representation that a Plugin provides to the Host Workbench for LLM or tool use, independently of user-facing export artifacts.
+_Avoid_: Export file, parsed Plugin Export, final prompt
 
 **Host Shell**:
 The Electron-owned React navigation and lifecycle surface surrounding a plugin workspace.

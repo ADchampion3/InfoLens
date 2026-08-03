@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { createExport as createTextExport } from "./export.js";
 
 const DEFAULT_SETTINGS = { policy: "manual", intervalMinutes: 60, retentionDays: 30 };
 const RETENTION_DAYS = new Set([7, 30, 90]);
@@ -66,7 +67,7 @@ function createStore(db, filename) {
   };
   let store;
   const cleanup = (now = new Date()) => {
-    const latest = db.prepare("SELECT MAX(id) AS id FROM collection_snapshots").get().id;
+    const latest = db.prepare("SELECT id FROM collection_snapshots ORDER BY collected_at DESC, id DESC LIMIT 1").get()?.id ?? null;
     const cutoff = new Date(now.getTime() - store.settings().retentionDays * 86_400_000).toISOString();
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -142,5 +143,6 @@ function createStore(db, filename) {
     },
     close() { db.close(); },
   };
+  store.createExport = (pluginVersion, exportedAt = new Date().toISOString(), format = "json") => createTextExport(filename, { pluginId: "hn", pluginVersion, exportedAt, format });
   return store;
 }

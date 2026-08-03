@@ -1,5 +1,6 @@
 import { observeWorkspaceTheme, workspaceTheme } from "/runtime/plugin-sdk.js";
 import { installHistoryControls } from "./history-controls.js";
+import "./export-controls.js";
 const applyInfolensTheme=(theme)=>document.documentElement.dataset.theme=theme;applyInfolensTheme(workspaceTheme());observeWorkspaceTheme(applyInfolensTheme);
 document.querySelectorAll("svg").forEach((icon)=>icon.setAttribute("aria-hidden","true"));
 const api = new URLSearchParams(location.search).get("apiBaseUrl");

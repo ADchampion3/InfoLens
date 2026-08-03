@@ -7,7 +7,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const plugins = ["hn", "github-trending", "zhihu-hot", "product-hunt"];
 
 test("history browsing uses a shared calendar popover instead of a snapshot page", async () => {
-  const source = await readFile(path.join(root, "packages/plugin-sdk/src/workspace-history.js"), "utf8");
+  const source = await readFile(path.join(root, "packages/plugin-workspace/src/history-controls.js"), "utf8");
   assert.match(source, /setAttribute\("popover", "auto"\)/);
   assert.match(source, /history-calendar-grid/);
   assert.match(source, /history\?limit=100&offset=/);
@@ -35,10 +35,21 @@ test("every Workspace renders selected snapshots in its main content and keeps t
 });
 
 test("calendar controls preserve touch targets, focus, unavailable, and reduced-motion states", async () => {
-  const styles = await readFile(path.join(root, "packages/plugin-sdk/src/workspace.css"), "utf8");
+  const styles = await readFile(path.join(root, "packages/plugin-workspace/src/history.css"), "utf8");
   assert.match(styles, /\.history-calendar button[^}]*min-height:\s*2\.75rem/s);
   assert.match(styles, /\.history-day\[data-unavailable="true"\]/);
   assert.match(styles, /\.history-day\[aria-current="date"\]/);
   assert.match(styles, /@media \(max-width: 24rem\)[\s\S]*\.history-calendar[^}]*width:\s*100vw/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.history-calendar button/);
+});
+
+test("Thin Plugin SDK does not own Workspace history UI", async () => {
+  await assert.rejects(
+    readFile(path.join(root, "packages/plugin-sdk/src/workspace-history.js"), "utf8"),
+    (error) => error.code === "ENOENT",
+  );
+  const sdkStyles = await readFile(path.join(root, "packages/plugin-sdk/src/workspace.css"), "utf8");
+  assert.doesNotMatch(sdkStyles, /history-calendar|history-view-bar|infolens-confirm-dialog/);
+  const packager = await readFile(path.join(root, "scripts/package-sprint7.mjs"), "utf8");
+  assert.match(packager, /\["packages\/plugin-workspace",\s*"packages\/plugin-workspace"\]/);
 });

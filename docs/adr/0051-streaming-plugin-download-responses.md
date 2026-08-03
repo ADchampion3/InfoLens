@@ -1,5 +1,7 @@
 # Streaming Plugin Download Responses
 
+Status: superseded by [ADR 0052](0052-plugin-owned-text-export-delivery.md)
+
 Plugin Routes may return a Thin Plugin SDK `downloadableResponse(filename, body)` value in addition to ordinary JSON values. Plugin Runtime validates a conservative JSON filename, applies fixed download and security headers, and writes the iterable or async-iterable body with backpressure.
 
 This extension keeps Plugin Contract Version 2. A Plugin that returns downloadable responses declares minimum Host version 0.2.0 so an older Runtime rejects the package instead of serializing the transport value as ordinary JSON.

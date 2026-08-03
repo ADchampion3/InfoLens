@@ -14,7 +14,7 @@ test("refresh animation is scoped to the icon and keeps its hover surface stable
 });
 
 test("history controls never inherit transient refresh classes",async()=>{
-  const source=await readFile(path.join(root,"packages/plugin-sdk/src/workspace-history.js"),"utf8");
+  const source=await readFile(path.join(root,"packages/plugin-workspace/src/history-controls.js"),"utf8");
   assert.doesNotMatch(source,/firstElementChild\?\.className/,"history controls copy the refresh button spinning class");
   assert.match(source,/classList\.contains\("icon"\)/,"history controls do not select a stable icon-button class");
 });

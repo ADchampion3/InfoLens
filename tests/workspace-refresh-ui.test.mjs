@@ -57,23 +57,28 @@ test("Product Hunt connection recovery is a separate page from retained content"
   assert.doesNotMatch(source, /document\.querySelector\("main"\)\.hidden=disconnected&&!products\.length/);
 });
 
-test("workspaces replace native confirm() with an in-page confirm and blob download for exports", async () => {
-  const sharedControls = await readFile(path.join(root, "packages/plugin-sdk/src/workspace-history.js"), "utf8");
+test("workspaces use Plugin-owned export controls and streaming SDK delivery", async () => {
+  const sharedControls = await readFile(path.join(root, "packages/plugin-workspace/src/history-controls.js"), "utf8");
   assert.doesNotMatch(sharedControls, /\bconfirm\(/);
-  assert.match(sharedControls, /URL\.createObjectURL/);
+  assert.doesNotMatch(sharedControls, /URL\.createObjectURL/);
+  const hostSource = await readFile(path.join(root, "apps/desktop/src/App.tsx"), "utf8");
+  assert.match(hostSource, /allow="clipboard-write"/, "Plugin Workspace iframe must grant clipboard write through Permissions Policy");
   const workspaces = ["hn", "github-trending", "zhihu-hot", "product-hunt"];
   for (const pluginId of workspaces) {
     const source = await readFile(path.join(root, "plugins", pluginId, "web", "dist", "workspace.js"), "utf8");
     assert.doesNotMatch(source, /\bconfirm\(/, `${pluginId} still calls the native confirm() dialog, which Blink blocks in the Electron sandboxed iframe`);
-    assert.match(source, /confirmQuestion/, `${pluginId} export/settings must confirm via the in-page confirmQuestion dialog`);
+    assert.match(source, /export-controls\.js/, `${pluginId} must load its Plugin-owned export controls`);
     assert.doesNotMatch(source, /location\.href\s*=\s*new URL\("export"/, `${pluginId} must not navigate the workspace to the export endpoint`);
-    const controlsPath = path.join(root, "plugins", pluginId, "web", "dist", "history-controls.js");
-    try {
-      const controls = await readFile(controlsPath, "utf8");
-      assert.match(controls, /plugin-sdk-history\.js/, `${pluginId} does not use the shared history controls`);
-    } catch {
-      assert.match(source, /createObjectURL\(/, `${pluginId} inline export must download via a blob anchor instead of navigating location.href`);
-    }
+    const controls = await readFile(path.join(root, "plugins", pluginId, "web", "dist", "export-controls.js"), "utf8");
+    assert.match(controls, /copyDownloadable/);
+    assert.match(controls, /downloadExport/);
+    assert.match(controls, /export-trigger/);
+    assert.match(controls, /export-menu/);
+    assert.match(controls, /aria-expanded/);
+    assert.match(controls, /aria-label", "Export"/);
+    assert.match(controls, /M12 3v12m0 0 4-4m-4 4-4-4M5 21h14/);
+    assert.doesNotMatch(controls, /toggle\.textContent\s*=\s*"Export"/);
+    assert.doesNotMatch(controls, /createObjectURL|response\.blob/);
   }
 });
 
@@ -96,7 +101,7 @@ function fakeConfirmDialog() {
 }
 
 test("confirmQuestion resolves true on continue, false on cancel or Escape", async () => {
-  const { confirmQuestion } = await import(pathToFileURL(path.join(root, "packages", "plugin-sdk", "src", "workspace-history.js")).href);
+  const { confirmQuestion } = await import(pathToFileURL(path.join(root, "packages", "plugin-workspace", "src", "history-controls.js")).href);
   const dialog = fakeConfirmDialog();
   const previous = globalThis.document;
   globalThis.document = { querySelector: (selector) => selector === "#infolens-confirm-dialog" ? dialog : null };

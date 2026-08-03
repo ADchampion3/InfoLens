@@ -1,5 +1,6 @@
 /* Hallmark · macrostructure: Workbench · workspace: GitHub Trending · theme: Cobalt/green · tone: technical · contrast: pass (40-41) · states: default · hover · focus · active · disabled · loading · error · success */
 @import url("/runtime/plugin-sdk-workspace.css");
+@import url("/runtime/plugin-workspace-history.css");
 .source-mark { background: var(--color-ink); color: var(--color-paper); border-color: var(--color-ink); }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-lg); min-height: 3.5rem; padding: var(--space-xs) max(var(--space-md), env(safe-area-inset-right)) var(--space-xs) max(var(--space-md), env(safe-area-inset-left)); border-block-end: var(--rule-thin) solid var(--color-rule); background: var(--color-surface); }
 .toolbar label { display: flex; align-items: center; gap: var(--space-xs); color: var(--color-muted); font-family: var(--font-body); font-size: var(--text-xs); font-weight: 700; white-space: nowrap; }

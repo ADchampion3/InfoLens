@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { createExport as createTextExport } from "./export.js";
 
 const RETENTION_DAYS = new Set([7, 30, 90]);
 
@@ -42,7 +43,7 @@ function createStore(db, filename) {
   const stateMap=()=>new Map(db.prepare("SELECT repository_id,is_read FROM repository_user_state").all().map(({repository_id,is_read})=>[repository_id,Boolean(is_read)]));
   const decorate=(records)=>{const state=stateMap();return records.map(record=>({...record,read:state.get(String(record.id))??false}))};
   const cleanup=(now=new Date())=>{
-    const latest=db.prepare("SELECT MAX(id) AS id FROM collection_snapshots").get().id;
+    const latest=db.prepare("SELECT id FROM collection_snapshots ORDER BY collected_at DESC, id DESC LIMIT 1").get()?.id ?? null;
     const cutoff=new Date(now.getTime()-store.settings().retentionDays*86_400_000).toISOString();
     db.exec("BEGIN IMMEDIATE");try{
       if(latest!==null)db.prepare("DELETE FROM collection_snapshots WHERE id<>? AND collected_at<?").run(latest,cutoff);
@@ -67,5 +68,5 @@ function createStore(db, filename) {
     cleanup,cleanupOnActivation(){if(store.metadata().retentionCleanupDeferred!=="true")cleanup()},snapshotCount(){return db.prepare("SELECT COUNT(*) AS count FROM collection_snapshots").get().count},
     createExport(pluginVersion,exportedAt=new Date().toISOString()){const reader=new DatabaseSync(filename,{readOnly:true});reader.exec("PRAGMA query_only=ON; BEGIN;");try{for(const row of reader.prepare("SELECT id,payload FROM collection_snapshots ORDER BY collected_at,id").iterate())parseSnapshot(row)}catch(error){reader.exec("ROLLBACK");reader.close();throw error}return(function*(){try{yield`{"pluginId":"github-trending","pluginVersion":${JSON.stringify(pluginVersion)},"schemaVersion":1,"exportedAt":${JSON.stringify(exportedAt)},"snapshots":[`;let first=true;for(const row of reader.prepare("SELECT id,collected_at AS collectedAt,payload FROM collection_snapshots ORDER BY collected_at,id").iterate()){yield`${first?"":","}{"collectedAt":${JSON.stringify(row.collectedAt)},"records":${JSON.stringify(parseSnapshot(row))}}`;first=false}const state=Object.fromEntries(reader.prepare("SELECT repository_id,is_read FROM repository_user_state ORDER BY repository_id").all().map(({repository_id,is_read})=>[repository_id,{read:Boolean(is_read)}]));yield`],"userState":${JSON.stringify(state)}}`}finally{reader.exec("ROLLBACK");reader.close()}})()},
     close(){db.close()}
-  };return store;
+  };store.createExport=(pluginVersion,exportedAt=new Date().toISOString(),format="json")=>createTextExport(filename,{pluginId:"github-trending",pluginVersion,exportedAt,format});return store;
 }

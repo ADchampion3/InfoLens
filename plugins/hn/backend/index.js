@@ -1,5 +1,6 @@
 import { openStore } from "./storage.js";
 import { downloadableResponse } from "../../../packages/plugin-sdk/src/index.js";
+import { createExport } from "./export.js";
 
 const POLICIES = new Set(["manual", "disabled", "fixed"]);
 const INTERVALS = new Set([15, 30, 60, 360, 720, 1440]);
@@ -84,7 +85,15 @@ export async function activate(context) {
   });
   context.route("GET", "/history", ({ url }) => store.snapshots({ limit: url.searchParams.get("limit"), offset: url.searchParams.get("offset") }));
   context.route("GET", "/history/snapshot", ({ url }) => store.snapshot(url.searchParams.get("id")) ?? { error: "Snapshot not found" });
-  context.route("GET", "/export", () => downloadableResponse(`hacker-news-history-${new Date().toISOString().slice(0, 10)}.json`, store.createExport(PLUGIN_VERSION)));
+  context.route("GET", "/export", ({ url }) => {
+    const format = url.searchParams.get("format") ?? "json";
+    const exportedAt = new Date().toISOString();
+    return downloadableResponse({
+      filenameBase: `hacker-news-history-${exportedAt.slice(0, 10)}`,
+      format,
+      body: createExport(context.resolveDataPath("hacker-news.sqlite"), { pluginId: "hn", pluginVersion: PLUGIN_VERSION, format, exportedAt }),
+    });
+  });
   configureSchedule();
   updateHealth();
   return { async deactivate() { cancelSchedule?.(); store.close(); } };

@@ -1,5 +1,6 @@
 import { observeWorkspaceTheme, workspaceTheme } from "/runtime/plugin-sdk.js";
 import { confirmQuestion, installHistoryControls } from "./history-controls.js";
+import "./export-controls.js";
 const params=new URLSearchParams(location.search);const applyInfolensTheme=(theme)=>document.documentElement.dataset.theme=theme;applyInfolensTheme(workspaceTheme());observeWorkspaceTheme(applyInfolensTheme);const api=params.get("apiBaseUrl")||"../api/";const root=document.querySelector("#app");let data;let refreshing=false;let settingsOpen=false;let historyView;let historyControls;
 const icons={refresh:'<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7L20 8"/><path d="M20 3v5h-5"/></svg>',settings:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 15a2 2 0 0 0 .4 2l-2.4 2.4a2 2 0 0 0-2-.4 2 2 0 0 0-1 2h-4a2 2 0 0 0-1-2 2 2 0 0 0-2 .4L4.6 17A2 2 0 0 0 5 15a2 2 0 0 0-2-1v-4a2 2 0 0 0 2-1 2 2 0 0 0-.4-2L7 4.6A2 2 0 0 0 9 5a2 2 0 0 0 1-2h4a2 2 0 0 0 1 2 2 2 0 0 0 2-.4L19.4 7A2 2 0 0 0 19 9a2 2 0 0 0 2 1v4a2 2 0 0 0-2 1Z"/></svg>'};
 async function request(route,method="GET"){const response=await fetch(`${api}${route}`,{method});if(!response.ok)throw new Error("知乎热榜服务暂时不可用");return response.json()}

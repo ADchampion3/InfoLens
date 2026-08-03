@@ -26,6 +26,7 @@ const copies = [
   ["packages/plugin-runtime", "packages/plugin-runtime"],
   ["packages/log-service", "packages/log-service"],
   ["packages/plugin-sdk", "packages/plugin-sdk"],
+  ["packages/plugin-workspace", "packages/plugin-workspace"],
   ["plugins", "plugins"],
   ["resources/opencli", "resources/opencli"],
   ["node_modules/semver", "node_modules/semver"],
