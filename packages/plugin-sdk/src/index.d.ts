@@ -86,11 +86,18 @@ export interface PluginLifecycle {
   deactivate?(): void | Promise<void>;
 }
 
+export interface DownloadableResponse {
+  readonly type: "infolens:download";
+  readonly filename: string;
+  readonly body: Iterable<string | Uint8Array> | AsyncIterable<string | Uint8Array>;
+}
+
 export type ActivatePlugin = (context: PluginActivationContext) => PluginLifecycle | void | Promise<PluginLifecycle | void>;
 
 export function defineManifest<const Manifest extends PluginManifest>(manifest: Manifest): Manifest;
 export function defineBackend(activate: ActivatePlugin): { activate: ActivatePlugin };
 export function healthResponse(state?: PluginHealth["state"], details?: Omit<PluginHealth, "state">): PluginHealth;
+export function downloadableResponse(filename: string, body: DownloadableResponse["body"]): DownloadableResponse;
 export function pluginHealthUrl(origin: string, pluginId: string): string;
 export function pluginWorkspaceUrl(origin: string, pluginId: string): string;
 export function pluginApiUrl(origin: string, pluginId: string, route?: string): string;

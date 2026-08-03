@@ -1,7 +1,9 @@
 import { openStore } from "./storage.js";
+import { downloadableResponse } from "../../../packages/plugin-sdk/src/index.js";
 
 const POLICIES = new Set(["manual", "disabled", "fixed"]);
 const INTERVALS = new Set([15, 30, 60, 360, 720, 1440]);
+const RETENTION_DAYS = new Set([7, 30, 90]);
 
 function requiredString(value, field) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Product Hunt result has invalid ${field}`);
@@ -32,6 +34,7 @@ export function validateCollection(result) {
 
 export async function activate(context) {
   const store = openStore(context.resolveDataPath("product-hunt.sqlite"));
+  store.cleanupOnActivation();
   let cancelSchedule;
   const summary = () => ({ source:"Product Hunt", collection:"Today's Top Launches", products:store.list(), settings:store.settings(), ...store.metadata() });
   const updateHealth = () => { const data=summary(); const unavailable=data.dependencyState==="disconnected"; context.setHealth({state:unavailable?"unavailable":"ready",badge:unavailable?"!":String(data.products.filter((item)=>!item.read).length),lastSuccessfulRefresh:data.lastSuccessfulRefresh}); };
@@ -51,6 +54,9 @@ export async function activate(context) {
   context.route("POST","/refresh",()=>store.settings().policy==="disabled"?{ok:false,disabled:true,...summary()}:context.enqueue("refresh",undefined,{reason:"manual",coalesceKey:"collection"}));
   context.route("POST","/read",({url})=>{store.markRead(url.searchParams.get("url"),url.searchParams.get("read")!=="false");updateHealth();return summary();});
   context.route("GET","/settings",()=>store.settings());
-  context.route("POST","/settings",({url})=>{const policy=url.searchParams.get("policy");const intervalMinutes=Number(url.searchParams.get("intervalMinutes")??60);if(!POLICIES.has(policy)||!INTERVALS.has(intervalMinutes))throw new Error("Unsupported refresh setting");store.saveSettings({policy,intervalMinutes});configureSchedule();return store.settings();});
+  context.route("POST","/settings",({url})=>{const policy=url.searchParams.get("policy");const intervalMinutes=Number(url.searchParams.get("intervalMinutes")??60);const retentionDays=Number(url.searchParams.get("retentionDays")??store.settings().retentionDays);if(!POLICIES.has(policy)||!INTERVALS.has(intervalMinutes)||!RETENTION_DAYS.has(retentionDays))throw new Error("Unsupported refresh setting");store.saveSettings({policy,intervalMinutes,retentionDays},{acknowledgeRetentionCleanup:url.searchParams.get("acknowledgeRetentionCleanup")==="true"});configureSchedule();return store.settings();});
+  context.route("GET","/history",({url})=>store.snapshots({limit:url.searchParams.get("limit"),offset:url.searchParams.get("offset")}));
+  context.route("GET","/history/snapshot",({url})=>store.snapshot(url.searchParams.get("id"))??{error:"Snapshot not found"});
+  context.route("GET","/export",()=>downloadableResponse(`product-hunt-history-${new Date().toISOString().slice(0,10)}.json`,store.createExport("0.2.0")));
   configureSchedule(); updateHealth(); return {async deactivate(){cancelSchedule?.();store.close();}};
 }

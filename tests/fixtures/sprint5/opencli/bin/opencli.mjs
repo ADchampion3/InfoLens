@@ -1,7 +1,9 @@
 import { appendFile, readFile } from "node:fs/promises";
 
 if(process.env.OPENCLI_REGISTRATION_REPORT==="1"){
-  process.stdout.write(JSON.stringify({commands:[{command:"infolens-producthunt/today",strategy:"intercept",access:"read"}],hooks:[],collisions:[]}));
+  const paths=process.env.OPENCLI_PLUGIN_PATHS??"";
+  const commands=paths.includes("io.infolens.github-readme")?[{command:"infolens-github/readme",strategy:"public",access:"read"}]:[{command:"infolens-producthunt/today",strategy:"intercept",access:"read"}];
+  process.stdout.write(JSON.stringify({commands,hooks:[],collisions:[]}));
   process.exit(0);
 }
 

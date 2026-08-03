@@ -3,7 +3,7 @@ import path from "node:path";
 import semver from "semver";
 
 export const CONTRACT_VERSION = "2";
-export const HOST_VERSION = "0.1.0";
+export const HOST_VERSION = "0.2.0";
 const SUPPORTED_STRATEGIES = new Set(["PUBLIC", "COOKIE", "INTERCEPT"]);
 
 export class ContractError extends Error {

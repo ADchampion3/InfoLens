@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { test } from "node:test";
 
@@ -10,8 +11,10 @@ const workspaces = ["hn", "github-trending", "zhihu-hot", "product-hunt"];
 function refreshFunction(source) {
   const start = source.indexOf("async function refresh");
   assert.notEqual(start, -1, "workspace must define refresh()");
-  const end = source.indexOf("\n", start);
-  return source.slice(start, end === -1 ? source.length : end);
+  const blockEnd = source.indexOf("\n}\n", start);
+  if (blockEnd !== -1) return source.slice(start, blockEnd + 2);
+  const lineEnd = source.indexOf("\n", start);
+  return source.slice(start, lineEnd === -1 ? source.length : lineEnd);
 }
 
 for (const pluginId of workspaces) {
@@ -32,6 +35,7 @@ for (const pluginId of workspaces) {
     vm.runInNewContext(`
       let data = globalThis.data;
       let refreshing = globalThis.refreshing;
+      const historyControls = undefined;
       const $ = () => globalThis.button;
       const render = (next) => { if (next) data = next; globalThis.rendered = data; };
       const request = async (route) => {
@@ -51,4 +55,67 @@ test("Product Hunt connection recovery is a separate page from retained content"
   const source = await readFile(path.join(root, "plugins", "product-hunt", "web", "dist", "workspace.js"), "utf8");
   assert.match(source, /document\.querySelector\("main"\)\.hidden=disconnected;/);
   assert.doesNotMatch(source, /document\.querySelector\("main"\)\.hidden=disconnected&&!products\.length/);
+});
+
+test("workspaces replace native confirm() with an in-page confirm and blob download for exports", async () => {
+  const sharedControls = await readFile(path.join(root, "packages/plugin-sdk/src/workspace-history.js"), "utf8");
+  assert.doesNotMatch(sharedControls, /\bconfirm\(/);
+  assert.match(sharedControls, /URL\.createObjectURL/);
+  const workspaces = ["hn", "github-trending", "zhihu-hot", "product-hunt"];
+  for (const pluginId of workspaces) {
+    const source = await readFile(path.join(root, "plugins", pluginId, "web", "dist", "workspace.js"), "utf8");
+    assert.doesNotMatch(source, /\bconfirm\(/, `${pluginId} still calls the native confirm() dialog, which Blink blocks in the Electron sandboxed iframe`);
+    assert.match(source, /confirmQuestion/, `${pluginId} export/settings must confirm via the in-page confirmQuestion dialog`);
+    assert.doesNotMatch(source, /location\.href\s*=\s*new URL\("export"/, `${pluginId} must not navigate the workspace to the export endpoint`);
+    const controlsPath = path.join(root, "plugins", pluginId, "web", "dist", "history-controls.js");
+    try {
+      const controls = await readFile(controlsPath, "utf8");
+      assert.match(controls, /plugin-sdk-history\.js/, `${pluginId} does not use the shared history controls`);
+    } catch {
+      assert.match(source, /createObjectURL\(/, `${pluginId} inline export must download via a blob anchor instead of navigating location.href`);
+    }
+  }
+});
+
+function fakeConfirmDialog() {
+  const listeners = new Map();
+  const nodes = {};
+  return {
+    opened: false,
+    returnValue: "",
+    listeners,
+    nodes,
+    querySelector(selector) {
+      if (!nodes[selector]) nodes[selector] = { textContent: "" };
+      return nodes[selector];
+    },
+    addEventListener(event, fn) { listeners.set(event, fn); },
+    showModal() { this.opened = true; },
+    close(value) { this.returnValue = value; listeners.get("close")?.(); },
+  };
+}
+
+test("confirmQuestion resolves true on continue, false on cancel or Escape", async () => {
+  const { confirmQuestion } = await import(pathToFileURL(path.join(root, "packages", "plugin-sdk", "src", "workspace-history.js")).href);
+  const dialog = fakeConfirmDialog();
+  const previous = globalThis.document;
+  globalThis.document = { querySelector: (selector) => selector === "#infolens-confirm-dialog" ? dialog : null };
+  try {
+    const accept = confirmQuestion("导出文件可能包含私有来源内容。继续下载？", "继续下载", "取消");
+    assert.equal(dialog.opened, true);
+    assert.equal(dialog.nodes[".confirm-message"].textContent, "导出文件可能包含私有来源内容。继续下载？");
+    assert.equal(dialog.nodes["[data-confirm-ok]"].textContent, "继续下载");
+    dialog.close("ok");
+    assert.equal(await accept, true);
+
+    const cancel = confirmQuestion("继续？");
+    dialog.close("cancel");
+    assert.equal(await cancel, false);
+
+    const escaped = confirmQuestion("继续？");
+    dialog.close("");
+    assert.equal(await escaped, false);
+  } finally {
+    globalThis.document = previous;
+  }
 });

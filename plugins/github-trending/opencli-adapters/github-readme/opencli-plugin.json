@@ -1,0 +1,6 @@
+{
+  "name": "io.infolens.github-readme",
+  "version": "1.0.0",
+  "description": "Infolens GitHub repository README collection",
+  "opencli": ">=1.8.6 <2.0.0"
+}

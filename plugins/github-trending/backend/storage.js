@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 
-export function openStore(filename) {
+export { openStore } from "./history-storage.js";
+
+function openLegacyStore(filename) {
   const db = new DatabaseSync(filename);
   db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);");
   const version = db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get().version;
@@ -21,6 +23,17 @@ export function openStore(filename) {
     INSERT INTO schema_migrations VALUES (1, datetime('now'));
     COMMIT;
   `);
+  if (version < 2) db.exec(`
+    BEGIN;
+    CREATE TABLE repository_readmes (
+      repository_id TEXT PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+      html TEXT NOT NULL,
+      fetched_at TEXT NOT NULL,
+      source_url TEXT NOT NULL
+    );
+    INSERT INTO schema_migrations VALUES (2, datetime('now'));
+    COMMIT;
+  `);
   const upsert = db.prepare(`
     INSERT INTO repositories (id, rank, owner, name, description, language, language_color, stars, forks, stars_gained, url, is_read, collected_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT is_read FROM repositories WHERE id=?), 0), ?)
@@ -29,6 +42,11 @@ export function openStore(filename) {
       stars=excluded.stars, forks=excluded.forks, stars_gained=excluded.stars_gained, url=excluded.url, collected_at=excluded.collected_at
   `);
   const setMeta = db.prepare("INSERT INTO plugin_metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+  const findReadme = db.prepare("SELECT repository_id AS repositoryId, html, fetched_at AS fetchedAt, source_url AS sourceUrl FROM repository_readmes WHERE repository_id=?");
+  const saveReadme = db.prepare(`
+    INSERT INTO repository_readmes(repository_id, html, fetched_at, source_url) VALUES (?, ?, ?, ?)
+    ON CONFLICT(repository_id) DO UPDATE SET html=excluded.html, fetched_at=excluded.fetched_at, source_url=excluded.source_url
+  `);
   return {
     schemaVersion() { return db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version; },
     list() { return db.prepare("SELECT id, rank, owner, name, description, language, language_color AS languageColor, stars, forks, stars_gained AS starsGained, url, is_read AS read FROM repositories ORDER BY rank").all().map((row) => ({ ...row, read: Boolean(row.read) })); },
@@ -37,6 +55,9 @@ export function openStore(filename) {
     view() { return db.prepare("SELECT period, language FROM view_settings WHERE singleton=1").get(); },
     saveView(value) { db.prepare("UPDATE view_settings SET period=?, language=? WHERE singleton=1").run(value.period, value.language); },
     metadata() { return Object.fromEntries(db.prepare("SELECT key,value FROM plugin_metadata").all().map(({key,value}) => [key,value])); },
+    repository(id) { return db.prepare("SELECT id, owner, name, url FROM repositories WHERE id=?").get(id); },
+    readme(id) { return findReadme.get(id); },
+    saveReadme(value) { saveReadme.run(value.repositoryId, value.html, value.fetchedAt, value.sourceUrl); },
     replace(repositories, collectedAt) {
       db.exec("BEGIN IMMEDIATE");
       try {

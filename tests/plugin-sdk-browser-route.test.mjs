@@ -39,6 +39,11 @@ test("runtime exposes the plugin SDK as a browser module", async () => {
     assert.match(source, /export function workspaceTheme/);
     assert.match(source, /export function observeWorkspaceTheme/);
 
+    const historyResponse = await fetch(`${runtime.origin}/runtime/plugin-sdk-history.js`);
+    assert.equal(historyResponse.status, 200);
+    assert.match(historyResponse.headers.get("content-type") ?? "", /^text\/javascript/);
+    assert.match(await historyResponse.text(), /export function installHistoryControls/);
+
     const tokenResponse = await fetch(`${runtime.origin}/runtime/plugin-sdk-tokens.css`);
     assert.equal(tokenResponse.status, 200);
     assert.match(tokenResponse.headers.get("content-type") ?? "", /^text\/css/);

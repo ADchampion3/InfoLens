@@ -2,7 +2,9 @@ import { DatabaseSync } from "node:sqlite";
 
 const DEFAULT_SETTINGS = { policy: "manual", intervalMinutes: 60 };
 
-export function openStore(filename) {
+export { openStore } from "./history-storage.js";
+
+function openLegacyStore(filename) {
   const db = new DatabaseSync(filename);
   db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
   migrate(db);

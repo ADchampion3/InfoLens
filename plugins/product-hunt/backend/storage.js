@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 
-export function openStore(filename) {
+export { openStore } from "./history-storage.js";
+
+function openLegacyStore(filename) {
   const db = new DatabaseSync(filename);
   db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);");
   const version = db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get().version;

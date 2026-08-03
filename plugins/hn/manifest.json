@@ -1,10 +1,10 @@
 {
   "id": "hn",
   "name": "Hacker News",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "icon": "web/dist/icon.png",
   "contractVersion": "2",
-  "minHostVersion": "0.1.0",
+  "minHostVersion": "0.2.0",
   "backend": {
     "entry": "backend/index.js"
   },

@@ -1,17 +1,31 @@
 {
   "id": "github-trending",
   "name": "GitHub Trending",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "contractVersion": "2",
-  "minHostVersion": "0.1.0",
+  "minHostVersion": "0.2.0",
   "backend": { "entry": "backend/index.js" },
   "ui": { "entry": "web/dist/index.html" },
-  "openCliAdapters": {},
+  "openCliAdapters": {
+    "githubReadme": {
+      "id": "io.infolens.github-readme",
+      "version": "1.0.0",
+      "path": "opencli-adapters/github-readme"
+    }
+  },
   "openCliCommands": {
     "trendingRepositories": {
       "site": "github-trending",
       "adapter": "builtin",
       "command": ["github-trending", "repos"],
+      "strategy": "PUBLIC",
+      "access": "read",
+      "outputFormat": "json"
+    },
+    "repositoryReadme": {
+      "site": "infolens-github",
+      "adapter": "githubReadme",
+      "command": ["infolens-github", "readme"],
       "strategy": "PUBLIC",
       "access": "read",
       "outputFormat": "json"

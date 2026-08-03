@@ -20,6 +20,7 @@ const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? path.join(
 const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(projectRoot, ".infolens-data", "plugins"));
 const openCliRoot = path.resolve(process.env.INFOLENS_BUNDLED_OPENCLI_ROOT ?? path.join(projectRoot, "resources", "opencli"));
 const pluginSdkBrowserEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "index.js");
+const pluginSdkHistoryEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace-history.js");
 const pluginSdkTokenEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace-tokens.css");
 const pluginSdkWorkspaceStyles = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace.css");
 const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
@@ -87,6 +88,27 @@ function emitStatus(type, pluginId, details = {}) {
 function json(response, status, body) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+function isDownloadableResponse(value) {
+  return value?.type === "infolens:download";
+}
+
+async function download(response, value) {
+  if (typeof value.filename !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(value.filename)) throw new Error("Plugin returned an unsafe download filename");
+  const body = value.body;
+  if (!body || (typeof body[Symbol.iterator] !== "function" && typeof body[Symbol.asyncIterator] !== "function")) throw new Error("Plugin returned an invalid download body");
+  response.writeHead(200, {
+    "content-type": "application/json; charset=utf-8",
+    "content-disposition": `attachment; filename="${value.filename}"`,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  for await (const chunk of body) {
+    if (typeof chunk !== "string" && !(chunk instanceof Uint8Array)) throw new Error("Plugin download chunks must be strings or bytes");
+    if (!response.write(chunk)) await new Promise((resolve) => response.once("drain", resolve));
+  }
+  response.end();
 }
 
 function normalizeRoute(method, route) {
@@ -501,6 +523,16 @@ const server = createServer(async (request, response) => {
     }
     return;
   }
+
+  if (url.pathname === "/runtime/plugin-sdk-history.js" && request.method === "GET") {
+    try {
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
+      response.end(await readFile(pluginSdkHistoryEntry));
+    } catch {
+      json(response, 404, { error: "Plugin SDK history controls not found" });
+    }
+    return;
+  }
   if (url.pathname === "/runtime/plugin-sdk-tokens.css" && request.method === "GET") {
     try {
       response.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "no-store" });
@@ -654,7 +686,8 @@ const server = createServer(async (request, response) => {
 
   try {
     const body = await handler({ method: request.method, url, headers: request.headers });
-    json(response, 200, body);
+    if (isDownloadableResponse(body)) await download(response, body);
+    else json(response, 200, body);
   } catch (error) {
     const failure = errorDetails(error);
     if (error?.logId && error?.operationId) {

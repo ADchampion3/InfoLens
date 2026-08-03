@@ -14,6 +14,16 @@ export function healthResponse(state = "ready", details = {}) {
   return { state, ...details };
 }
 
+export function downloadableResponse(filename, body) {
+  if (typeof filename !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(filename)) {
+    throw new TypeError("Download filename must be a safe JSON filename");
+  }
+  if (!body || (typeof body[Symbol.iterator] !== "function" && typeof body[Symbol.asyncIterator] !== "function")) {
+    throw new TypeError("Download body must be iterable");
+  }
+  return { type: "infolens:download", filename, body };
+}
+
 export function pluginHealthUrl(origin, pluginId) {
   return joinUrl(origin, `/plugins/${encodeURIComponent(pluginId)}/health`);
 }
