@@ -81,7 +81,7 @@ test("global query adapts and merges Runtime and plugin JSONL without changing t
       pluginId: "fixture", sessionId: "runtime-session",
       clock: () => new Date("2026-07-31T08:31:00.000Z"), createId: () => "plugin-1",
     });
-    await pluginLogger.error("collection-failed", { zeta: 2, authorization: "Bearer private", alpha: 1 });
+    await pluginLogger.error("collection-failed", { zeta: 2, authorization: "Bearer private", alpha: 1, batchId: "batch-1", operationId: "operation-1" });
 
     const runtimeLogs = path.join(root, "plugins", "_runtime", "logs");
     await mkdir(runtimeLogs, { recursive: true });
@@ -103,6 +103,8 @@ test("global query adapts and merges Runtime and plugin JSONL without changing t
     assert.equal(first.entries[0].code, "INCOMPATIBLE_CONTRACT");
     assert.equal(first.entries[0].sessionId, "legacy");
     assert.equal(first.entries[1].message, "collection-failed {\"alpha\":1,\"authorization\":\"[REDACTED]\",\"zeta\":2}");
+    assert.equal(first.entries[1].batchId, "batch-1");
+    assert.deepEqual((await host.query({ sources, filters: { batchId: "batch-1" } })).entries.map(({ id }) => id), ["plugin-1"]);
     assert.deepEqual(first.entries.map(({ id }) => id), second.entries.map(({ id }) => id), "adapted identifiers must be stable");
     assert.doesNotMatch(JSON.stringify(first), /private|legacy-secret/);
   } finally {

@@ -14,11 +14,13 @@ let runtimeProcess;
 let runtimeInfo;
 let mainWindow;
 let quitting = false;
+let quitPromptActive = false;
 let restarting = false;
 let suppressRestart = false;
 let logService;
 let serializeLogEntries;
 let logQueryCount = 0;
+const applicationSessionId = randomUUID();
 
 function trustedWorkspacePermission(webContents, requestingUrl) {
   if (!runtimeInfo?.origin || typeof requestingUrl !== "string") return false;
@@ -52,7 +54,8 @@ function managedPaths() {
   const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(profileRoot, app.isPackaged ? "plugins-data" : "plugins"));
   const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(profileRoot, "host-state.json"));
   const hostLogsRoot = path.resolve(process.env.INFOLENS_HOST_LOG_ROOT ?? path.join(profileRoot, "logs"));
-  return { pluginsRoot, dataRoot, hostStatePath, hostLogsRoot };
+  const batchStatePath = path.join(dataRoot, "_runtime", `batches-${applicationSessionId}.json`);
+  return { pluginsRoot, dataRoot, hostStatePath, hostLogsRoot, batchStatePath };
 }
 
 async function initializeLogService() {
@@ -83,7 +86,7 @@ async function startRuntime() {
   const networkEnvironment = runtimeProxyEnvironment(process.env, proxyRules);
   return new Promise((resolve, reject) => {
     const runtimeEntry = path.join(projectRoot, "packages", "plugin-runtime", "src", "server.mjs");
-    const { pluginsRoot, dataRoot, hostStatePath } = managedPaths();
+    const { pluginsRoot, dataRoot, hostStatePath, batchStatePath } = managedPaths();
     runtimeProcess = spawn(process.execPath, [runtimeEntry], {
       cwd: projectRoot,
       env: {
@@ -94,6 +97,8 @@ async function startRuntime() {
         INFOLENS_PLUGINS_ROOT: pluginsRoot,
         INFOLENS_PLUGIN_DATA_ROOT: dataRoot,
         INFOLENS_HOST_STATE_PATH: hostStatePath,
+        INFOLENS_BATCH_STATE_PATH: batchStatePath,
+        INFOLENS_APPLICATION_SESSION_ID: applicationSessionId,
         INFOLENS_RUNTIME_PORT: "0",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -147,7 +152,7 @@ async function restartRuntime() {
   restarting = false;
 }
 
-function stopRuntime() {
+function stopRuntime(reason = "application-exit") {
   if (!runtimeProcess) return Promise.resolve();
   return new Promise((resolve) => {
     const child = runtimeProcess;
@@ -159,7 +164,7 @@ function stopRuntime() {
       clearTimeout(timeout);
       resolve();
     });
-    child.stdin.write("shutdown\n");
+    child.stdin.write(`shutdown:${reason}\n`);
     child.stdin.end();
   });
 }
@@ -202,7 +207,7 @@ async function removePlugin(id) {
   assertManagedPath(dataRoot, dataPath);
   suppressRestart = true;
   publishRuntimeStatus("restarting");
-  await stopRuntime();
+  await stopRuntime("RUNTIME_RESTARTED");
   await rm(packagePath, { recursive: true, force: true });
   await rm(dataPath, { recursive: true, force: true });
   await removeHostStatePlugin(hostStatePath, record.id ?? id);
@@ -348,8 +353,38 @@ app.whenReady().then(async () => {
 });
 app.on("window-all-closed", () => app.quit());
 app.on("before-quit", (event) => {
-  quitting = true;
-  if (!runtimeProcess) return;
+  if (quitting) return;
   event.preventDefault();
-  stopRuntime().finally(() => app.exit(0));
+  if (quitPromptActive) return;
+  quitPromptActive = true;
+  (async () => {
+    let activeBatch = false;
+    try {
+      if (runtimeInfo?.origin) {
+        const response = await fetch(`${runtimeInfo.origin}/runtime/batches/active`);
+        if (response.ok) activeBatch = Boolean((await response.json()).batch);
+      }
+    } catch {}
+    if (activeBatch) {
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        title: "Batch refresh in progress",
+        message: "Unfinished batch refresh work will stop when Infolens exits.",
+        buttons: ["Keep working", "Exit Infolens"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (result.response !== 1) {
+        quitPromptActive = false;
+        return;
+      }
+    }
+    quitting = true;
+    await stopRuntime("APPLICATION_EXIT");
+    await rm(managedPaths().batchStatePath, { force: true });
+    app.exit(0);
+  })().catch((error) => {
+    quitPromptActive = false;
+    console.error(error);
+  });
 });

@@ -6,7 +6,7 @@ interface StatusSnapshot {
   state: string;
   updatedAt?: string;
   lastSuccessfulRefreshAt?: string;
-  failure?: { code: string; message: string; logId?: string; operationId?: string; timestamp?: string };
+  failure?: { code: string; message: string; logId?: string; operationId?: string; batchId?: string; timestamp?: string };
 }
 
 interface HostState {
@@ -29,7 +29,91 @@ interface RuntimePlugin {
   workspaceUrl: string;
   apiBaseUrl: string;
   statusSnapshot?: StatusSnapshot;
-  failure?: { code: string; message: string; logId?: string; operationId?: string; timestamp?: string };
+  failure?: { code: string; message: string; logId?: string; operationId?: string; batchId?: string; timestamp?: string };
+}
+
+type RefreshOptionValue = string | number | boolean;
+
+interface RefreshOptionChoice {
+  value: string;
+  label: string;
+}
+
+interface RefreshOptionField {
+  key: string;
+  label: string;
+  type: "select" | "text" | "number" | "boolean";
+  options?: RefreshOptionChoice[];
+  default?: RefreshOptionValue;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  maxLength?: number;
+  placeholder?: string;
+}
+
+interface RefreshOptions {
+  title?: string;
+  fields: RefreshOptionField[];
+  values?: Record<string, RefreshOptionValue>;
+}
+
+interface BatchTarget {
+  pluginId: string;
+  targetId: string;
+  name: string;
+  version: string;
+  state: string;
+  enabled: boolean;
+  eligible: boolean;
+  reason?: string;
+  browserDependent: boolean;
+  dependencyState?: string;
+  dependencyWarning?: boolean;
+  refreshOptions?: RefreshOptions;
+  lastSuccessfulRefreshAt?: string;
+  failure?: StatusSnapshot["failure"];
+}
+
+type BatchItemState = "queued" | "running" | "succeeded" | "failed" | "skipped" | "interrupted";
+
+interface BatchItem {
+  pluginId: string;
+  targetId: string;
+  name: string;
+  version: string;
+  state: BatchItemState;
+  reason?: string;
+  operationId?: string;
+  coalesced?: boolean;
+  refreshInput?: Record<string, RefreshOptionValue>;
+  startedAt?: string;
+  completedAt?: string;
+  outcome?: { status: string; code?: string; message?: string; timestamp?: string };
+}
+
+interface BatchCounts {
+  total: number;
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  interrupted: number;
+  remaining: number;
+}
+
+interface BatchSummary {
+  batchId: string;
+  parentBatchId?: string;
+  createdAt: string;
+  completedAt?: string;
+  status: "queued" | "running" | "succeeded" | "partial" | "failed" | "skipped" | "interrupted";
+  state: string;
+  targets?: BatchTarget[];
+  items: BatchItem[];
+  counts: BatchCounts;
 }
 
 interface RejectedPlugin {
@@ -48,6 +132,7 @@ interface RuntimeInfo {
   plugins: RuntimePlugin[];
   rejectedPlugins: RejectedPlugin[];
   hostState: HostState;
+  activeBatch?: BatchSummary;
 }
 
 interface RuntimeStatusEvent {
@@ -67,6 +152,7 @@ interface LogEntry {
   code?: string;
   sessionId: string;
   operationId?: string;
+  batchId?: string;
 }
 
 interface LogPage {
@@ -81,6 +167,7 @@ interface LogFilters {
   to: string;
   keyword: string;
   operationId: string;
+  batchId: string;
 }
 
 interface LogQueryRequest {

@@ -42,6 +42,40 @@ export interface PluginLogger {
   error(message: string, fields?: Record<string, unknown>): Promise<void>;
 }
 
+export interface RefreshOutcome {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  lastSuccessfulRefresh?: string;
+}
+
+export type RefreshOptionValue = string | number | boolean;
+
+export interface RefreshOptionChoice {
+  value: string;
+  label: string;
+}
+
+export interface RefreshOptionField {
+  key: string;
+  label: string;
+  type: "select" | "text" | "number" | "boolean";
+  options?: readonly RefreshOptionChoice[];
+  default?: RefreshOptionValue;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  maxLength?: number;
+  placeholder?: string;
+}
+
+export interface RefreshOptions {
+  title?: string;
+  fields: readonly RefreshOptionField[];
+  values?: Record<string, RefreshOptionValue>;
+}
+
 export interface TaskOptions {
   reason?: string;
   coalesceKey?: string;
@@ -63,6 +97,7 @@ export interface PluginActivationContext {
   enqueue<Input = unknown, Output = unknown>(name: string, input: Input, options?: TaskOptions): Promise<Output>;
   schedule<Input = unknown>(name: string, options: ScheduleOptions<Input>): () => void;
   setHealth(health: PluginHealth): void;
+  setRefreshOptions(provider: () => RefreshOptions): void;
   readonly logger: PluginLogger;
   readonly opencli: {
     run<Output = unknown>(commandKey: string, args?: readonly string[], signal?: AbortSignal): Promise<Output>;

@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle, CheckCircle2, CircleOff, Copy, Download, FolderPlus, LoaderCircle,
-  Plug, ScrollText, Settings, Trash2, TriangleAlert, X,
+  AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FolderPlus, ListChecks,
+  LoaderCircle, Plug, RefreshCw, RotateCcw, ScrollText, Settings, Trash2, TriangleAlert, X,
 } from "lucide-react";
+import {
+  batchCompletionNotice, exactLocalTime, freshnessLabel, hasExecutableSelection, localDayKey,
+  selectAllEligible, selectNotRefreshedToday, selectionEmptyState, targetEligibility,
+} from "./batch-refresh";
 
-type HostView = { kind: "plugin"; id: string } | { kind: "plugins" } | { kind: "logs" } | { kind: "settings" };
+type HostView = { kind: "plugin"; id: string } | { kind: "plugins" } | { kind: "logs" } | { kind: "settings" } | { kind: "batch" };
 type Status = "loading" | "ready" | "error";
 
 function previewOrigin() {
@@ -50,7 +54,7 @@ function Lifecycle({ state }: { state: string }) {
   return <span className="running-dot" aria-label="Running" />;
 }
 
-const INITIAL_LOG_FILTERS: LogFilters = { sources: [], levels: ["info", "warn", "error"], from: "", to: "", keyword: "", operationId: "" };
+const INITIAL_LOG_FILTERS: LogFilters = { sources: [], levels: ["info", "warn", "error"], from: "", to: "", keyword: "", operationId: "", batchId: "" };
 const ERROR_GUIDANCE: Record<string, { explanation: string; action: string }> = {
   INCOMPATIBLE_CONTRACT: { explanation: "This plugin uses a package contract that this Host does not support.", action: "Install a compatible plugin version." },
   INCOMPATIBLE_HOST: { explanation: "This plugin requires a newer Infolens Host.", action: "Update Infolens, then try the plugin again." },
@@ -80,6 +84,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
     to: filters.to ? new Date(filters.to).toISOString() : "",
     keyword: filters.keyword,
     operationId: filters.operationId,
+    batchId: filters.batchId,
   }), [filters]);
 
   useEffect(() => { entriesRef.current = entries; }, [entries]);
@@ -189,6 +194,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
         <label>From<input aria-label="From time" type="datetime-local" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label>
         <label>To<input aria-label="To time" type="datetime-local" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></label>
         <label className="log-search">Keyword<input aria-label="Keyword" type="search" value={filters.keyword} onChange={(event) => setFilters({ ...filters, keyword: event.target.value })} placeholder="Search messages" /></label>
+        <label className="operation-search">Batch ID<input aria-label="Batch ID" value={filters.batchId} onChange={(event) => setFilters({ ...filters, batchId: event.target.value })} /></label>
         <label className="operation-search">Operation ID<input aria-label="Operation ID" value={filters.operationId} onChange={(event) => setFilters({ ...filters, operationId: event.target.value })} /></label>
         <div className="log-share-actions"><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.copyFilteredLogs(requestFilters), (count) => `${count} filtered log entries copied`)}><Copy size={15} />Copy filtered</button><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.exportFilteredLogs(requestFilters), (count) => `${count} log entries exported`)}><Download size={15} />Export JSONL</button></div>
       </div>
@@ -210,10 +216,289 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
                 <span className="log-source">{entry.source}</span>
                 <span className="log-message">{entry.message}</span>
               </button>
-              {expanded === entry.id && <div className="log-details"><dl><dt>ID</dt><dd>{entry.id}</dd><dt>Canonical timestamp</dt><dd>{entry.timestamp}</dd><dt>Severity</dt><dd>{entry.level}</dd><dt>Source</dt><dd>{entry.source}</dd><dt>Session ID</dt><dd>{entry.sessionId}</dd>{entry.code && <><dt>Code</dt><dd>{entry.code}</dd></>}{entry.operationId && <><dt>Operation ID</dt><dd className="operation-value"><span>{entry.operationId}</span><button type="button" onClick={() => setFilters({ ...filters, operationId: entry.operationId! })}>Filter this operation</button></dd></>}<dt>Message</dt><dd>{entry.message}</dd></dl><div className="log-entry-actions"><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.copyLogEntry(entry.id), () => "Log entry copied")}><Copy size={15} />Copy entry</button></div>{entry.code && ERROR_GUIDANCE[entry.code] && <div className="log-guidance"><strong>{ERROR_GUIDANCE[entry.code].explanation}</strong><span>{ERROR_GUIDANCE[entry.code].action}</span></div>}</div>}
+              {expanded === entry.id && <div className="log-details"><dl><dt>ID</dt><dd>{entry.id}</dd><dt>Canonical timestamp</dt><dd>{entry.timestamp}</dd><dt>Severity</dt><dd>{entry.level}</dd><dt>Source</dt><dd>{entry.source}</dd><dt>Session ID</dt><dd>{entry.sessionId}</dd>{entry.batchId && <><dt>Batch ID</dt><dd className="operation-value"><span>{entry.batchId}</span><button type="button" onClick={() => setFilters({ ...filters, batchId: entry.batchId! })}>Filter this Batch</button></dd></>}{entry.code && <><dt>Code</dt><dd>{entry.code}</dd></>}{entry.operationId && <><dt>Operation ID</dt><dd className="operation-value"><span>{entry.operationId}</span><button type="button" onClick={() => setFilters({ ...filters, operationId: entry.operationId! })}>Filter this operation</button></dd></>}<dt>Message</dt><dd>{entry.message}</dd></dl><div className="log-entry-actions"><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.copyLogEntry(entry.id), () => "Log entry copied")}><Copy size={15} />Copy entry</button></div>{entry.code && ERROR_GUIDANCE[entry.code] && <div className="log-guidance"><strong>{ERROR_GUIDANCE[entry.code].explanation}</strong><span>{ERROR_GUIDANCE[entry.code].action}</span></div>}</div>}
             </div>
           ))}
           <div className="log-history-state">{cursor ? <button type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? "Loading..." : "Load older"}</button> : <span>End of retained history</span>}</div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function batchTerminal(batch?: BatchSummary) {
+  return Boolean(batch && ["succeeded", "partial", "failed", "skipped", "interrupted"].includes(batch.status));
+}
+
+function batchStatusLabel(status: string) {
+  return ({ queued: "Queued", running: "Refreshing", succeeded: "Completed", partial: "Partially completed", failed: "Failed", skipped: "Skipped", interrupted: "Interrupted" } as Record<string, string>)[status] ?? status;
+}
+
+function itemStatusLabel(status: BatchItemState) {
+  return ({ queued: "Queued", running: "Refreshing", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped", interrupted: "Interrupted" } as Record<BatchItemState, string>)[status];
+}
+
+type ToastNotice = {
+  message: string;
+  batchId?: string;
+  actionLabel?: string;
+};
+
+function refreshOptionValue(target: BatchTarget, field: RefreshOptionField, input?: Record<string, RefreshOptionValue>) {
+  if (input && Object.hasOwn(input, field.key)) return input[field.key];
+  if (target.refreshOptions?.values && Object.hasOwn(target.refreshOptions.values, field.key)) return target.refreshOptions.values[field.key];
+  if (field.default !== undefined) return field.default;
+  if (field.type === "select") return field.options?.[0]?.value ?? "";
+  return field.type === "boolean" ? false : "";
+}
+
+function refreshInputFor(target: BatchTarget, input?: Record<string, RefreshOptionValue>) {
+  if (!target.refreshOptions?.fields.length) return undefined;
+  const result: Record<string, RefreshOptionValue> = {};
+  for (const field of target.refreshOptions.fields) {
+    const value = refreshOptionValue(target, field, input);
+    if (value !== undefined && value !== "") result[field.key] = value;
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+function RefreshOptionControls({
+  target,
+  input,
+  disabled,
+  onChange,
+}: {
+  target: BatchTarget;
+  input?: Record<string, RefreshOptionValue>;
+  disabled?: boolean;
+  onChange: (key: string, value: RefreshOptionValue | undefined) => void;
+}) {
+  const options = target.refreshOptions;
+  if (!options?.fields.length) return null;
+  return <div className="batch-target-options">
+    {options.title && <span className="batch-target-options-title">{options.title}</span>}
+    {options.fields.map((field) => {
+      const value = refreshOptionValue(target, field, input);
+      if (field.type === "select") return <label className="batch-target-option" key={field.key}>
+        <span>{field.label}</span>
+        <select aria-label={field.label} disabled={disabled} value={String(value)} onChange={(event) => onChange(field.key, event.currentTarget.value)}>
+          {(field.options ?? []).map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+        </select>
+      </label>;
+      if (field.type === "number") return <label className="batch-target-option" key={field.key}>
+        <span>{field.label}</span>
+        <input aria-label={field.label} disabled={disabled} type="number" value={typeof value === "number" ? value : ""} min={field.min} max={field.max} step={field.step} onChange={(event) => onChange(field.key, event.currentTarget.value === "" ? undefined : Number(event.currentTarget.value))} />
+      </label>;
+      if (field.type === "boolean") return <label className="batch-target-option" key={field.key}>
+        <input aria-label={field.label} disabled={disabled} type="checkbox" checked={value === true} onChange={(event) => onChange(field.key, event.currentTarget.checked)} />
+        <span>{field.label}</span>
+      </label>;
+      return <label className="batch-target-option" key={field.key}>
+        <span>{field.label}</span>
+        <input aria-label={field.label} disabled={disabled} type="text" value={String(value ?? "")} maxLength={field.maxLength} placeholder={field.placeholder} onChange={(event) => onChange(field.key, event.currentTarget.value)} />
+      </label>;
+    })}
+  </div>;
+}
+
+function BatchRefreshView({
+  runtime,
+  initialBatchId,
+  onBatchIdChange,
+  onBatchStarted,
+  onOpenLogs,
+}: {
+  runtime: RuntimeInfo;
+  initialBatchId?: string;
+  onBatchIdChange: (batchId?: string) => void;
+  onBatchStarted: (batchId: string) => void;
+  onOpenLogs: (batchId: string, operationId?: string) => void;
+}) {
+  const [targets, setTargets] = useState<BatchTarget[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [refreshInputs, setRefreshInputs] = useState<Record<string, Record<string, RefreshOptionValue>>>({});
+  const [batch, setBatch] = useState<BatchSummary>();
+  const [history, setHistory] = useState<BatchSummary[]>([]);
+  const [now, setNow] = useState(() => new Date());
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string>();
+  const runtimeOrigin = runtime.origin;
+
+  const fetchTargets = async () => {
+    const response = await runtimeRequest<{ targets: BatchTarget[] }>(runtime, "/runtime/batches/targets");
+    setTargets(response.targets);
+  };
+
+  const fetchHistory = async () => {
+    const response = await runtimeRequest<{ activeBatch?: BatchSummary; batches: BatchSummary[] }>(runtime, "/runtime/batches");
+    setHistory(response.batches);
+    if (!initialBatchId && response.activeBatch) {
+      setBatch(response.activeBatch);
+      onBatchIdChange(response.activeBatch.batchId);
+    }
+  };
+
+  const fetchBatch = async (batchId: string) => {
+    const result = await runtimeRequest<BatchSummary>(runtime, `/runtime/batches/${encodeURIComponent(batchId)}`);
+    setBatch(result);
+  };
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(undefined);
+    Promise.all([
+      fetchTargets(),
+      fetchHistory(),
+      initialBatchId ? fetchBatch(initialBatchId) : Promise.resolve(),
+    ]).catch((reason: unknown) => {
+      if (active) setError(reason instanceof Error ? reason.message : "Batch refresh could not be loaded.");
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [runtimeOrigin, initialBatchId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!initialBatchId || !batch || batch.batchId !== initialBatchId || batchTerminal(batch)) return;
+    let active = true;
+    const timer = window.setInterval(() => fetchBatch(initialBatchId).catch((reason: unknown) => {
+      if (active) setError(reason instanceof Error ? reason.message : "Batch progress could not be loaded.");
+    }), 900);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [runtimeOrigin, initialBatchId, batch?.batchId, batch?.status]);
+
+  useEffect(() => {
+    if (!initialBatchId || batchTerminal(batch)) return;
+    const timer = window.setInterval(() => fetchTargets().catch(() => {}), 2_000);
+    return () => window.clearInterval(timer);
+  }, [runtimeOrigin, initialBatchId, batch?.status]);
+
+  useEffect(() => {
+    if (batch && batchTerminal(batch)) fetchHistory().catch(() => {});
+  }, [batch?.batchId, batch?.status]);
+
+  const selectedExecutable = hasExecutableSelection(targets, selectedIds);
+  const toggle = (pluginId: string) => setSelectedIds((current) => {
+    const next = new Set(current);
+    if (next.has(pluginId)) next.delete(pluginId); else next.add(pluginId);
+    return next;
+  });
+  const updateRefreshInput = (pluginId: string, key: string, value: RefreshOptionValue | undefined) => setRefreshInputs((current) => {
+    const next = { ...current, [pluginId]: { ...(current[pluginId] ?? {}) } };
+    if (value === undefined) delete next[pluginId][key];
+    else next[pluginId][key] = value;
+    return next;
+  });
+  const startBatch = async () => {
+    if (!selectedExecutable || submitting) return;
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      const selections = [...selectedIds].map((pluginId) => {
+        const target = targets.find((entry) => entry.pluginId === pluginId);
+        const refreshInput = target ? refreshInputFor(target, refreshInputs[pluginId]) : undefined;
+        return { pluginId, ...(refreshInput ? { refreshInput } : {}) };
+      });
+      const result = await runtimeRequest<BatchSummary & { batch?: BatchSummary }>(runtime, "/runtime/batches", {
+        method: "POST",
+        body: JSON.stringify({ targets: selections }),
+      });
+      const created = result.batch ?? result;
+      setBatch(created);
+      onBatchIdChange(created.batchId);
+      onBatchStarted(created.batchId);
+      setSelectedIds(new Set());
+      await fetchHistory();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Batch refresh could not start.");
+    } finally { setSubmitting(false); }
+  };
+  const retryFailed = async () => {
+    if (!batch || !batchTerminal(batch) || !batch.counts.failed) return;
+    setSubmitting(true);
+    try {
+      const result = await runtimeRequest<BatchSummary & { batch?: BatchSummary }>(runtime, `/runtime/batches/${encodeURIComponent(batch.batchId)}/retry`, { method: "POST" });
+      const created = result.batch ?? result;
+      setBatch(created);
+      onBatchIdChange(created.batchId);
+      onBatchStarted(created.batchId);
+      await fetchHistory();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Failed targets could not be retried.");
+    } finally { setSubmitting(false); }
+  };
+  const startNewBatch = () => {
+    setBatch(undefined);
+    setSelectedIds(new Set());
+    setError(undefined);
+    onBatchIdChange(undefined);
+  };
+
+  const emptyState = selectionEmptyState(targets, now);
+  const today = localDayKey(now);
+  const targetRows = batch
+    ? batch.items.map((item) => ({ item, target: batch.targets?.find((target) => target.pluginId === item.pluginId) ?? targets.find((target) => target.pluginId === item.pluginId) }))
+    : [];
+  const historyPanel = (
+    <aside className="batch-history">
+      <h2>Session history</h2>
+      {history.map((entry) => <button type="button" className={entry.batchId === batch?.batchId ? "batch-history-row is-selected" : "batch-history-row"} key={entry.batchId} onClick={() => { setBatch(entry); onBatchIdChange(entry.batchId); }}><span><strong>{new Date(entry.createdAt).toLocaleTimeString()}</strong><small>{entry.parentBatchId ? "Retry" : "Batch refresh"}</small></span><span><strong>{batchStatusLabel(entry.status)}</strong><small>{entry.counts.succeeded}/{entry.counts.total} succeeded</small></span></button>)}
+      {!history.length && <p>No Batch history in this Application Session.</p>}
+    </aside>
+  );
+
+  return (
+    <section className="host-page batch-page">
+      <header className="page-header">
+        <div><h1>Batch refresh</h1><p>{batch ? `${batchStatusLabel(batch.status)} · ${batch.counts.remaining} remaining` : "Choose one or more Plugin Workspaces"}</p></div>
+        {batch && <div className="batch-header-actions"><button type="button" onClick={() => onOpenLogs(batch.batchId)}><ScrollText size={15} />View Batch logs</button>{batchTerminal(batch) && <button type="button" onClick={startNewBatch}><RefreshCw size={15} />New batch</button>}{batchTerminal(batch) && batch.counts.failed > 0 && <button className="primary-button" type="button" disabled={submitting} onClick={retryFailed}><RotateCcw size={15} />Retry failed</button>}</div>}
+      </header>
+      {error && <div className="batch-error" role="alert"><AlertCircle size={17} />{error}</div>}
+      {loading && !targets.length && <div className="logs-state" role="status"><LoaderCircle className="spinner" size={20} />Loading Workspaces...</div>}
+      {!loading && !batch && (
+        <div className="batch-selection-layout">
+          <div className="batch-selection-main">
+            <div className="batch-toolbar">
+              <div><strong>{selectedIds.size}</strong> selected <span className="batch-toolbar-note">{today ? `Local day ${today}` : ""}</span></div>
+              <div className="batch-toolbar-actions"><button type="button" onClick={() => setSelectedIds(selectAllEligible(targets))}><ListChecks size={15} />Select all eligible</button><button type="button" onClick={() => setSelectedIds(selectNotRefreshedToday(targets, now))}><RefreshCw size={15} />Not refreshed today</button></div>
+            </div>
+            <div className="batch-target-list" aria-label="Plugin Workspace refresh targets">
+              {targets.map((target) => {
+                const eligibility = targetEligibility(target);
+                return <div className={`batch-target-row ${selectedIds.has(target.pluginId) ? "is-selected" : ""} ${!eligibility.eligible ? "is-unavailable" : ""}`} key={target.pluginId}>
+                  <input aria-label={`Select ${target.name}`} type="checkbox" checked={selectedIds.has(target.pluginId)} disabled={!eligibility.eligible} onChange={() => toggle(target.pluginId)} />
+                  <div className="batch-target-main"><strong>{target.name}</strong><small>{target.pluginId} · {freshnessLabel(target, now)}</small><small className="batch-target-exact">{target.lastSuccessfulRefreshAt ? exactLocalTime(target.lastSuccessfulRefreshAt) : "No successful refresh"}</small><RefreshOptionControls target={target} input={refreshInputs[target.pluginId]} disabled={!eligibility.eligible} onChange={(key, value) => updateRefreshInput(target.pluginId, key, value)} /></div>
+                  <span className="batch-target-state"><span>{target.state}</span>{eligibility.warning && <span title={eligibility.warning}><TriangleAlert size={15} aria-label={eligibility.warning} /></span>}{!eligibility.eligible && <small>{eligibility.reason}</small>}</span>
+                </div>;
+              })}
+              {!targets.length && <div className="logs-state"><strong>No Plugin Workspaces found</strong></div>}
+            </div>
+            <div className="batch-submit-bar">
+              <span>{selectedIds.size ? `${selectedIds.size} selected` : emptyState}</span>
+              <button className="primary-button" type="button" disabled={!selectedExecutable || submitting} onClick={startBatch}>{submitting ? <LoaderCircle className="spinner" size={15} /> : <RefreshCw size={15} />}Start refresh</button>
+            </div>
+          </div>
+          {historyPanel}
+        </div>
+      )}
+      {batch && (
+        <div className="batch-result-layout">
+          <div className="batch-result-main">
+            <div className="batch-counts" aria-label="Batch counts"><span><strong>{batch.counts.succeeded}</strong> succeeded</span><span><strong>{batch.counts.failed}</strong> failed</span><span><strong>{batch.counts.skipped}</strong> skipped</span><span><strong>{batch.counts.remaining}</strong> remaining</span></div>
+            <div className="batch-item-list" aria-label="Batch Workspace results">
+              {targetRows.map(({ item, target }) => <div className="batch-item-row" key={item.pluginId}>
+                <span className={`batch-item-icon batch-item-icon--${item.state}`}>{item.state === "running" || item.state === "queued" ? <LoaderCircle className="spinner" size={16} /> : item.state === "succeeded" ? <CheckCircle2 size={16} /> : item.state === "failed" ? <AlertCircle size={16} /> : <CircleOff size={16} />}</span>
+                <span className="batch-item-main"><strong>{item.name}</strong><small>{item.pluginId} · {itemStatusLabel(item.state)}{item.coalesced ? " · followed existing refresh" : ""}</small>{item.reason && <small className="batch-item-reason">{item.reason}</small>}{target?.lastSuccessfulRefreshAt && <small className="batch-target-exact">Last success {exactLocalTime(target.lastSuccessfulRefreshAt)}</small>}</span>
+                <span className="batch-item-actions">{item.operationId && <button type="button" onClick={() => onOpenLogs(batch.batchId, item.operationId)}><ExternalLink size={14} />Evidence</button>}</span>
+              </div>)}
+            </div>
+          </div>
+          {historyPanel}
         </div>
       )}
     </section>
@@ -225,22 +510,33 @@ export function App() {
   const [message, setMessage] = useState("Starting plugin services...");
   const [runtime, setRuntime] = useState<RuntimeInfo>();
   const [view, setView] = useState<HostView>({ kind: "plugins" });
+  const [batchId, setBatchId] = useState<string>();
   const [managedKey, setManagedKey] = useState<string>();
   const [bridgeDialog, setBridgeDialog] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState<{ connected: boolean; affected: Array<{ id: string; name: string }> }>();
   const [runtimeRestarting, setRuntimeRestarting] = useState(false);
   const [removeKey, setRemoveKey] = useState<string>();
-  const [toast, setToast] = useState<string>();
+  const [toast, setToast] = useState<ToastNotice>();
   const [logFilters, setLogFilters] = useState<LogFilters>(INITIAL_LOG_FILTERS);
   const [focusedLogId, setFocusedLogId] = useState<string>();
   const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const observedBatchIds = useRef(new Set<string>());
+  const notifiedBatchIds = useRef(new Set<string>());
 
   const refreshInfo = async () => {
     const info = await getRuntimeInfo();
     setRuntime(info);
     setStatus("ready");
     return info;
+  };
+
+  const showNotice = (notice: ToastNotice | string) => {
+    setToast(typeof notice === "string" ? { message: notice } : notice);
+  };
+
+  const observeBatch = (nextBatchId: string) => {
+    observedBatchIds.current.add(nextBatchId);
   };
 
   useEffect(() => {
@@ -266,6 +562,26 @@ export function App() {
     const timer = window.setInterval(() => refreshInfo().catch(() => setRuntimeRestarting(true)), 1_500);
     return () => window.clearInterval(timer);
   }, [status]);
+
+  useEffect(() => {
+    if (status !== "ready" || !runtime) return;
+    let active = true;
+    const checkBatches = async () => {
+      try {
+        const response = await runtimeRequest<{ activeBatch?: BatchSummary; batches: BatchSummary[] }>(runtime, "/runtime/batches");
+        if (!active) return;
+        const batches = new Map(response.batches.map((batch) => [batch.batchId, batch]));
+        if (response.activeBatch) batches.set(response.activeBatch.batchId, response.activeBatch);
+        for (const batch of batches.values()) {
+          const notice = batchCompletionNotice(batch, observedBatchIds.current, notifiedBatchIds.current);
+          if (notice) showNotice(notice);
+        }
+      } catch {}
+    };
+    void checkBatches();
+    const timer = window.setInterval(checkBatches, 900);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [status, runtime?.origin]);
 
   useEffect(() => window.infolens?.onRuntimeStatus((event) => {
     if (event.status === "running") {
@@ -323,9 +639,21 @@ export function App() {
     }
   };
 
+  const openBatchRefresh = async () => {
+    if (!runtime) return;
+    try {
+      const result = await runtimeRequest<{ activeBatch?: BatchSummary }>(runtime, "/runtime/batches");
+      if (result.activeBatch) observeBatch(result.activeBatch.batchId);
+      setBatchId(result.activeBatch?.batchId);
+      setView({ kind: "batch" });
+    } catch (reason) {
+      showNotice(reason instanceof Error ? reason.message : "Batch refresh is unavailable.");
+    }
+  };
+
   const mutate = async (action: () => Promise<unknown>, success: string) => {
-    try { await action(); await refreshInfo(); setToast(success); }
-    catch (error) { setToast(error instanceof Error ? error.message : "Operation failed"); }
+    try { await action(); await refreshInfo(); showNotice(success); }
+    catch (error) { showNotice(error instanceof Error ? error.message : "Operation failed"); }
   };
 
   const install = async () => {
@@ -360,8 +688,15 @@ export function App() {
       to: timestamp ? localValue(new Date(timestamp.getTime() + 60_000)) : "",
       keyword: "",
       operationId: failure.operationId ?? "",
+      batchId: failure.batchId ?? "",
     });
     setFocusedLogId(failure.logId);
+    setView({ kind: "logs" });
+  };
+
+  const openBatchLogs = (nextBatchId: string, operationId?: string) => {
+    setLogFilters({ ...INITIAL_LOG_FILTERS, batchId: operationId ? "" : nextBatchId, operationId: operationId ?? "" });
+    setFocusedLogId(undefined);
     setView({ kind: "logs" });
   };
 
@@ -381,21 +716,23 @@ export function App() {
           ))}
         </nav>
         <nav className="utility-nav" aria-label="Application">
-          <button className={`nav-item utility ${view.kind === "plugins" ? "is-selected" : ""}`} onClick={() => setView({ kind: "plugins" })} type="button"><span className="utility-icon"><Plug size={17} /></span><span className="nav-label">Plugins</span></button>
-          <button className={`nav-item utility ${view.kind === "logs" ? "is-selected" : ""}`} onClick={() => setView({ kind: "logs" })} type="button"><span className="utility-icon"><ScrollText size={17} /></span><span className="nav-label">Logs</span></button>
+           <button className={`nav-item utility ${view.kind === "plugins" ? "is-selected" : ""}`} onClick={() => setView({ kind: "plugins" })} type="button"><span className="utility-icon"><Plug size={17} /></span><span className="nav-label">Plugins</span></button>
+           <button className={`nav-item utility ${view.kind === "batch" ? "is-selected" : ""}`} onClick={openBatchRefresh} type="button"><span className="utility-icon"><RefreshCw size={17} /></span><span className="nav-label">Batch refresh</span>{runtime?.activeBatch && <span className="nav-badge">{runtime.activeBatch.counts.remaining}</span>}</button>
+           <button className={`nav-item utility ${view.kind === "logs" ? "is-selected" : ""}`} onClick={() => setView({ kind: "logs" })} type="button"><span className="utility-icon"><ScrollText size={17} /></span><span className="nav-label">Logs</span></button>
           <button className={`nav-item utility ${view.kind === "settings" ? "is-selected" : ""}`} onClick={() => setView({ kind: "settings" })} type="button"><span className="utility-icon"><Settings size={17} /></span><span className="nav-label">Settings</span></button>
         </nav>
       </aside>
 
       <main className="main-area">
         {runtimeRestarting && <div className="restart-bar" role="status"><LoaderCircle className="spinner" size={15} /> Restarting plugin services...</div>}
-        {view.kind === "logs" && <LogsView filters={logFilters} setFilters={setLogFilters} focusEntryId={focusedLogId} onNotice={setToast} />}
+        {view.kind === "logs" && <LogsView filters={logFilters} setFilters={setLogFilters} focusEntryId={focusedLogId} onNotice={showNotice} />}
         {view.kind !== "logs" && status === "loading" && <div className="system-state" role="status"><LoaderCircle className="spinner" size={24} /><p>{message}</p></div>}
         {view.kind !== "logs" && status === "error" && <div className="system-state system-state--error" role="alert"><h1>Plugin services unavailable</h1><p>{message}</p></div>}
         {status === "ready" && view.kind === "plugin" && selected && selected.state === "disabled" && (
           <div className="system-state"><CircleOff size={28} /><h1>{selected.name} is disabled</h1><button className="primary-button" onClick={() => runtime && mutate(() => runtimeRequest(runtime, `/runtime/plugins/${selected.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: true }) }), `${selected.name} enabled`)}>Enable in Plugins</button></div>
         )}
         {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? "Plugin"} workspace`} allow="clipboard-write" />}
+        {status === "ready" && view.kind === "batch" && runtime && <BatchRefreshView runtime={runtime} initialBatchId={batchId} onBatchIdChange={setBatchId} onBatchStarted={observeBatch} onOpenLogs={openBatchLogs} />}
         {status === "ready" && view.kind === "plugins" && runtime && (
           <section className="host-page plugin-manager">
             <header className="page-header"><div><h1>Plugins</h1><p>Installed packages and local diagnostics</p></div><button className="primary-button" onClick={install}><FolderPlus size={17} />Install plugin</button></header>
@@ -418,7 +755,7 @@ export function App() {
 
       {bridgeDialog && bridgeStatus && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="bridge-title"><button className="dialog-close" aria-label="Close" onClick={() => setBridgeDialog(false)}><X size={17} /></button>{bridgeStatus.connected ? <CheckCircle2 className="dialog-symbol success" size={26} /> : <TriangleAlert className="dialog-symbol warning" size={26} />}<h2 id="bridge-title">Browser connection</h2><p>{bridgeStatus.connected ? "Browser Bridge is connected." : "Connect Browser Bridge to refresh browser-based plugins."}</p><small>Affects {bridgeStatus.affected.map((plugin) => plugin.name).join(" and ")} only.</small><div className="dialog-actions"><button onClick={() => setBridgeDialog(false)}>Continue</button><button className="primary-button" onClick={checkBridge}>Check again</button></div></div></div>}
       {removeKey && runtime && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="remove-title"><TriangleAlert className="dialog-symbol danger" size={26} /><h2 id="remove-title">Remove plugin?</h2><p>The plugin package, retained content, settings, and logs will be permanently deleted.</p><div className="dialog-actions"><button onClick={() => setRemoveKey(undefined)}>Cancel</button><button className="danger-button" onClick={() => mutate(async () => { if (window.infolens) await window.infolens.removePlugin(removeKey); else await runtimeRequest(runtime, `/runtime/plugins/${encodeURIComponent(removeKey)}/remove`, { method: "DELETE" }); setRemoveKey(undefined); setManagedKey(undefined); }, "Plugin removed")}>Remove plugin</button></div></div></div>}
-      {toast && <div className="toast" role="status">{toast}</div>}
+      {toast && <div className="toast" role="status"><span>{toast.message}</span>{toast.batchId && <button type="button" onClick={() => { setBatchId(toast.batchId); setView({ kind: "batch" }); setToast(undefined); }}><ExternalLink size={14} />{toast.actionLabel ?? "View results"}</button>}</div>}
     </div>
   );
 }

@@ -25,6 +25,7 @@ function normalizedFilters(filters = {}) {
     to: filters.to ? String(filters.to) : null,
     keyword: filters.keyword ? String(filters.keyword).toLocaleLowerCase() : "",
     operationId: filters.operationId ? String(filters.operationId) : null,
+    batchId: filters.batchId ? String(filters.batchId) : null,
   };
 }
 
@@ -66,6 +67,7 @@ export function serializeLogEntries(entries) {
       ...(value.code ? { code: String(value.code) } : {}),
       sessionId: String(value.sessionId),
       ...(value.operationId ? { operationId: String(value.operationId) } : {}),
+      ...(value.batchId ? { batchId: String(value.batchId) } : {}),
     };
     return JSON.stringify(entry);
   }).join("\n") + (entries.length ? "\n" : "");
@@ -86,7 +88,7 @@ function redactLogValue(value, seen = new WeakSet()) {
 }
 
 function publicEntry(value, fallbackSource = "host", rawLine = "") {
-  const known = new Set(["id", "timestamp", "level", "source", "message", "code", "sessionId", "operationId"]);
+  const known = new Set(["id", "timestamp", "level", "source", "message", "code", "sessionId", "operationId", "batchId"]);
   const extra = Object.fromEntries(Object.entries(value).filter(([key]) => !known.has(key)));
   const safeExtra = redactLogValue(extra);
   const suffix = Object.keys(safeExtra).length ? ` ${JSON.stringify(safeExtra)}` : "";
@@ -102,6 +104,7 @@ function publicEntry(value, fallbackSource = "host", rawLine = "") {
   };
   if (value.code) entry.code = String(value.code);
   if (value.operationId) entry.operationId = String(value.operationId);
+  if (value.batchId) entry.batchId = String(value.batchId);
   return entry;
 }
 
@@ -145,7 +148,7 @@ export function createLogService({
   }
 
   return {
-    async write({ level, message, code, operationId }) {
+    async write({ level, message, code, operationId, batchId }) {
       if (!LEVELS.has(level)) throw new TypeError(`Unsupported log level: ${level}`);
       const entry = publicEntry({
         id: createId(),
@@ -156,6 +159,7 @@ export function createLogService({
         sessionId,
         code,
         operationId,
+        batchId,
       });
       const line = `${JSON.stringify(entry)}\n`;
       if (Buffer.byteLength(line, "utf8") > maxBytes) throw new RangeError("Log entry exceeds the configured file size");
@@ -188,6 +192,7 @@ export function createLogService({
         && (!filters.to || entry.timestamp <= filters.to)
         && (!filters.keyword || entry.message.toLocaleLowerCase().includes(filters.keyword))
         && (!filters.operationId || entry.operationId === filters.operationId)
+        && (!filters.batchId || entry.batchId === filters.batchId)
       ));
       let start = 0;
       if (cursor) {

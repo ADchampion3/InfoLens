@@ -11,6 +11,9 @@ import { createOpenCliAdapter, loadBundledOpenCli } from "./opencli-adapter.mjs"
 import { PluginTaskManager, SharedTaskQueue } from "./task-manager.mjs";
 import { redactSensitiveText, redactSensitiveValue } from "./redaction.mjs";
 import { HostStateStore } from "./host-state.mjs";
+import { normalizeTaskRefreshOutcome, shortRefreshMessage } from "./refresh-outcome.mjs";
+import { refreshInputKey, sanitizeRefreshOptions } from "./refresh-options.mjs";
+import { BatchManager, BATCH_TERMINAL_STATES } from "./batch-manager.mjs";
 import { garbageCollectAdapterStore, preparePluginAdapterScope, removePluginAdapterScope } from "./adapter-scope.mjs";
 
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
@@ -26,6 +29,8 @@ const pluginSdkTokenEntry = path.join(projectRoot, "packages", "plugin-sdk", "sr
 const pluginSdkWorkspaceStyles = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace.css");
 const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
 const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? path.join(path.dirname(dataRoot), "opencli-adapters"));
+const batchStatePath = process.env.INFOLENS_BATCH_STATE_PATH ? path.resolve(process.env.INFOLENS_BATCH_STATE_PATH) : undefined;
+const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID;
 const openCliRuntime = await loadBundledOpenCli(openCliRoot);
 const openCliAdapter = createOpenCliAdapter(openCliRuntime);
 const validationRuntime = {
@@ -63,11 +68,12 @@ const taskQueue = new SharedTaskQueue();
 let eventSequence = 0;
 const hostState = new HostStateStore(hostStatePath);
 await hostState.load();
+let batchManager;
 
 function errorDetails(error) {
   return {
     code: typeof error?.code === "string" ? error.code : error instanceof ContractError ? error.code : "PLUGIN_ERROR",
-    message: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+    message: shortRefreshMessage(error instanceof Error ? error.message : String(error), "Plugin operation failed"),
   };
 }
 
@@ -84,6 +90,22 @@ function emitStatus(type, pluginId, details = {}) {
   if (statusEvents.length > 200) statusEvents.shift();
   process.stdout.write(`${JSON.stringify(event)}\n`);
   return event;
+}
+
+function emitBatchEvent(event, details = {}) {
+  const value = {
+    type: "batch",
+    event,
+    sequence: ++eventSequence,
+    timestamp: new Date().toISOString(),
+    ...redactSensitiveValue(details),
+  };
+  statusEvents.push(value);
+  if (statusEvents.length > 200) statusEvents.shift();
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+  const { batchId, operationId, ...fields } = value;
+  void runtimeLogger.info(`batch-${event}`, { ...fields, batchId, operationId }).catch(() => {});
+  return value;
 }
 
 function json(response, status, body) {
@@ -251,17 +273,53 @@ function requestAbortContext(request, response) {
 }
 
 function setPluginStatus(plugin, state, details = {}) {
-  plugin.status = { ...plugin.status, state, ...details, updatedAt: new Date().toISOString() };
+  const { clearFailure, ...statusDetails } = details;
+  plugin.status = { ...plugin.status, state, ...statusDetails, updatedAt: new Date().toISOString() };
+  if (clearFailure) delete plugin.status.failure;
+  const knownSnapshot = hostState.snapshot().statusSnapshots[plugin.manifest.id];
+  const lastSuccessfulRefreshAt = typeof plugin.status.lastSuccessfulRefresh === "string"
+    ? plugin.status.lastSuccessfulRefresh
+    : knownSnapshot?.lastSuccessfulRefreshAt;
   const snapshot = {
     state,
     updatedAt: plugin.status.updatedAt,
-    ...(plugin.status.lastSuccessfulRefresh ? { lastSuccessfulRefreshAt: plugin.status.lastSuccessfulRefresh } : {}),
+    ...(lastSuccessfulRefreshAt ? { lastSuccessfulRefreshAt } : {}),
     ...(plugin.status.failure ? { failure: plugin.status.failure } : {}),
   };
-  void hostState.update((current) => ({
-    ...current,
-    statusSnapshots: { ...current.statusSnapshots, [plugin.manifest.id]: snapshot },
-  })).catch((error) => process.stderr.write(`[host-state] ${error.message}\n`));
+  void hostState.update((current) => {
+    const currentSnapshot = current.statusSnapshots[plugin.manifest.id];
+    const nextSnapshot = { ...currentSnapshot, ...snapshot };
+    if (clearFailure) delete nextSnapshot.failure;
+    if (!lastSuccessfulRefreshAt && currentSnapshot?.lastSuccessfulRefreshAt) {
+      nextSnapshot.lastSuccessfulRefreshAt = currentSnapshot.lastSuccessfulRefreshAt;
+    }
+    return {
+      ...current,
+      statusSnapshots: { ...current.statusSnapshots, [plugin.manifest.id]: nextSnapshot },
+    };
+  }).catch((error) => process.stderr.write(`[host-state] ${error.message}\n`));
+}
+
+function applyRefreshOutcome(plugin, outcome, { logId, operationId, batchId } = {}) {
+  if (outcome.status === "succeeded") {
+    const state = plugin.status.state === "refreshing" ? "running" : plugin.status.state;
+    setPluginStatus(plugin, state, { lastSuccessfulRefresh: outcome.lastSuccessfulRefreshAt, clearFailure: true });
+    return;
+  }
+  if (outcome.status === "cancelled") {
+    setPluginStatus(plugin, "cancelled", { outcome });
+    return;
+  }
+  const failure = {
+    code: outcome.code,
+    message: shortRefreshMessage(outcome.message),
+    ...(logId ? { logId } : {}),
+    ...(operationId ? { operationId } : {}),
+    ...(batchId ? { batchId } : {}),
+    timestamp: outcome.timestamp,
+  };
+  const state = plugin.status.state === "refreshing" ? "failed" : plugin.status.state;
+  setPluginStatus(plugin, state, { failure });
 }
 
 function resolveDataPath(dataDir, relativePath) {
@@ -292,21 +350,39 @@ async function activatePlugin(validated, packageRoot) {
     routes: new Map(),
     lifecycle: undefined,
     logger,
+    refreshOptions: undefined,
     status: { state: "starting", updatedAt: new Date().toISOString() },
   };
   const taskManager = new PluginTaskManager(manifest.id, taskQueue, async (type, details) => {
-    const safeDetails = details.error ? { ...details, ...errorDetails(details.error), error: undefined } : details;
+    batchManager?.onTaskEvent(manifest.id, type, details);
+    const { result, error, ...eventDetails } = details;
+    const refreshOutcome = normalizeTaskRefreshOutcome(type, { ...details, result });
+    const safeDetails = error
+      ? { ...eventDetails, ...errorDetails(error), error: undefined }
+      : eventDetails;
     if (type === "task-queued") setPluginStatus(plugin, "queued");
     if (type === "task-started") setPluginStatus(plugin, "refreshing");
-    if (type === "task-cancelled") setPluginStatus(plugin, "cancelled", { outcome: details.outcome });
-    const entry = await logger[type === "task-failed" ? "error" : "info"](type, safeDetails);
-    if (type === "task-completed" && plugin.status.state === "refreshing") setPluginStatus(plugin, "running");
-    if (type === "task-failed") {
-      const failure = { ...errorDetails(details.error), logId: entry.id, operationId: entry.operationId, timestamp: entry.timestamp };
-      if (details.error && typeof details.error === "object") Object.assign(details.error, failure);
+    if (refreshOutcome) {
+      safeDetails.outcome = refreshOutcome.status;
+      if (refreshOutcome.status !== "succeeded") {
+        safeDetails.code = refreshOutcome.code;
+        safeDetails.message = refreshOutcome.message;
+      }
+    }
+    if (type === "task-cancelled" && !refreshOutcome) setPluginStatus(plugin, "cancelled", { outcome: details.outcome });
+    const logLevel = type === "task-failed" || refreshOutcome?.status === "failed" ? "error" : "info";
+    const entry = await logger[logLevel](type, safeDetails);
+    if (refreshOutcome) {
+      applyRefreshOutcome(plugin, refreshOutcome, { logId: entry.id, operationId: entry.operationId, batchId: details.batchId });
+      if (details.error && typeof details.error === "object" && refreshOutcome.status === "failed") {
+        Object.assign(details.error, { ...errorDetails(details.error), logId: entry.id, operationId: entry.operationId, timestamp: entry.timestamp });
+      }
+    } else if (type === "task-failed") {
+      const failure = { ...errorDetails(error), logId: entry.id, operationId: entry.operationId, timestamp: entry.timestamp };
+      if (error && typeof error === "object") Object.assign(error, failure);
       setPluginStatus(plugin, "failed", { failure });
-      emitStatus(type, manifest.id, { ...safeDetails, logId: entry.id });
-      return;
+    } else if (type === "task-completed" && plugin.status.state === "refreshing") {
+      setPluginStatus(plugin, "running");
     }
     emitStatus(type, manifest.id, { ...safeDetails, logId: entry.id });
   });
@@ -332,6 +408,10 @@ async function activatePlugin(validated, packageRoot) {
       if (!health || typeof health.state !== "string") throw new TypeError("Health must include a state");
       setPluginStatus(plugin, health.state, health);
       emitStatus("health-changed", manifest.id, { state: health.state });
+    },
+    setRefreshOptions(provider) {
+      if (typeof provider !== "function") throw new TypeError("Refresh options provider must be a function");
+      plugin.refreshOptions = provider;
     },
     logger,
     opencli: {
@@ -431,6 +511,7 @@ async function discoverPlugins() {
 
 function publicPlugin(plugin, origin) {
   const id = plugin.manifest.id;
+  const statusSnapshot = hostState.snapshot().statusSnapshots[id];
   return {
     id,
     name: plugin.manifest.name,
@@ -438,13 +519,13 @@ function publicPlugin(plugin, origin) {
     icon: plugin.manifest.icon,
     badge: plugin.status.badge ?? plugin.lifecycle?.badge,
     state: plugin.status.state,
-    failure: plugin.status.failure,
+    failure: statusSnapshot?.failure,
     workspaceUrl: `${origin}/plugins/${id}/workspace/`,
     apiBaseUrl: `${origin}/plugins/${id}/api/`,
     packagePath: plugin.packageRoot,
     enabled: true,
     browserDependent: Object.values(plugin.manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC"),
-    statusSnapshot: hostState.snapshot().statusSnapshots[id],
+    statusSnapshot,
   };
 }
 
@@ -469,6 +550,57 @@ function findPlugin(id) {
 function findCompatible(id) {
   return compatiblePlugins.find((plugin) => plugin.validated.manifest.id === id);
 }
+
+function batchTarget(pluginId) {
+  const descriptor = findCompatible(pluginId);
+  const plugin = findPlugin(pluginId);
+  if (!descriptor) return { pluginId, name: pluginId, state: "unavailable", enabled: false, eligible: false, reason: "Plugin Workspace is not installed" };
+  const manifest = descriptor.validated.manifest;
+  const snapshot = hostState.snapshot().statusSnapshots[pluginId];
+  const state = plugin?.status.state ?? "disabled";
+  const enabled = Boolean(plugin && !descriptor.deactivated);
+  let refreshOptions;
+  try { refreshOptions = sanitizeRefreshOptions(plugin?.refreshOptions?.()); } catch { refreshOptions = undefined; }
+  let reason;
+  if (!enabled) reason = "Plugin Workspace is disabled";
+  else if (["disabled", "unavailable"].includes(state)) reason = state === "disabled" ? "Plugin Workspace is disabled" : "Plugin Workspace is unavailable";
+  else if (["starting", "queued", "refreshing"].includes(state)) reason = "Plugin Workspace is already busy";
+  else if (plugin?.taskManager?.isPending("refresh", "collection")) reason = "Plugin Workspace already has a refresh queued";
+  const browserDependent = Object.values(manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC");
+  return {
+    pluginId,
+    targetId: `${pluginId}@${manifest.version}`,
+    name: manifest.name,
+    version: manifest.version,
+    state,
+    enabled,
+    eligible: !reason,
+    ...(reason ? { reason } : {}),
+    ...(refreshOptions ? { refreshOptions } : {}),
+    browserDependent,
+    ...(browserDependent ? { dependencyState: state === "unavailable" ? "unavailable" : "unknown", dependencyWarning: state !== "unavailable" } : { dependencyState: "not-required" }),
+    ...(snapshot?.lastSuccessfulRefreshAt ? { lastSuccessfulRefreshAt: snapshot.lastSuccessfulRefreshAt } : {}),
+    ...(snapshot?.failure ? { failure: snapshot.failure } : {}),
+  };
+}
+
+async function enqueueBatchTarget(pluginId, { batchId, refreshInput }) {
+  const plugin = findPlugin(pluginId);
+  if (!plugin) throw Object.assign(new Error(`Plugin '${pluginId}' is not active`), { code: "PLUGIN_NOT_FOUND" });
+  return plugin.taskManager.enqueueDetailed("refresh", refreshInput, {
+    reason: "batch",
+    coalesceKey: refreshInput ? `collection:${refreshInputKey(refreshInput)}` : "collection",
+    batchId,
+  });
+}
+
+batchManager = new BatchManager({
+  getTarget: batchTarget,
+  enqueueTarget: enqueueBatchTarget,
+  statePath: batchStatePath,
+  sessionId: applicationSessionId,
+  onEvent: (event, details) => emitBatchEvent(event, details),
+});
 
 async function deactivatePlugin(plugin) {
   await plugin.taskManager.stop();
@@ -630,6 +762,7 @@ async function serveWorkspace(response, plugin, relativePath) {
   }
 }
 
+await batchManager.load();
 await discoverPlugins();
 
 const server = createServer(async (request, response) => {
@@ -694,6 +827,49 @@ const server = createServer(async (request, response) => {
   }
   if (url.pathname === "/runtime/tasks") {
     json(response, 200, taskQueue.snapshot());
+    return;
+  }
+  if (["/runtime/batches/targets", "/runtime/batch-refresh/targets"].includes(url.pathname) && request.method === "GET") {
+    json(response, 200, { targets: compatiblePlugins.filter((descriptor) => !descriptor.deactivated).map((descriptor) => batchTarget(descriptor.validated.manifest.id)) });
+    return;
+  }
+  if (["/runtime/batches", "/runtime/batch-refresh"].includes(url.pathname) && request.method === "GET") {
+    json(response, 200, { activeBatch: batchManager.active(), batches: batchManager.list() });
+    return;
+  }
+  if (["/runtime/batches", "/runtime/batch-refresh"].includes(url.pathname) && request.method === "POST") {
+    try {
+      const body = await readJsonBody(request);
+      const selections = body.targets ?? body.pluginIds;
+      const result = await batchManager.create(selections);
+      json(response, result.reused ? 200 : 202, { ...result.batch, batch: result.batch, reused: result.reused });
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, ["BATCH_ACTIVE", "RUNTIME_STOPPING"].includes(failure.code) ? 409 : 400, { error: failure.message, code: failure.code });
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/batches/active" && request.method === "GET") {
+    const batch = batchManager.active();
+    json(response, 200, { batch: batch ?? null });
+    return;
+  }
+  const batchRetryMatch = url.pathname.match(/^\/runtime\/batches\/([^/]+)\/retry$/);
+  if (batchRetryMatch && request.method === "POST") {
+    try {
+      const result = await batchManager.retry(decodeURIComponent(batchRetryMatch[1]));
+      json(response, 202, { ...result.batch, batch: result.batch, reused: result.reused });
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, ["BATCH_ACTIVE", "BATCH_NOT_FOUND"].includes(failure.code) ? 409 : 400, { error: failure.message, code: failure.code });
+    }
+    return;
+  }
+  const batchMatch = url.pathname.match(/^\/runtime\/batches\/([^/]+)$/);
+  if (batchMatch && request.method === "GET") {
+    const batch = batchManager.get(decodeURIComponent(batchMatch[1]));
+    if (!batch) { json(response, 404, { error: "Batch not found", code: "BATCH_NOT_FOUND" }); return; }
+    json(response, 200, batch);
     return;
   }
   if (url.pathname === "/runtime/host-state" && request.method === "PATCH") {
@@ -775,6 +951,7 @@ const server = createServer(async (request, response) => {
       plugins: compatiblePlugins.filter((plugin) => !plugin.deactivated).map((plugin) => publicCompatiblePlugin(plugin, origin)),
       rejectedPlugins,
       hostState: hostState.snapshot(),
+      activeBatch: batchManager.active(),
     });
     return;
   }
@@ -793,11 +970,13 @@ const server = createServer(async (request, response) => {
   }
 
   if (section === "health") {
+    const statusSnapshot = hostState.snapshot().statusSnapshots[pluginId];
     json(response, plugin.status.state === "failed" ? 503 : 200, {
       pluginId,
       state: plugin.status.state,
       badge: plugin.status.badge ?? plugin.lifecycle?.badge,
-      ...(plugin.status.failure ? { failure: plugin.status.failure } : {}),
+      ...(statusSnapshot?.lastSuccessfulRefreshAt ? { lastSuccessfulRefreshAt: statusSnapshot.lastSuccessfulRefreshAt } : {}),
+      ...(statusSnapshot?.failure ? { failure: statusSnapshot.failure } : {}),
     });
     return;
   }
@@ -855,14 +1034,16 @@ server.listen(port, "127.0.0.1", () => {
     plugins: compatiblePlugins.filter((plugin) => !plugin.deactivated).map((plugin) => publicCompatiblePlugin(plugin, origin)),
     rejectedPlugins,
     hostState: hostState.snapshot(),
+    activeBatch: batchManager.active(),
   })}\n`);
 });
 
 let stopping = false;
-async function shutdown() {
+async function shutdown(reason = "RUNTIME_RESTARTED") {
   if (stopping) return;
   stopping = true;
   process.stdin.pause();
+  await batchManager.interruptActive(reason);
   taskQueue.stop();
   await new Promise((resolve) => server.close(resolve));
   for (const plugin of [...activePlugins]) await deactivatePlugin(plugin);
@@ -875,5 +1056,9 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
-  if (chunk.split(/\r?\n/).some((line) => line.trim() === "shutdown")) shutdown();
+  for (const line of chunk.split(/\r?\n/)) {
+    const value = line.trim();
+    if (value === "shutdown") shutdown();
+    else if (value.startsWith("shutdown:")) shutdown(value.slice("shutdown:".length) || "RUNTIME_RESTARTED");
+  }
 });

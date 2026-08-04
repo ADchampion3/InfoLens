@@ -163,32 +163,47 @@ export class PluginTaskManager {
   }
 
   enqueue(name, input, options = {}) {
-    if (this.stopped) return Promise.reject(new TaskCancelledError(`Plugin '${this.pluginId}' task manager is stopped`, "not-started"));
+    return this.enqueueDetailed(name, input, options).promise;
+  }
+
+  enqueueDetailed(name, input, options = {}) {
+    if (this.stopped) return { promise: Promise.reject(new TaskCancelledError(`Plugin '${this.pluginId}' task manager is stopped`, "not-started")), operationId: undefined, coalesced: false };
     const handler = this.handlers.get(name);
-    if (!handler) return Promise.reject(new Error(`Task '${name}' is not registered`));
+    if (!handler) return { promise: Promise.reject(new Error(`Task '${name}' is not registered`)), operationId: undefined, coalesced: false };
     const key = `${name}:${options.coalesceKey ?? "default"}`;
     if (this.pending.has(key)) {
       const pending = this.pending.get(key);
-      void this.onEvent("task-coalesced", { task: name, reason: options.reason ?? "manual", operationId: pending.operationId });
-      return pending.promise;
+      void this.onEvent("task-coalesced", {
+        task: name,
+        reason: options.reason ?? "manual",
+        operationId: pending.operationId,
+        ...(options.batchId ? { batchId: options.batchId } : {}),
+      });
+      return { promise: pending.promise, operationId: pending.operationId, coalesced: true };
     }
 
     const reason = options.reason ?? "manual";
     const operationId = options.operationId ?? randomUUID();
-    void this.onEvent("task-queued", { task: name, reason, operationId });
+    const correlation = { task: name, operationId, ...(options.batchId ? { batchId: options.batchId } : {}) };
+    const queuedDetails = { ...correlation, reason };
+    void this.onEvent("task-queued", queuedDetails);
     const execution = this.queue.submitTask({ pluginId: this.pluginId, run: async (signal) => {
-      await this.onEvent("task-started", { task: name, reason, operationId });
+      await this.onEvent("task-started", queuedDetails);
       return handler(input, { signal, reason });
     } });
     const promise = execution.then(
-      async (result) => { await this.onEvent("task-completed", { task: name, operationId }); return result; },
+      async (result) => { await this.onEvent("task-completed", { ...correlation, result }); return result; },
       async (error) => {
-        await this.onEvent(error?.code === "TASK_CANCELLED" ? "task-cancelled" : "task-failed", { task: name, error, outcome: error?.outcome, operationId });
+        await this.onEvent(error?.code === "TASK_CANCELLED" ? "task-cancelled" : "task-failed", { ...correlation, error, outcome: error?.outcome });
         throw error;
       },
     ).finally(() => this.pending.delete(key));
-    this.pending.set(key, { promise, operationId });
-    return promise;
+    this.pending.set(key, { promise, operationId, task: name });
+    return { promise, operationId, coalesced: false };
+  }
+
+  isPending(name, coalesceKey = "default") {
+    return this.pending.has(`${name}:${coalesceKey}`);
   }
 
   schedule(name, options) {

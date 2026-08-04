@@ -38,13 +38,14 @@ export async function createPluginLogger(dataDir, options = {}) {
 
   function write(level, message, fields = {}) {
     const safeFields = sortValue(redactSensitiveValue(fields));
-    const { code, operationId, ...messageFields } = safeFields;
+    const { code, operationId, batchId, ...messageFields } = safeFields;
     const suffix = Object.keys(messageFields).length ? ` ${JSON.stringify(messageFields)}` : "";
     const value = {
       id: createId(), timestamp: clock().toISOString(), level, source,
       message: redactSensitiveText(`${message}${suffix}`), sessionId,
       ...(code ? { code: String(code) } : {}),
       ...(operationId ? { operationId: String(operationId) } : {}),
+      ...(batchId ? { batchId: String(batchId) } : {}),
     };
     const entry = `${JSON.stringify(value)}\n`;
     const operation = writes.then(async () => {

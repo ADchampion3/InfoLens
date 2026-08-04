@@ -1,13 +1,27 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { shortRefreshMessage } from "./refresh-outcome.mjs";
 
 const THEMES = new Set(["system", "light", "dark"]);
+
+function cleanFailure(failure) {
+  if (!failure || typeof failure !== "object") return undefined;
+  if (typeof failure.code !== "string" || !failure.code.trim()) return undefined;
+  return {
+    code: failure.code.trim().replace(/[^A-Za-z0-9_.-]/gu, "_").slice(0, 80),
+    message: shortRefreshMessage(failure.message),
+    ...(typeof failure.logId === "string" ? { logId: failure.logId } : {}),
+    ...(typeof failure.operationId === "string" ? { operationId: failure.operationId } : {}),
+    ...(typeof failure.batchId === "string" ? { batchId: failure.batchId } : {}),
+    ...(typeof failure.timestamp === "string" ? { timestamp: failure.timestamp } : {}),
+  };
+}
 
 function cleanSnapshot(snapshot = {}) {
   return {
     state: typeof snapshot.state === "string" ? snapshot.state : "disabled",
     ...(typeof snapshot.lastSuccessfulRefreshAt === "string" ? { lastSuccessfulRefreshAt: snapshot.lastSuccessfulRefreshAt } : {}),
-    ...(snapshot.failure ? { failure: snapshot.failure } : {}),
+    ...(cleanFailure(snapshot.failure) ? { failure: cleanFailure(snapshot.failure) } : {}),
     updatedAt: typeof snapshot.updatedAt === "string" ? snapshot.updatedAt : new Date().toISOString(),
   };
 }
