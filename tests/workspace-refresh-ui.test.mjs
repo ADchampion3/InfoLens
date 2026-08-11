@@ -82,6 +82,16 @@ test("workspaces use Plugin-owned export controls and streaming SDK delivery", a
   }
 });
 
+test("GitHub Trending export controls preview and filter retained snapshots by date", async () => {
+  const controls = await readFile(path.join(root, "plugins/github-trending/web/dist/export-controls.js"), "utf8");
+  assert.match(controls, /export\/dates/);
+  assert.match(controls, /export-preview/);
+  assert.match(controls, /params\.set\("date", dateSelect\.value\)/);
+  assert.match(controls, /response\.text\(\)/);
+  assert.match(controls, /copyDownloadable\(route\)/);
+  assert.match(controls, /downloadExport\(route\)/);
+});
+
 function fakeConfirmDialog() {
   const listeners = new Map();
   const nodes = {};

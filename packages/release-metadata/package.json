@@ -1,0 +1,11 @@
+{
+  "name": "@infolens/release-metadata",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./package.json": "./package.json",
+    "./release-metadata.json": "./release-metadata.json"
+  }
+}

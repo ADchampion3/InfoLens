@@ -4,10 +4,12 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm } from "node:fs/promi
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { HOST_VERSION, ContractError, validatePluginPackage } from "./contract.mjs";
+import { ContractError, validatePluginPackage } from "./contract.mjs";
+import { DEFAULT_TARGET_HOST_VERSION, PLUGIN_CONTRACT_VERSION } from "@infolens/release-metadata";
 import { createPluginLogger } from "./logger.mjs";
-import { createOpenCliAdapter, loadBundledOpenCli } from "./opencli-adapter.mjs";
+import { createOpenCliAdapter, resolveBundledOpenCli } from "./opencli-adapter.mjs";
 import { PluginTaskManager, SharedTaskQueue } from "./task-manager.mjs";
 import { redactSensitiveText, redactSensitiveValue } from "./redaction.mjs";
 import { HostStateStore } from "./host-state.mjs";
@@ -19,22 +21,31 @@ import { garbageCollectAdapterStore, preparePluginAdapterScope, removePluginAdap
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
   ? path.resolve(process.env.INFOLENS_PROJECT_ROOT)
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const require = createRequire(import.meta.url);
 const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? path.join(projectRoot, "plugins"));
 const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(projectRoot, ".infolens-data", "plugins"));
-const openCliRoot = path.resolve(process.env.INFOLENS_BUNDLED_OPENCLI_ROOT ?? path.join(projectRoot, "resources", "opencli"));
-const pluginSdkBrowserEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "index.js");
-const pluginWorkspaceHistoryEntry = path.join(projectRoot, "packages", "plugin-workspace", "src", "history-controls.js");
-const pluginWorkspaceHistoryStyles = path.join(projectRoot, "packages", "plugin-workspace", "src", "history.css");
-const pluginSdkTokenEntry = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace-tokens.css");
-const pluginSdkWorkspaceStyles = path.join(projectRoot, "packages", "plugin-sdk", "src", "workspace.css");
+const diagnosticMode = process.env.INFOLENS_RUNTIME_DIAGNOSTIC === "1";
+const diagnosticPluginId = process.env.INFOLENS_DIAGNOSTIC_PLUGIN_ID;
+const diagnosticKeepAlive = diagnosticMode ? setInterval(() => {}, 1_000) : undefined;
+function packageFile(packageName, fallback) {
+  try { return require.resolve(packageName); } catch { return fallback; }
+}
+const pluginSdkBrowserEntry = packageFile("@infolens/plugin-sdk", path.join(projectRoot, "packages", "plugin-sdk", "src", "index.js"));
+const pluginSdkRoot = path.dirname(pluginSdkBrowserEntry);
+const pluginWorkspaceHistoryEntry = packageFile("@infolens/plugin-workspace/history-controls", path.join(projectRoot, "packages", "plugin-workspace", "src", "history-controls.js"));
+const pluginWorkspaceRoot = path.dirname(pluginWorkspaceHistoryEntry);
+const pluginWorkspaceHistoryStyles = path.join(pluginWorkspaceRoot, "history.css");
+const pluginSdkTokenEntry = path.join(pluginSdkRoot, "workspace-tokens.css");
+const pluginSdkWorkspaceStyles = path.join(pluginSdkRoot, "workspace.css");
 const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
 const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? path.join(path.dirname(dataRoot), "opencli-adapters"));
 const batchStatePath = process.env.INFOLENS_BATCH_STATE_PATH ? path.resolve(process.env.INFOLENS_BATCH_STATE_PATH) : undefined;
 const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID;
-const openCliRuntime = await loadBundledOpenCli(openCliRoot);
+const openCliRuntime = await resolveBundledOpenCli({ fallbackRoot: path.join(projectRoot, "resources", "opencli") });
 const openCliAdapter = createOpenCliAdapter(openCliRuntime);
 const validationRuntime = {
-  hostVersion: HOST_VERSION,
+  hostVersion: DEFAULT_TARGET_HOST_VERSION,
+  contractVersion: String(PLUGIN_CONTRACT_VERSION),
   openCliVersion: openCliRuntime.version,
   availableCommands: openCliRuntime.availableCommands,
 };
@@ -332,7 +343,7 @@ function resolveDataPath(dataDir, relativePath) {
   return resolved;
 }
 
-async function activatePlugin(validated, packageRoot) {
+async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticMode } = {}) {
   const { manifest } = validated;
   const activationOperationId = randomUUID();
   const dataDir = path.join(dataRoot, manifest.id);
@@ -348,6 +359,8 @@ async function activatePlugin(validated, packageRoot) {
     packageRoot,
     workspaceRoot: validated.workspaceRoot,
     routes: new Map(),
+    registrations: { routes: [], tasks: [], schedules: [] },
+    diagnostic: diagnostic ? { mode: true, phase: "activation", violations: [] } : undefined,
     lifecycle: undefined,
     logger,
     refreshOptions: undefined,
@@ -385,7 +398,7 @@ async function activatePlugin(validated, packageRoot) {
       setPluginStatus(plugin, "running");
     }
     emitStatus(type, manifest.id, { ...safeDetails, logId: entry.id });
-  });
+  }, { diagnostic, registrations: plugin.registrations });
   plugin.taskManager = taskManager;
   activePlugins.push(plugin);
   await logger.info("plugin-activation-started", { operationId: activationOperationId });
@@ -396,10 +409,24 @@ async function activatePlugin(validated, packageRoot) {
     dataDir,
     resolveDataPath(relativePath) { return resolveDataPath(dataDir, relativePath); },
     route(method, route, handler) {
-      if (typeof handler !== "function") throw new TypeError("Route handler must be a function");
+      if (typeof method !== "string" || !/^[A-Za-z]+$/.test(method) || typeof route !== "string" || !route.trim() || !route.startsWith("/")) {
+        const error = new TypeError("Route registration requires an HTTP method and an absolute Plugin API path");
+        error.code = "INVALID_ROUTE_REGISTRATION";
+        throw error;
+      }
+      if (typeof handler !== "function") {
+        const error = new TypeError("Route handler must be a function");
+        error.code = "INVALID_ROUTE_REGISTRATION";
+        throw error;
+      }
       const key = normalizeRoute(method, route);
-      if (plugin.routes.has(key)) throw new Error(`Route '${key}' is already registered`);
+      if (plugin.routes.has(key)) {
+        const error = new Error(`Route '${key}' is already registered`);
+        error.code = "DUPLICATE_ROUTE_REGISTRATION";
+        throw error;
+      }
       plugin.routes.set(key, handler);
+      plugin.registrations.routes.push({ method: method.toUpperCase(), path: route });
     },
     task(name, handler) { taskManager.register(name, handler); },
     enqueue(name, input, options) { return taskManager.enqueue(name, input, options); },
@@ -418,6 +445,13 @@ async function activatePlugin(validated, packageRoot) {
       async run(commandKey, args = [], signal) {
         const mapping = manifest.openCliCommands[commandKey];
         if (!mapping) throw new Error(`OpenCLI command '${commandKey}' is not declared by plugin '${manifest.id}'`);
+        if (diagnostic) {
+          const error = new Error(`Diagnostic mode blocked OpenCLI command '${commandKey}' during activation`);
+          error.code = "DIAGNOSTIC_OPENCLI_EXECUTION";
+          error.phase = "activation";
+          plugin.diagnostic.violations.push({ type: "opencli", commandKey, code: error.code });
+          throw error;
+        }
         await logger.info("opencli-started", { commandKey, strategy: mapping.strategy });
         try {
           const resource = mapping.strategy === "PUBLIC" ? "PUBLIC" : "BROWSER";
@@ -433,18 +467,52 @@ async function activatePlugin(validated, packageRoot) {
   };
 
   try {
-    const module = await import(`${pathToFileURL(validated.backendPath).href}?runtime=${Date.now()}`);
-    if (typeof module.activate !== "function") throw new Error("backend.entry must export activate(context)");
-    plugin.lifecycle = await module.activate(context) ?? {};
+    if (plugin.diagnostic) {
+      plugin.diagnostic.phase = "backend-import";
+      process.stdout.write(`${JSON.stringify({ type: "diagnostic-phase", pluginId: manifest.id, phase: "backend-import" })}\n`);
+    }
+    let module;
+    try {
+      module = await import(`${pathToFileURL(validated.backendPath).href}?runtime=${Date.now()}`);
+    } catch (error) {
+      if (!error.code || error.code.startsWith("ERR_")) error.code = "BACKEND_IMPORT_FAILED";
+      error.phase = "backend-import";
+      throw error;
+    }
+    if (typeof module.activate !== "function") {
+      const error = new Error("backend.entry must export activate(context)");
+      error.code = "BACKEND_ACTIVATE_EXPORT_MISSING";
+      error.phase = "backend-import";
+      throw error;
+    }
+    try {
+      if (plugin.diagnostic) {
+        plugin.diagnostic.phase = "activation";
+        process.stdout.write(`${JSON.stringify({ type: "diagnostic-phase", pluginId: manifest.id, phase: "activation" })}\n`);
+      }
+      plugin.lifecycle = await module.activate(context) ?? {};
+    } catch (error) {
+      if (!error.code) error.code = "BACKEND_ACTIVATION_FAILED";
+      error.phase = error.phase ?? "activation";
+      throw error;
+    }
     const initialHealth = plugin.lifecycle.health;
     if (initialHealth) setPluginStatus(plugin, initialHealth.state, initialHealth);
     else if (plugin.status.state === "starting") setPluginStatus(plugin, "running");
+    if (plugin.diagnostic) {
+      plugin.diagnostic.phase = "running";
+      process.stdout.write(`${JSON.stringify({ type: "diagnostic-phase", pluginId: manifest.id, phase: "running" })}\n`);
+    }
     await logger.info("plugin-activated", { operationId: activationOperationId, version: manifest.version });
     emitStatus("activated", manifest.id, { state: plugin.status.state });
   } catch (error) {
     await taskManager.stop();
     plugin.routes.clear();
-    const failure = errorDetails(error);
+    const failure = { ...errorDetails(error), ...(error?.phase ? { phase: error.phase } : {}) };
+    if (plugin.diagnostic) {
+      plugin.diagnostic.phase = error.phase ?? "activation";
+      plugin.diagnostic.failure = failure;
+    }
     const entry = await logger.error("activation-failed", { ...failure, operationId: activationOperationId });
     const correlatedFailure = { ...failure, logId: entry.id, operationId: entry.operationId, timestamp: entry.timestamp };
     setPluginStatus(plugin, "failed", { failure: correlatedFailure });
@@ -473,6 +541,7 @@ async function discoverPlugins() {
   catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
+  if (diagnosticMode) entries = entries.filter((entry) => entry.isDirectory() && (!diagnosticPluginId || entry.name === diagnosticPluginId));
   const claimedPluginIds = new Set();
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory()) continue;
@@ -603,20 +672,30 @@ batchManager = new BatchManager({
 });
 
 async function deactivatePlugin(plugin) {
+  if (plugin.diagnostic) {
+    plugin.diagnostic.phase = "cleanup";
+    process.stdout.write(`${JSON.stringify({ type: "diagnostic-phase", pluginId: plugin.manifest.id, phase: "cleanup" })}\n`);
+  }
   await plugin.taskManager.stop();
   plugin.routes.clear();
+  let cleanup;
   try {
     await plugin.lifecycle?.deactivate?.();
     await plugin.logger.info("plugin-deactivated");
     emitStatus("deactivated", plugin.manifest.id);
+    cleanup = { ok: true, phase: "cleanup" };
   } catch (error) {
-    setPluginStatus(plugin, "failed", { failure: errorDetails(error) });
-    await plugin.logger.error("cleanup-failed", errorDetails(error));
-    emitStatus("cleanup-failed", plugin.manifest.id, errorDetails(error));
+    const failure = { ...errorDetails(error), code: error?.code ?? "PLUGIN_CLEANUP_FAILED", phase: "cleanup" };
+    setPluginStatus(plugin, "failed", { failure });
+    await plugin.logger.error("cleanup-failed", failure);
+    emitStatus("cleanup-failed", plugin.manifest.id, failure);
+    cleanup = { ok: false, phase: "cleanup", failure };
   }
+  if (plugin.diagnostic) plugin.diagnostic.cleanup = cleanup;
   await plugin.logger.flush();
   const index = activePlugins.indexOf(plugin);
   if (index >= 0) activePlugins.splice(index, 1);
+  return cleanup;
 }
 
 async function readJsonBody(request) {
@@ -1039,14 +1118,59 @@ server.listen(port, "127.0.0.1", () => {
 });
 
 let stopping = false;
+function diagnosticResult(plugin) {
+  const checks = [];
+  if (!plugin) {
+    checks.push({ id: "doctor.runtime", severity: "error", status: "failed", phase: "discovery", code: "DIAGNOSTIC_PLUGIN_NOT_FOUND", message: "Diagnostic Plugin was not discovered" });
+    return { type: "diagnostic-result", ok: false, checks, registrations: { routes: [], tasks: [], schedules: [] } };
+  }
+  const diagnostic = plugin.diagnostic ?? {};
+  if (diagnostic.failure) {
+    const failure = diagnostic.failure;
+    const id = failure.phase === "backend-import" ? "doctor.backend-import" : "doctor.activation";
+    checks.push({ id, severity: "error", status: "failed", phase: failure.phase ?? "activation", code: failure.code, message: failure.message });
+  } else {
+    checks.push({ id: "doctor.activation", severity: "info", status: "passed", phase: "activation", details: { state: plugin.status.state } });
+  }
+  const registrations = plugin.taskManager.diagnosticSnapshot();
+  const registrationDetails = { routes: plugin.registrations.routes, tasks: registrations.registrations.tasks, schedules: registrations.registrations.schedules };
+  checks.push({ id: "doctor.registrations", severity: "info", status: "passed", phase: "activation", details: registrationDetails });
+  for (const violation of registrations.violations.concat(diagnostic.violations ?? [])) {
+    checks.push({ id: "doctor.side-effect", severity: "error", status: "failed", phase: "activation", code: violation.code, message: `Diagnostic mode blocked ${violation.type}` });
+  }
+  const healthFailure = plugin.status.state === "failed" && !diagnostic.failure ? plugin.status.failure : undefined;
+  const healthyState = plugin.status.state === "ready" || plugin.status.state === "running";
+  if (healthFailure || (!diagnostic.failure && !healthyState)) {
+    checks.push({ id: "doctor.health", severity: "error", status: "failed", phase: "health", code: "PLUGIN_HEALTH_FAILED", message: healthFailure?.message ?? `Plugin Health state '${plugin.status.state}' is not ready` });
+  } else if (diagnostic.failure) {
+    checks.push({ id: "doctor.health", severity: "info", status: "skipped", phase: "health", details: { reason: "activation failed" } });
+  } else {
+    checks.push({ id: "doctor.health", severity: "info", status: "passed", phase: "health", details: { state: plugin.status.state } });
+  }
+  if (diagnostic.cleanup?.ok === false) checks.push({ id: "doctor.cleanup", severity: "error", status: "failed", phase: "cleanup", code: diagnostic.cleanup.failure?.code ?? "PLUGIN_CLEANUP_FAILED", message: diagnostic.cleanup.failure?.message });
+  else if (diagnostic.cleanup) checks.push({ id: "doctor.cleanup", severity: "info", status: "passed", phase: "cleanup" });
+  return {
+    type: "diagnostic-result",
+    ok: !checks.some((check) => check.severity === "error"),
+    plugin: { id: plugin.manifest.id, name: plugin.manifest.name, version: plugin.manifest.version },
+    registrations: registrationDetails,
+    ...(plugin.status.state ? { health: { state: plugin.status.state } } : {}),
+    ...(diagnostic.cleanup ? { cleanup: diagnostic.cleanup } : {}),
+    checks,
+  };
+}
+
 async function shutdown(reason = "RUNTIME_RESTARTED") {
   if (stopping) return;
   stopping = true;
   process.stdin.pause();
+  const diagnosticPlugin = diagnosticMode ? activePlugins.find((plugin) => plugin.manifest.id === diagnosticPluginId) : undefined;
   await batchManager.interruptActive(reason);
   taskQueue.stop();
   await new Promise((resolve) => server.close(resolve));
   for (const plugin of [...activePlugins]) await deactivatePlugin(plugin);
+  if (diagnosticMode) process.stdout.write(`${JSON.stringify(diagnosticResult(diagnosticPlugin))}\n`);
+  if (diagnosticKeepAlive) clearInterval(diagnosticKeepAlive);
   await runtimeLogger.info("runtime-stopped");
   await runtimeLogger.flush();
   process.exit(0);

@@ -1,5 +1,5 @@
 import { openStore } from "./storage.js";
-import { downloadableResponse } from "../../../packages/plugin-sdk/src/index.js";
+import { downloadableResponse } from "@infolens/plugin-sdk";
 import { createExport } from "./export.js";
 
 const POLICIES = new Set(["manual", "disabled", "fixed"]);

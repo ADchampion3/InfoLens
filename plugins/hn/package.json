@@ -2,5 +2,8 @@
   "name": "@infolens/plugin-hn",
   "version": "0.3.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@infolens/plugin-sdk": "0.1.0"
+  }
 }

@@ -233,6 +233,15 @@ test("Bundled Plugin export routes serve all four formats with fixed transport h
         }
       }
     }
+    const githubBase = `${origin}/plugins/github-trending/api`;
+    assert.deepEqual(await fetch(`${githubBase}/export/dates`).then((response) => response.json()), {
+      dates: [{ date: "2026-08-01", snapshotCount: 1 }],
+    });
+    const dated = await fetch(`${githubBase}/export?format=json&date=2026-08-01`);
+    assert.equal(dated.status, 200);
+    assert.match(dated.headers.get("content-disposition") || "", /github-trending-history-2026-08-01\.json/u);
+    assert.equal(JSON.parse(await dated.text()).snapshots.length, 1);
+    assert.equal((await fetch(`${githubBase}/export?format=json&date=2026-02-30`)).status, 500);
   } finally {
     await stopRuntime(runtime?.child);
     await rm(temporaryRoot, { recursive: true, force: true });

@@ -3,7 +3,23 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const OPENCLI_PACKAGE_NAME = "@jackwener/opencli";
-const OPENCLI_PACKAGE_VERSION = "1.8.6";
+const SUPPORTED_PATCH_TARGETS = new Set(["1.8.6"]);
+
+function declaredOpenCliVersion(manifest) {
+  const dependencies = {
+    ...(manifest?.dependencies ?? {}),
+    ...(manifest?.optionalDependencies ?? {}),
+  };
+  const entries = Object.entries(dependencies).filter(([name]) => name === OPENCLI_PACKAGE_NAME);
+  if (entries.length !== 1 || !/^\d+\.\d+\.\d+$/.test(entries[0][1])) {
+    throw new Error(`OpenCLI override requires one exact ${OPENCLI_PACKAGE_NAME} dependency`);
+  }
+  return entries[0][1];
+}
+
+export function supportedOpenCliPatchTargets() {
+  return [...SUPPORTED_PATCH_TARGETS];
+}
 
 export function patchOpenCliDiscovery(source) {
   if (source.includes("export async function discoverPluginPaths")) return source;
@@ -44,10 +60,18 @@ export function patchOpenCliMain(source) {
 }
 
 export async function applyOpenCliOverrides(root = path.resolve(import.meta.dirname, "..")) {
+  const wrapperPath = path.join(root, "resources", "opencli", "package.json");
+  let wrapperManifest;
+  try { wrapperManifest = JSON.parse(await readFile(wrapperPath, "utf8")); }
+  catch (error) { throw new Error(`OpenCLI override wrapper metadata is unavailable: ${error.message}`); }
+  const declaredVersion = declaredOpenCliVersion(wrapperManifest);
+  if (!SUPPORTED_PATCH_TARGETS.has(declaredVersion)) {
+    throw new Error(`OpenCLI override supports ${OPENCLI_PACKAGE_NAME} ${[...SUPPORTED_PATCH_TARGETS].join(", ")}; declared ${OPENCLI_PACKAGE_NAME} ${declaredVersion}`);
+  }
   const packageRoot = path.join(root, "resources", "opencli", "node_modules", "@jackwener", "opencli");
   const packageManifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
-  if (packageManifest.name !== OPENCLI_PACKAGE_NAME || packageManifest.version !== OPENCLI_PACKAGE_VERSION) {
-    throw new Error(`OpenCLI override requires ${OPENCLI_PACKAGE_NAME} ${OPENCLI_PACKAGE_VERSION}; found ${packageManifest.name ?? "unknown"} ${packageManifest.version ?? "unknown"}`);
+  if (packageManifest.name !== OPENCLI_PACKAGE_NAME || packageManifest.version !== declaredVersion) {
+    throw new Error(`OpenCLI override requires ${OPENCLI_PACKAGE_NAME} ${declaredVersion}; found ${packageManifest.name ?? "unknown"} ${packageManifest.version ?? "unknown"}`);
   }
   const sourceRoot = path.join(packageRoot, "dist", "src");
   for (const [filename, patcher] of [

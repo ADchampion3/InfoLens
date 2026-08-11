@@ -10,6 +10,15 @@
     ".": {
       "types": "./src/index.d.ts",
       "import": "./src/index.js"
-    }
+    },
+    "./src/index.js": "./src/index.js",
+    "./src/workspace.css": "./src/workspace.css",
+    "./src/workspace-tokens.css": "./src/workspace-tokens.css"
+  },
+  "dependencies": {
+    "@infolens/bundled-opencli": "1.8.6",
+    "@infolens/plugin-runtime": "0.2.0",
+    "@infolens/release-metadata": "0.2.0",
+    "semver": "^7.6.3"
   }
 }

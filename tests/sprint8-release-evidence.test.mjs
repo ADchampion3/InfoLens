@@ -44,6 +44,13 @@ test("Product Hunt ships a portable provided adapter and OpenCLI discovery patch
 test("OpenCLI overrides reject an unpinned package version before patching source", async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-opencli-version-"));
   try {
+    const wrapperRoot = path.join(temporaryRoot, "resources", "opencli");
+    await mkdir(wrapperRoot, { recursive: true });
+    await writeFile(path.join(wrapperRoot, "package.json"), JSON.stringify({
+      name: "@infolens/bundled-opencli",
+      version: "1.8.6",
+      dependencies: { "@jackwener/opencli": "1.8.6" },
+    }));
     const packageRoot = path.join(temporaryRoot, "resources", "opencli", "node_modules", "@jackwener", "opencli");
     await mkdir(packageRoot, { recursive: true });
     await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "@jackwener/opencli", version: "1.8.7" }));

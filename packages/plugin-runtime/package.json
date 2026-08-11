@@ -1,9 +1,20 @@
 {
   "name": "@infolens/plugin-runtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "dependencies": {
+    "@infolens/bundled-opencli": "1.8.6",
+    "@infolens/release-metadata": "0.2.0",
     "semver": "^7.6.3"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./contract": "./src/contract.mjs",
+    "./opencli-adapter": "./src/opencli-adapter.mjs",
+    "./adapter-scope": "./src/adapter-scope.mjs",
+    "./workspace-diagnostics": "./src/workspace-diagnostics.mjs",
+    "./server": "./src/server.mjs",
+    "./package.json": "./package.json"
   }
 }

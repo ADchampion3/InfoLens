@@ -91,7 +91,7 @@ test("Sprint 2 contracts execute through the actual Plugin Runtime", async () =>
     assert.equal(typeof activationStatus.operationId, "string");
     const activationLines = (await readFile(path.join(dataRoot, "activation-failure", "logs", "plugin.log"), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
     const activationOperation = activationLines.filter((entry) => entry.operationId === activationStatus.operationId);
-    assert.deepEqual(activationOperation.map(({ message }) => message), ["plugin-activation-started", "activation-failed {\"message\":\"fixture activation exploded\"}"]);
+    assert.deepEqual(activationOperation.map(({ message }) => message), ["plugin-activation-started", "activation-failed {\"message\":\"fixture activation exploded\",\"phase\":\"activation\"}"]);
     assert.equal(activationOperation.at(-1).id, activationStatus.logId);
     assert.equal(activeById.get("valid-contract").state, "ready");
     assert.equal(activeById.get("route-failure").state, "running");

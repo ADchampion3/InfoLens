@@ -146,10 +146,13 @@ export class SharedTaskQueue {
 }
 
 export class PluginTaskManager {
-  constructor(pluginId, queue, onEvent) {
+  constructor(pluginId, queue, onEvent, { diagnostic = false, registrations = { tasks: [], schedules: [] } } = {}) {
     this.pluginId = pluginId;
     this.queue = queue;
     this.onEvent = onEvent;
+    this.diagnostic = diagnostic;
+    this.registrations = registrations;
+    this.diagnosticViolations = [];
     this.handlers = new Map();
     this.pending = new Map();
     this.schedules = new Set();
@@ -157,9 +160,23 @@ export class PluginTaskManager {
   }
 
   register(name, handler) {
-    if (this.handlers.has(name)) throw new Error(`Task '${name}' is already registered`);
-    if (typeof handler !== "function") throw new TypeError(`Task '${name}' handler must be a function`);
+    if (typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+      const error = new Error(`Task '${String(name)}' is invalid`);
+      error.code = "INVALID_TASK_REGISTRATION";
+      throw error;
+    }
+    if (this.handlers.has(name)) {
+      const error = new Error(`Task '${name}' is already registered`);
+      error.code = "DUPLICATE_TASK_REGISTRATION";
+      throw error;
+    }
+    if (typeof handler !== "function") {
+      const error = new TypeError(`Task '${name}' handler must be a function`);
+      error.code = "INVALID_TASK_REGISTRATION";
+      throw error;
+    }
     this.handlers.set(name, handler);
+    this.registrations.tasks.push({ name });
   }
 
   enqueue(name, input, options = {}) {
@@ -168,6 +185,13 @@ export class PluginTaskManager {
 
   enqueueDetailed(name, input, options = {}) {
     if (this.stopped) return { promise: Promise.reject(new TaskCancelledError(`Plugin '${this.pluginId}' task manager is stopped`, "not-started")), operationId: undefined, coalesced: false };
+    if (this.diagnostic) {
+      const error = new Error(`Diagnostic mode blocked task '${name}' execution`);
+      error.code = "DIAGNOSTIC_TASK_EXECUTION";
+      error.phase = "activation";
+      this.diagnosticViolations.push({ type: "task", name, code: error.code });
+      return { promise: Promise.reject(error), operationId: undefined, coalesced: false };
+    }
     const handler = this.handlers.get(name);
     if (!handler) return { promise: Promise.reject(new Error(`Task '${name}' is not registered`)), operationId: undefined, coalesced: false };
     const key = `${name}:${options.coalesceKey ?? "default"}`;
@@ -207,7 +231,23 @@ export class PluginTaskManager {
   }
 
   schedule(name, options) {
-    if (!Number.isFinite(options?.intervalMs) || options.intervalMs < 100) throw new Error("Schedule intervalMs must be at least 100");
+    if (!this.handlers.has(name) || typeof name !== "string") {
+      const error = new Error(`Schedule '${String(name)}' references an unregistered task`);
+      error.code = "INVALID_SCHEDULE_REGISTRATION";
+      throw error;
+    }
+    if (!Number.isFinite(options?.intervalMs) || options.intervalMs < 100) {
+      const error = new Error("Schedule intervalMs must be at least 100");
+      error.code = "INVALID_SCHEDULE_REGISTRATION";
+      throw error;
+    }
+    this.registrations.schedules.push({
+      task: name,
+      intervalMs: options.intervalMs,
+      runImmediately: Boolean(options.runImmediately),
+      ...(options.reason ? { reason: options.reason } : {}),
+    });
+    if (this.diagnostic) return () => {};
     const enqueue = () => this.enqueue(name, options.input, { reason: options.reason ?? "schedule", coalesceKey: options.coalesceKey }).catch(() => {});
     const timer = setInterval(enqueue, options.intervalMs);
     timer.unref?.();
@@ -222,5 +262,9 @@ export class PluginTaskManager {
     this.schedules.clear();
     this.queue.cancelPlugin(this.pluginId);
     await Promise.allSettled([...this.pending.values()].map(({ promise }) => promise));
+  }
+
+  diagnosticSnapshot() {
+    return { registrations: this.registrations, violations: [...this.diagnosticViolations] };
   }
 }

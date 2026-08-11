@@ -1,17 +1,26 @@
 import { openStore } from "./storage.js";
-import { downloadableResponse } from "../../../packages/plugin-sdk/src/index.js";
-import { createExport } from "./export.js";
+import { downloadableResponse } from "@infolens/plugin-sdk";
+import { createExport, normalizeExportDate } from "./export.js";
 
 const POLICIES = new Set(["manual", "disabled", "fixed"]);
 const INTERVALS = new Set([15, 30, 60, 360, 720, 1440]);
 const RETENTION_DAYS = new Set([7, 30, 90]);
 const PERIODS = new Set(["daily", "weekly", "monthly"]);
+const LANGUAGE_OPTIONS = ["all", "TypeScript", "Python", "Rust", "Go", "C++"];
 const LANGUAGE_COLORS = { TypeScript: "#3178c6", JavaScript: "#f1e05a", Python: "#3572A5", Rust: "#dea584", Go: "#00ADD8", "C++": "#f34b7d" };
 const README_CACHE_MS = 6 * 60 * 60 * 1000;
 const MAX_README_BYTES = 2 * 1024 * 1024;
 
 function requiredString(value, field) { if (typeof value !== "string" || !value.trim()) throw new Error(`GitHub Trending result has invalid ${field}`); return value; }
 function nonNegative(value, field) { if (!Number.isInteger(value) || value < 0) throw new Error(`GitHub Trending result has invalid ${field}`); return value; }
+
+function normalizeView(value, fallback) {
+  const current = fallback ?? { period: "daily", language: "all" };
+  const period = value?.period ?? current.period;
+  const language = value?.language ?? current.language;
+  if (!PERIODS.has(period) || typeof language !== "string" || !/^[a-zA-Z0-9+#.-]{1,30}$|^all$/u.test(language)) throw new Error("Unsupported GitHub Trending filter");
+  return { period, language };
+}
 
 export function validateCollection(result) {
   if (!Array.isArray(result) || result.length === 0) throw new Error("GitHub Trending OpenCLI result must contain rows");
@@ -51,11 +60,24 @@ export async function activate(context) {
   store.cleanupOnActivation();
   let cancelSchedule;
   const summary = () => ({ source: "GitHub Trending", repositories: store.list(), settings: store.settings(), view: store.view(), ...store.metadata() });
+  const refreshOptions = () => {
+    const view = store.view();
+    const languages = [...new Set([...LANGUAGE_OPTIONS, view.language])];
+    return {
+      title: "Trending filters",
+      fields: [
+        { key: "period", label: "Period", type: "select", options: [{ value: "daily", label: "Today" }, { value: "weekly", label: "This week" }, { value: "monthly", label: "This month" }] },
+        { key: "language", label: "Language", type: "select", options: languages.map((language) => ({ value: language, label: language === "all" ? "All languages" : language })) },
+      ],
+      values: view,
+    };
+  };
+  context.setRefreshOptions(refreshOptions);
   const updateHealth = () => { const data = summary(); context.setHealth({ state: "ready", badge: String(data.repositories.filter((repo) => !repo.read).length), lastSuccessfulRefresh: data.lastSuccessfulRefresh }); };
   const configureSchedule = () => { cancelSchedule?.(); cancelSchedule = undefined; const settings = store.settings(); if (settings.policy === "fixed") cancelSchedule = context.schedule("refresh", { intervalMs: settings.intervalMinutes * 60_000, reason: "schedule" }); };
-  context.task("refresh", async (_, task) => {
+  context.task("refresh", async (input, task) => {
     try {
-      const view = store.view();
+      const view = normalizeView(input, store.view());
       const args = [`--since=${view.period}`, "--limit=25"];
       if (view.language !== "all") args.push(`--language=${view.language.toLowerCase()}`);
       const repositories = validateCollection(await context.opencli.run("trendingRepositories", args, task.signal));
@@ -93,16 +115,18 @@ export async function activate(context) {
   });
   context.route("GET", "/settings", () => store.settings());
   context.route("POST", "/settings", ({ url }) => { const policy=url.searchParams.get("policy"); const intervalMinutes=Number(url.searchParams.get("intervalMinutes") ?? 60); const retentionDays=Number(url.searchParams.get("retentionDays")??store.settings().retentionDays); if(!POLICIES.has(policy)||!INTERVALS.has(intervalMinutes)||!RETENTION_DAYS.has(retentionDays)) throw new Error("Unsupported refresh setting"); store.saveSettings({policy,intervalMinutes,retentionDays},{acknowledgeRetentionCleanup:url.searchParams.get("acknowledgeRetentionCleanup")==="true"}); configureSchedule(); return store.settings(); });
-  context.route("POST", "/view", ({ url }) => { const period=url.searchParams.get("period"); const language=url.searchParams.get("language") ?? "all"; if(!PERIODS.has(period)||!/^[a-zA-Z0-9+#.-]{1,30}$|^all$/.test(language)) throw new Error("Unsupported GitHub Trending filter"); store.saveView({period,language}); return summary(); });
+  context.route("POST", "/view", ({ url }) => { store.saveView(normalizeView({ period: url.searchParams.get("period"), language: url.searchParams.get("language") ?? "all" }, store.view())); return summary(); });
   context.route("GET", "/history", ({url}) => store.snapshots({limit:url.searchParams.get("limit"),offset:url.searchParams.get("offset")}));
   context.route("GET", "/history/snapshot", ({url}) => store.snapshot(url.searchParams.get("id"))??{error:"Snapshot not found"});
+  context.route("GET", "/export/dates", () => ({ dates: store.snapshotDates() }));
   context.route("GET", "/export", ({ url }) => {
     const format = url.searchParams.get("format") ?? "json";
     const exportedAt = new Date().toISOString();
+    const date = normalizeExportDate(url.searchParams.get("date"));
     return downloadableResponse({
-      filenameBase: `github-trending-history-${exportedAt.slice(0, 10)}`,
+      filenameBase: `github-trending-history-${date ?? exportedAt.slice(0, 10)}`,
       format,
-      body: createExport(context.resolveDataPath("github-trending.sqlite"), { pluginId: "github-trending", pluginVersion: "0.3.0", format, exportedAt }),
+      body: createExport(context.resolveDataPath("github-trending.sqlite"), { pluginId: "github-trending", pluginVersion: "0.3.0", format, exportedAt, date }),
     });
   });
   configureSchedule(); updateHealth();

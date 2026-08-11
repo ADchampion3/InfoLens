@@ -1,9 +1,10 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import semver from "semver";
+import { DEFAULT_TARGET_HOST_VERSION, PLUGIN_CONTRACT_VERSION } from "@infolens/release-metadata";
 
-export const CONTRACT_VERSION = "2";
-export const HOST_VERSION = "0.2.0";
+export const CONTRACT_VERSION = PLUGIN_CONTRACT_VERSION;
+export const HOST_VERSION = DEFAULT_TARGET_HOST_VERSION;
 const SUPPORTED_STRATEGIES = new Set(["PUBLIC", "COOKIE", "INTERCEPT"]);
 
 export class ContractError extends Error {
@@ -32,6 +33,9 @@ function resolvePackagePath(packageRoot, relativePath, field) {
 }
 
 export async function validatePluginPackage(packageRoot, runtime, options = {}) {
+  reject(!runtime || typeof runtime !== "object", "INVALID_RUNTIME", "Plugin validation requires resolved Runtime metadata");
+  reject(runtime.contractVersion === undefined || runtime.contractVersion === null, "INVALID_RUNTIME", "Plugin validation requires a resolved Contract Version");
+  reject(!semver.valid(runtime.hostVersion), "INVALID_RUNTIME", "Plugin validation requires a valid target Host version");
   let manifest;
   try {
     manifest = JSON.parse(await readFile(path.join(packageRoot, "manifest.json"), "utf8"));
@@ -43,9 +47,11 @@ export async function validatePluginPackage(packageRoot, runtime, options = {}) 
   for (const field of ["id", "name", "version", "contractVersion", "minHostVersion"]) requireString(manifest[field], field);
   reject(!/^[a-z0-9][a-z0-9-]*$/.test(manifest.id), "INVALID_PLUGIN_ID", "id must contain only lowercase letters, numbers, and hyphens");
   reject(!semver.valid(manifest.version), "INVALID_PLUGIN_VERSION", `version '${manifest.version}' is not semantic versioning`);
-  reject(manifest.contractVersion !== CONTRACT_VERSION, "INCOMPATIBLE_CONTRACT", `contractVersion '${manifest.contractVersion}' is unsupported; expected '${CONTRACT_VERSION}'`);
+  const supportedContractVersion = String(runtime.contractVersion);
+  reject(manifest.contractVersion !== supportedContractVersion, "INCOMPATIBLE_CONTRACT", `contractVersion '${manifest.contractVersion}' is unsupported; expected '${supportedContractVersion}'`);
   reject(!semver.valid(manifest.minHostVersion), "INVALID_HOST_VERSION", `minHostVersion '${manifest.minHostVersion}' is not semantic versioning`);
-  reject(semver.gt(manifest.minHostVersion, runtime.hostVersion), "INCOMPATIBLE_HOST", `plugin requires host >=${manifest.minHostVersion}; current host is ${runtime.hostVersion}`);
+  const targetHostVersion = runtime.hostVersion;
+  reject(semver.gt(manifest.minHostVersion, targetHostVersion), "INCOMPATIBLE_HOST", `plugin requires host >=${manifest.minHostVersion}; current host is ${targetHostVersion}`);
   reject(!manifest.backend || typeof manifest.backend !== "object", "INVALID_MANIFEST", "backend must be an object");
   reject(!manifest.ui || typeof manifest.ui !== "object", "INVALID_MANIFEST", "ui must be an object");
 

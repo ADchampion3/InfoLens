@@ -2,6 +2,12 @@
   "name": "@infolens/bundled-opencli",
   "version": "1.8.6",
   "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./package.json": "./package.json",
+    "./runtime.json": "./runtime.json"
+  },
   "dependencies": {
     "@jackwener/opencli": "1.8.6"
   }

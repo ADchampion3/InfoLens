@@ -34,8 +34,15 @@ async function clickWorkspaceRefresh(cdp, plugin) {
 
 test("release candidate contains the pinned production assembly", async () => {
   const manifest = JSON.parse(await readFile(path.join(releaseRoot, "release-manifest.json"), "utf8"));
+  assert.equal(manifest.version, "0.2.0");
+  assert.equal(manifest.hostVersion, "0.2.0");
+  assert.equal(manifest.pluginRuntimeVersion, "0.2.0");
+  assert.equal(manifest.pluginSdkVersion, "0.1.0");
+  assert.equal(manifest.pluginContractVersion, 2);
+  assert.equal(manifest.openCliVersion, "1.8.6");
   assert.equal(manifest.electronVersion, "43.2.0");
   assert.equal(manifest.openCli.version, "1.8.6");
+  assert.equal(manifest.openCli.packageName, "@jackwener/opencli");
   assert.deepEqual([...manifest.plugins].sort(), officialIds);
   await access(path.join(releaseRoot, "Infolens.exe"));
   await access(path.join(releaseRoot, "resources", "app", "apps", "desktop", "dist", "index.html"));

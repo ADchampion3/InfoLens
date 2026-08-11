@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { cp, link, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import semver from "semver";
+import { PLUGIN_CONTRACT_VERSION } from "@infolens/release-metadata";
 
 const ADAPTER_ID = /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/;
 
@@ -211,7 +212,7 @@ export async function preparePluginAdapterScope({ packageRoot, manifest, runtime
   }
 
   const lock = {
-    contractVersion: "2",
+    contractVersion: PLUGIN_CONTRACT_VERSION,
     pluginId: manifest.id,
     openCliVersion: runtime.version,
     adapters: resolved,

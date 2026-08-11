@@ -1,8 +1,21 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import semver from "semver";
 import { redactSensitiveText } from "./redaction.mjs";
+
+const require = createRequire(import.meta.url);
+
+export class BundledOpenCliError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = "BundledOpenCliError";
+    this.code = code;
+    Object.assign(this, details);
+  }
+}
 
 export class OpenCliError extends Error {
   constructor(code, message) {
@@ -34,36 +47,153 @@ function processCommand(executablePath) {
   return { file: process.execPath, prefix: [executablePath], electronNodeMode: false };
 }
 
-export async function loadBundledOpenCli(distributionRoot) {
-  const metadataPath = path.join(distributionRoot, "runtime.json");
-  const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
-  if (typeof metadata.version !== "string" || typeof metadata.executable !== "string" || !Array.isArray(metadata.commands)) {
-    throw new Error(`Bundled OpenCLI metadata is invalid: ${metadataPath}`);
+function runtimeFailure(code, message, details = {}) {
+  return new BundledOpenCliError(code, message, details);
+}
+
+function exactDependency(packageManifest) {
+  const dependencies = {
+    ...(packageManifest.dependencies ?? {}),
+    ...(packageManifest.optionalDependencies ?? {}),
+  };
+  const entries = Object.entries(dependencies).filter(([name]) => name === "@jackwener/opencli");
+  if (entries.length !== 1 || !/^\d+\.\d+\.\d+$/.test(entries[0][1])) {
+    throw runtimeFailure("OPENCLI_DECLARATION_INVALID", "Bundled OpenCLI package must declare one exact @jackwener/opencli dependency");
   }
-  const executablePath = path.resolve(distributionRoot, metadata.executable);
-  const relative = path.relative(distributionRoot, executablePath);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Bundled OpenCLI executable escapes its distribution");
-  await readFile(executablePath);
+  return { name: entries[0][0], version: entries[0][1] };
+}
+
+async function existingFile(filename, code, message, details = {}) {
+  try { await stat(filename); }
+  catch { throw runtimeFailure(code, message, { ...details, sourcePath: filename }); }
+}
+
+async function validateInventory(packageRoot, commands, inventoryPath) {
+  const seen = new Set();
+  for (const command of commands) {
+    if (!Array.isArray(command) || command.length < 2 || command.some((part) => typeof part !== "string" || !part.trim())) {
+      throw runtimeFailure("OPENCLI_INVENTORY_MISMATCH", "Generated OpenCLI command inventory contains an invalid command", { sourcePath: inventoryPath });
+    }
+    const key = command.join(" ");
+    if (seen.has(key)) throw runtimeFailure("OPENCLI_INVENTORY_MISMATCH", `Generated OpenCLI command inventory contains duplicate '${key}'`, { sourcePath: inventoryPath });
+    seen.add(key);
+    const commandRoot = path.resolve(packageRoot, "clis", command[0]);
+    const candidates = [
+      path.join(commandRoot, `${command.slice(1).join("/")}.js`),
+      path.join(commandRoot, `${command.slice(1).join("/")}.mjs`),
+      ...(command.at(-1) === "whoami" ? [path.join(commandRoot, "auth.js"), path.join(commandRoot, "auth.mjs")] : []),
+    ];
+    let found = false;
+    for (const candidate of candidates) {
+      try { await stat(candidate); found = true; break; } catch {}
+    }
+    if (!found) throw runtimeFailure("OPENCLI_INVENTORY_MISMATCH", `Generated OpenCLI inventory references missing command '${key}'`, { sourcePath: inventoryPath, command: key });
+  }
+  return seen;
+}
+
+export function resolveBundledOpenCliRoot({ environment = process.env, fallbackRoot } = {}) {
+  const override = environment.INFOLENS_BUNDLED_OPENCLI_ROOT;
+  if (override) {
+    const root = path.resolve(override);
+    return { root, source: "bundled-opencli-override", sourcePath: root };
+  }
+  try {
+    const manifestPath = require.resolve("@infolens/bundled-opencli/package.json");
+    return { root: path.dirname(manifestPath), source: "bundled-opencli-package", sourcePath: manifestPath };
+  } catch (error) {
+    const root = path.resolve(fallbackRoot ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "../../..", "resources", "opencli"));
+    return { root, source: "monorepo-development-fallback", sourcePath: root, resolutionError: error };
+  }
+}
+
+export async function loadBundledOpenCli(distributionRoot, { source, sourcePath } = {}) {
+  const resolvedDistributionRoot = path.resolve(distributionRoot);
+  const metadataPath = path.join(resolvedDistributionRoot, "runtime.json");
+  let metadata;
+  try { metadata = JSON.parse(await readFile(metadataPath, "utf8")); }
+  catch (error) { throw runtimeFailure("OPENCLI_RUNTIME_UNAVAILABLE", `Bundled OpenCLI metadata could not be read: ${error.message}`, { sourcePath: metadataPath }); }
+  if (typeof metadata.version !== "string" || !semver.valid(metadata.version) || typeof metadata.executable !== "string" || !Array.isArray(metadata.commands)) {
+    throw runtimeFailure("OPENCLI_RUNTIME_METADATA_INVALID", `Bundled OpenCLI metadata is invalid: ${metadataPath}`, { sourcePath: metadataPath });
+  }
+  const executablePath = path.resolve(resolvedDistributionRoot, metadata.executable);
+  const relative = path.relative(resolvedDistributionRoot, executablePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw runtimeFailure("OPENCLI_RUNTIME_METADATA_INVALID", "Bundled OpenCLI executable escapes its distribution", { sourcePath: metadataPath });
+  await existingFile(executablePath, "OPENCLI_RUNTIME_UNAVAILABLE", "Bundled OpenCLI executable is missing");
   let packageName;
   let packageRoot;
-  if (metadata.package) {
-    const manifestPath = path.resolve(distributionRoot, metadata.package.manifest ?? "");
-    const manifestRelative = path.relative(distributionRoot, manifestPath);
-    if (manifestRelative.startsWith("..") || path.isAbsolute(manifestRelative)) throw new Error("Bundled OpenCLI package manifest escapes its distribution");
-    const packageManifest = JSON.parse(await readFile(manifestPath, "utf8"));
-    if (packageManifest.name !== metadata.package.name || packageManifest.version !== metadata.package.version || packageManifest.version !== metadata.version) {
-      throw new Error("Bundled OpenCLI package identity does not match pinned runtime metadata");
+  let declaredDependency;
+  let distributionManifest;
+  try {
+    distributionManifest = JSON.parse(await readFile(path.join(resolvedDistributionRoot, "package.json"), "utf8"));
+  } catch (error) {
+    if (source !== "bundled-opencli-override" || error.code !== "ENOENT") {
+      throw runtimeFailure("OPENCLI_WRAPPER_UNAVAILABLE", `Bundled OpenCLI package metadata could not be read: ${error.message}`, { sourcePath: path.join(resolvedDistributionRoot, "package.json") });
+    }
+  }
+  if (distributionManifest) {
+    declaredDependency = exactDependency(distributionManifest);
+    if (!metadata.package || metadata.package.name !== declaredDependency.name || metadata.package.version !== declaredDependency.version || metadata.version !== declaredDependency.version) {
+      throw runtimeFailure("OPENCLI_PACKAGE_IDENTITY_MISMATCH", "Bundled OpenCLI metadata does not match its exact dependency declaration", { sourcePath: path.join(resolvedDistributionRoot, "package.json") });
+    }
+    const manifestPath = path.resolve(resolvedDistributionRoot, metadata.package.manifest ?? "");
+    const manifestRelative = path.relative(resolvedDistributionRoot, manifestPath);
+    if (manifestRelative.startsWith("..") || path.isAbsolute(manifestRelative)) throw runtimeFailure("OPENCLI_PACKAGE_IDENTITY_MISMATCH", "Bundled OpenCLI package manifest escapes its distribution", { sourcePath: metadataPath });
+    let packageManifest;
+    try { packageManifest = JSON.parse(await readFile(manifestPath, "utf8")); }
+    catch (error) { throw runtimeFailure("OPENCLI_PACKAGE_UNAVAILABLE", `Installed OpenCLI package metadata could not be read: ${error.message}`, { sourcePath: manifestPath }); }
+    if (packageManifest.name !== declaredDependency.name || packageManifest.version !== declaredDependency.version) {
+      throw runtimeFailure("OPENCLI_PACKAGE_IDENTITY_MISMATCH", "Installed OpenCLI package identity does not match its exact dependency", { sourcePath: manifestPath });
     }
     packageName = packageManifest.name;
     packageRoot = path.dirname(manifestPath);
+    const executableRelativeToPackage = path.relative(packageRoot, executablePath);
+    if (executableRelativeToPackage.startsWith("..") || path.isAbsolute(executableRelativeToPackage)) {
+      throw runtimeFailure("OPENCLI_RUNTIME_METADATA_INVALID", "Bundled OpenCLI executable is outside the installed package", { sourcePath: metadataPath });
+    }
+    const inventory = await validateInventory(packageRoot, metadata.commands, metadataPath);
+    return {
+      version: metadata.version,
+      packageName,
+      packageRoot,
+      executablePath,
+      distributionRoot: resolvedDistributionRoot,
+      metadataPath,
+      inventoryPath: metadataPath,
+      inventory: [...inventory].map((command) => command.split(" ")),
+      availableCommands: inventory,
+      source: source ?? "explicit-distribution-path",
+      sourcePath: sourcePath ?? resolvedDistributionRoot,
+      declaredDependency,
+    };
+  }
+  const inventory = new Set();
+  for (const command of metadata.commands) {
+    if (!Array.isArray(command) || command.length < 1 || command.some((part) => typeof part !== "string" || !part.trim())) {
+      throw runtimeFailure("OPENCLI_INVENTORY_MISMATCH", "Bundled OpenCLI command inventory contains an invalid command", { sourcePath: metadataPath });
+    }
+    const key = command.join(" ");
+    if (inventory.has(key)) throw runtimeFailure("OPENCLI_INVENTORY_MISMATCH", `Bundled OpenCLI command inventory contains duplicate '${key}'`, { sourcePath: metadataPath });
+    inventory.add(key);
   }
   return {
     version: metadata.version,
     packageName,
     packageRoot,
     executablePath,
-    availableCommands: new Set(metadata.commands.map((command) => command.join(" "))),
+    distributionRoot: resolvedDistributionRoot,
+    metadataPath,
+    inventoryPath: metadataPath,
+    inventory: [...inventory].map((command) => command.split(" ")),
+    availableCommands: inventory,
+    source: source ?? "explicit-distribution-path",
+    sourcePath: sourcePath ?? resolvedDistributionRoot,
   };
+}
+
+export async function resolveBundledOpenCli(options = {}) {
+  const location = resolveBundledOpenCliRoot(options);
+  return loadBundledOpenCli(location.root, location);
 }
 
 export function createOpenCliAdapter(runtime) {
