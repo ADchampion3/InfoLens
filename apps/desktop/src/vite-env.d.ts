@@ -185,6 +185,7 @@ interface Window {
     exportFilteredLogs(filters?: Partial<LogFilters>): Promise<{ canceled: boolean; count: number }>;
     selectPluginFolder(): Promise<string | null>;
     copyText(value: string): Promise<void>;
+    downloadText(value: { filename: string; text: string }): Promise<{ canceled: boolean; filename?: string }>;
     removePlugin(id: string): Promise<void>;
     testReadClipboard(): Promise<string>;
     testTerminateRuntime(): Promise<void>;

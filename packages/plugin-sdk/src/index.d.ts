@@ -98,11 +98,36 @@ export interface PluginActivationContext {
   schedule<Input = unknown>(name: string, options: ScheduleOptions<Input>): () => void;
   setHealth(health: PluginHealth): void;
   setRefreshOptions(provider: () => RefreshOptions): void;
+  registerDailySummaryProvider(provider: DailySummaryProvider): void;
   readonly logger: PluginLogger;
   readonly opencli: {
     run<Output = unknown>(commandKey: string, args?: readonly string[], signal?: AbortSignal): Promise<Output>;
   };
 }
+
+export interface DailySummaryProviderInput {
+  readonly localDate: string;
+  readonly timeZone: string;
+  readonly generatedAt: string;
+  readonly signal: AbortSignal;
+}
+
+export interface DailySummaryRecord {
+  title: string;
+  url?: string;
+  rank?: number;
+  read?: boolean;
+  fields?: Record<string, string | number | boolean>;
+}
+
+export interface DailySummaryResult {
+  state: "ready" | "no-data";
+  collectedAt?: string;
+  recordCount: number;
+  records: readonly DailySummaryRecord[];
+}
+
+export type DailySummaryProvider = (input: DailySummaryProviderInput) => DailySummaryResult | Promise<DailySummaryResult>;
 
 export interface PluginRouteRequest {
   method?: string;

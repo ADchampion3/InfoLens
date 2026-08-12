@@ -1,5 +1,6 @@
 import { openStore } from "./storage.js";
 import { downloadableResponse } from "@infolens/plugin-sdk";
+import { readLatestDailySnapshot } from "@infolens/plugin-sdk/daily-summary-store";
 import { createExport } from "./export.js";
 
 const POLICIES = new Set(["manual", "disabled", "fixed"]);
@@ -33,8 +34,45 @@ export function validateCollection(result) {
   });
 }
 
+function dailySummary(filename, input) {
+  const snapshot = readLatestDailySnapshot(filename, {
+    ...input,
+    stateQuery: "SELECT story_id AS id, is_read AS isRead FROM story_user_state",
+    identity: (value) => value.id,
+    parse: (row) => {
+      let records;
+      try { records = JSON.parse(row.payload); } catch { throw new Error("Hacker News snapshot payload is malformed"); }
+      if (!Array.isArray(records)) throw new Error("Hacker News snapshot payload is malformed");
+      return records;
+    },
+  });
+  if (snapshot.state === "no-data") return snapshot;
+  return {
+    state: "ready",
+    collectedAt: snapshot.collectedAt,
+    recordCount: snapshot.records.length,
+    records: snapshot.records.map((story) => {
+      if (!story || typeof story !== "object" || typeof story.title !== "string" || !story.title.trim()) throw new Error("Hacker News snapshot story is malformed");
+      if (typeof story.id !== "string" || !story.id.trim() || !Number.isInteger(story.rank) || story.rank < 0) throw new Error("Hacker News snapshot story is malformed");
+      const fields = {
+        id: story.id,
+        ...(story.domain ? { domain: story.domain } : {}),
+        points: story.points,
+        author: story.author,
+        createdAt: story.createdAt,
+        comments: story.comments,
+        discussionUrl: story.discussionUrl,
+      };
+      if (![story.points, story.comments].every((value) => Number.isInteger(value) && value >= 0)) throw new Error("Hacker News snapshot story is malformed");
+      if (typeof story.author !== "string" || typeof story.createdAt !== "string" || typeof story.discussionUrl !== "string") throw new Error("Hacker News snapshot story is malformed");
+      return { title: story.title, url: story.url, rank: story.rank, read: story.read, fields };
+    }),
+  };
+}
+
 export async function activate(context) {
   const store = openStore(context.resolveDataPath("hacker-news.sqlite"));
+  const storeFilename = context.resolveDataPath("hacker-news.sqlite");
   store.cleanupOnActivation();
   let cancelSchedule;
   const summary = () => {
@@ -68,6 +106,7 @@ export async function activate(context) {
     }
   });
   context.route("GET", "/summary", summary);
+  context.registerDailySummaryProvider((input) => dailySummary(storeFilename, input));
   context.route("POST", "/refresh", async () => {
     if (store.settings().policy === "disabled") return { ok: false, disabled: true, ...summary() };
     return context.enqueue("refresh", undefined, { reason: "manual", coalesceKey: "collection" });

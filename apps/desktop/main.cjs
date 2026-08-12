@@ -324,6 +324,24 @@ ipcMain.handle("plugin:select-folder", async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 ipcMain.handle("clipboard:write-text", (_event, value) => { clipboard.writeText(String(value)); });
+ipcMain.handle("daily-summary:download", async (_event, value = {}) => {
+  const filename = String(value.filename ?? "");
+  const text = String(value.text ?? "");
+  if (!/^infolens-daily-summary-\d{4}-\d{2}-\d{2}\.md$/u.test(filename)) throw new Error("Daily Summary filename is invalid");
+  let filePath = process.env.INFOLENS_TEST_DAILY_SUMMARY_PATH ? path.resolve(process.env.INFOLENS_TEST_DAILY_SUMMARY_PATH) : undefined;
+  if (!filePath) {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Download Daily Summary",
+      defaultPath: filename,
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    filePath = path.join(path.dirname(result.filePath), filename);
+  }
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, text, "utf8");
+  return { canceled: false, filename: filePath };
+});
 ipcMain.handle("plugin:remove", (_event, id) => removePlugin(String(id)));
 ipcMain.handle("test:read-clipboard", () => {
   if (process.env.INFOLENS_TEST_CONTROL !== "1") throw new Error("Test control is disabled");

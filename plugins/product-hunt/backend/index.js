@@ -1,5 +1,6 @@
 import { openStore } from "./storage.js";
 import { downloadableResponse } from "@infolens/plugin-sdk";
+import { readLatestDailySnapshot } from "@infolens/plugin-sdk/daily-summary-store";
 import { createExport } from "./export.js";
 
 const POLICIES = new Set(["manual", "disabled", "fixed"]);
@@ -33,8 +34,34 @@ export function validateCollection(result) {
   }));
 }
 
+function dailySummary(filename, input) {
+  const snapshot = readLatestDailySnapshot(filename, {
+    ...input,
+    stateQuery: "SELECT product_url AS id, is_read AS isRead FROM product_user_state",
+    identity: (value) => value.id ?? value.url,
+    parse: (row) => {
+      let records;
+      try { records = JSON.parse(row.payload); } catch { throw new Error("Product Hunt snapshot payload is malformed"); }
+      if (!Array.isArray(records)) throw new Error("Product Hunt snapshot payload is malformed");
+      return records;
+    },
+  });
+  if (snapshot.state === "no-data") return snapshot;
+  return {
+    state: "ready",
+    collectedAt: snapshot.collectedAt,
+    recordCount: snapshot.records.length,
+    records: snapshot.records.map((product) => {
+      if (!product || typeof product !== "object" || typeof product.url !== "string" || !product.url.trim() || typeof product.name !== "string" || !product.name.trim()) throw new Error("Product Hunt snapshot product is malformed");
+      if (!Number.isInteger(product.rank) || product.rank < 0 || !Number.isInteger(product.votes) || product.votes < 0) throw new Error("Product Hunt snapshot product is malformed");
+      return { title: product.name, url: productUrl(product.url, "snapshot.url"), rank: product.rank, read: product.read, fields: { votes: product.votes } };
+    }),
+  };
+}
+
 export async function activate(context) {
   const store = openStore(context.resolveDataPath("product-hunt.sqlite"));
+  const storeFilename = context.resolveDataPath("product-hunt.sqlite");
   store.cleanupOnActivation();
   let cancelSchedule;
   const summary = () => ({ source:"Product Hunt", collection:"Today's Top Launches", products:store.list(), settings:store.settings(), ...store.metadata() });
@@ -52,6 +79,7 @@ export async function activate(context) {
     }
   });
   context.route("GET","/summary",summary);
+  context.registerDailySummaryProvider((input) => dailySummary(storeFilename, input));
   context.route("POST","/refresh",()=>store.settings().policy==="disabled"?{ok:false,disabled:true,...summary()}:context.enqueue("refresh",undefined,{reason:"manual",coalesceKey:"collection"}));
   context.route("POST","/read",({url})=>{store.markRead(url.searchParams.get("url"),url.searchParams.get("read")!=="false");updateHealth();return summary();});
   context.route("GET","/settings",()=>store.settings());

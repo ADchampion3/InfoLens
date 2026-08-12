@@ -13,7 +13,9 @@
     },
     "./src/index.js": "./src/index.js",
     "./src/workspace.css": "./src/workspace.css",
-    "./src/workspace-tokens.css": "./src/workspace-tokens.css"
+    "./src/workspace-tokens.css": "./src/workspace-tokens.css",
+    "./daily-summary": "./src/daily-summary.js",
+    "./daily-summary-store": "./src/daily-summary-store.js"
   },
   "dependencies": {
     "@infolens/bundled-opencli": "1.8.6",

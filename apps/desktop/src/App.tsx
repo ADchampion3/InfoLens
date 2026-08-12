@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FolderPlus, ListChecks,
+  AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FileText, FolderPlus, ListChecks,
   LoaderCircle, Plug, RefreshCw, RotateCcw, ScrollText, Settings, Trash2, TriangleAlert, X,
 } from "lucide-react";
 import {
   batchCompletionNotice, exactLocalTime, freshnessLabel, hasExecutableSelection, localDayKey,
   selectAllEligible, selectNotRefreshedToday, selectionEmptyState, targetEligibility,
 } from "./batch-refresh";
+import {
+  createDailySummaryPreview, dailySummaryDeliveryDecision,
+  dailySummarySourceMetadata, defaultDailySummarySelection, isDailySummaryPreviewCurrent, isDailySummarySelectable, preserveDailySummarySelection,
+  toggleDailySummarySelection,
+} from "./daily-summary";
+import type { DailySummaryAggregate, DailySummaryPreview } from "./daily-summary";
 
-type HostView = { kind: "plugin"; id: string } | { kind: "plugins" } | { kind: "logs" } | { kind: "settings" } | { kind: "batch" };
+type HostView = { kind: "plugin"; id: string } | { kind: "plugins" } | { kind: "logs" } | { kind: "settings" } | { kind: "batch" } | { kind: "daily-summary" };
 type Status = "loading" | "ready" | "error";
 
 function previewOrigin() {
@@ -236,6 +242,170 @@ function batchStatusLabel(status: string) {
 
 function itemStatusLabel(status: BatchItemState) {
   return ({ queued: "Queued", running: "Refreshing", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped", interrupted: "Interrupted" } as Record<BatchItemState, string>)[status];
+}
+
+function DailySummaryView({
+  runtime,
+  onOpenBatch,
+  onNotice,
+  selectedPluginIds,
+  onSelectionChange,
+}: {
+  runtime: RuntimeInfo;
+  onOpenBatch: () => void;
+  onNotice: (message: string) => void;
+  selectedPluginIds?: Set<string>;
+  onSelectionChange: (selected: Set<string>) => void;
+}) {
+  const [aggregate, setAggregate] = useState<DailySummaryAggregate>();
+  const [preview, setPreview] = useState<DailySummaryPreview>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [privacyKey, setPrivacyKey] = useState<string>();
+  const [privacySources, setPrivacySources] = useState<string[]>([]);
+  const [privacyMode, setPrivacyMode] = useState<"copy" | "download">();
+  const selection = selectedPluginIds ?? new Set<string>();
+  const runtimeOrigin = runtime.origin;
+
+  const applyAggregate = (next: DailySummaryAggregate, nextSelection: Set<string>) => {
+    setAggregate(next);
+    onSelectionChange(nextSelection);
+    setPreview(undefined);
+    setPrivacyKey(undefined);
+    setPrivacyMode(undefined);
+    setPrivacySources([]);
+  };
+
+  const readAggregate = async () => {
+    setLoading(true);
+    setError(undefined);
+    try {
+      const next = await runtimeRequest<DailySummaryAggregate>(runtime, "/runtime/daily-summary");
+      const nextSelection = selectedPluginIds === undefined ? defaultDailySummarySelection(next) : preserveDailySummarySelection(next, selectedPluginIds);
+      applyAggregate(next, nextSelection);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Daily Summary could not be loaded.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void readAggregate(); }, [runtimeOrigin]);
+
+  const selectionChanged = (pluginId: string) => {
+    if (!aggregate) return;
+    onSelectionChange(toggleDailySummarySelection(aggregate, selection, pluginId));
+    setPreview(undefined);
+    setPrivacyKey(undefined);
+    setPrivacyMode(undefined);
+    setPrivacySources([]);
+  };
+
+  const generatePreview = async () => {
+    if (!aggregate || !selection.size) {
+      onNotice("Select at least one source before generating a preview.");
+      return;
+    }
+    setLoading(true);
+    setError(undefined);
+    try {
+      const next = await runtimeRequest<DailySummaryAggregate>(runtime, "/runtime/daily-summary");
+      const nextSelection = preserveDailySummarySelection(next, selection);
+      if (!nextSelection.size) {
+        applyAggregate(next, nextSelection);
+        onNotice("Select at least one source before generating a preview.");
+        return;
+      }
+      setAggregate(next);
+      onSelectionChange(nextSelection);
+      const nextPreview = createDailySummaryPreview(next, nextSelection);
+      setPreview(nextPreview);
+      setPrivacyKey(undefined);
+      setPrivacyMode(undefined);
+      setPrivacySources([]);
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "Daily Summary preview could not be generated.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deliver = async (mode: "copy" | "download", acknowledgedKey?: string) => {
+    if (!aggregate) return;
+    const decision = dailySummaryDeliveryDecision({ aggregate, selectedPluginIds: selection, preview, acknowledgedPreviewKey: acknowledgedKey ?? privacyKey });
+    if (!decision.allowed) {
+      if (decision.requiresPrivacyConfirmation && preview) {
+        setPrivacySources(decision.privacySources ?? []);
+        setPrivacyKey(preview.key);
+        setPrivacyMode(mode);
+      } else onNotice(decision.reason === "preview-required" ? "Generate a preview before delivery." : "Generate a new preview for the current selection.");
+      return;
+    }
+    try {
+      if (mode === "copy") {
+        if (window.infolens) await window.infolens.copyText(decision.text!);
+        else await navigator.clipboard.writeText(decision.text!);
+        onNotice("Daily Summary copied.");
+      } else {
+        if (!window.infolens) throw new Error("File delivery is unavailable.");
+        const result = await window.infolens.downloadText({ filename: decision.filename!, text: decision.text! });
+        if (!result.canceled) onNotice("Daily Summary downloaded.");
+      }
+    } catch {
+      onNotice("Daily Summary delivery failed.");
+    }
+  };
+
+  const confirmPrivacy = () => {
+    const mode = privacyMode;
+    setPrivacySources([]);
+    setPrivacyMode(undefined);
+    if (mode) void deliver(mode, privacyKey);
+  };
+
+  const cancelPrivacy = () => {
+    setPrivacySources([]);
+    setPrivacyKey(undefined);
+    setPrivacyMode(undefined);
+  };
+
+  return <section className="host-page daily-summary-page">
+    <header className="page-header">
+      <div><h1>Daily Summary</h1><p>Inspect today&apos;s retained Plugin Context before delivery.</p></div>
+      <div className="daily-summary-actions"><button type="button" onClick={onOpenBatch}><RefreshCw size={15} />Open Batch Refresh</button><button type="button" onClick={() => void readAggregate()} disabled={loading}><RotateCcw size={15} />Read again</button></div>
+    </header>
+    {loading && <div className="daily-summary-state" role="status"><LoaderCircle className="spinner" size={20} />Loading Daily Summary data...</div>}
+    {error && <div className="daily-summary-state daily-summary-state--error" role="alert"><AlertCircle size={20} /><strong>Daily Summary unavailable</strong><span>{error}</span></div>}
+    {!loading && !error && aggregate && <>
+      <div className="daily-summary-meta"><span><strong>{aggregate.localDate}</strong> local date</span><span>{aggregate.timeZone}</span><span>Generated {aggregate.generatedAt}</span></div>
+      <div className="daily-summary-layout">
+        <div className="daily-summary-sources">
+          {aggregate.plugins.filter((plugin) => plugin.status !== "disabled").map((plugin) => {
+            const selectable = isDailySummarySelectable(plugin);
+            const selected = selection.has(plugin.pluginId);
+            const metadata = dailySummarySourceMetadata(plugin, aggregate.generatedAt);
+            const sourceDetails = plugin.status === "unsupported"
+              ? "Daily Summary not supported"
+              : `${plugin.status === "no-data" ? "No qualifying snapshot for today" : plugin.status === "unavailable" ? "Data unavailable" : ""}${plugin.status === "ready" ? "" : " | "}${metadata.recordCount} records | ${metadata.collectedAt} | ${metadata.relativeAge}`;
+            return <label className={`daily-summary-source ${selected ? "is-selected" : ""} ${!selectable ? "is-disabled" : ""}`} key={plugin.pluginId}>
+              <input type="checkbox" checked={selected} disabled={!selectable} onChange={() => selectionChanged(plugin.pluginId)} />
+              <span className="daily-summary-source-main"><strong>{plugin.name}</strong><small>{sourceDetails}</small></span>
+              <span className={`daily-summary-status daily-summary-status--${plugin.status}`}>{plugin.status}</span>
+            </label>;
+          })}
+          {!aggregate.plugins.length && <div className="daily-summary-state">No enabled Plugins participate in Daily Summary.</div>}
+          <div className="daily-summary-toolbar"><span>{selection.size} selected</span><button className="primary-button" type="button" disabled={!selection.size || loading} onClick={() => void generatePreview}><ListChecks size={15} />Generate preview</button></div>
+        </div>
+        <div className="daily-summary-preview">
+          <div className="daily-summary-preview-header"><h2>Markdown preview</h2>{preview && <span>{isDailySummaryPreviewCurrent(preview, aggregate, selection) ? "Current" : "Regenerate required"}</span>}</div>
+          {!preview && <div className="daily-summary-preview-empty">Generate a preview to freeze the selected facts.</div>}
+          {preview && <pre aria-label="Daily Summary Markdown preview">{preview.markdown}</pre>}
+          <div className="daily-summary-delivery"><button type="button" disabled={!preview} onClick={() => void deliver("copy")}><Copy size={15} />Copy</button><button type="button" disabled={!preview} onClick={() => void deliver("download")}><Download size={15} />Download Markdown</button></div>
+        </div>
+      </div>
+    </>}
+    {privacySources.length > 0 && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="daily-summary-privacy-title"><TriangleAlert className="dialog-symbol warning" size={26} /><h2 id="daily-summary-privacy-title">Confirm browser-dependent sources</h2><p>This Daily Summary includes information collected through browser-backed or signed-in Plugins.</p><small>{privacySources.join(", ")}</small><div className="dialog-actions"><button type="button" onClick={cancelPrivacy}>Cancel</button><button type="button" className="primary-button" onClick={confirmPrivacy}>Continue</button></div></div></div>}
+  </section>;
 }
 
 type ToastNotice = {
@@ -510,6 +680,7 @@ export function App() {
   const [message, setMessage] = useState("Starting plugin services...");
   const [runtime, setRuntime] = useState<RuntimeInfo>();
   const [view, setView] = useState<HostView>({ kind: "plugins" });
+  const [dailySummarySelection, setDailySummarySelection] = useState<Set<string>>();
   const [batchId, setBatchId] = useState<string>();
   const [managedKey, setManagedKey] = useState<string>();
   const [bridgeDialog, setBridgeDialog] = useState(false);
@@ -559,7 +730,10 @@ export function App() {
 
   useEffect(() => {
     if (status !== "ready") return;
-    const timer = window.setInterval(() => refreshInfo().catch(() => setRuntimeRestarting(true)), 1_500);
+    const timer = window.setInterval(() => refreshInfo().catch(() => {
+      setRuntimeRestarting(true);
+      setDailySummarySelection(undefined);
+    }), 1_500);
     return () => window.clearInterval(timer);
   }, [status]);
 
@@ -585,10 +759,17 @@ export function App() {
 
   useEffect(() => window.infolens?.onRuntimeStatus((event) => {
     if (event.status === "running") {
-      setRuntimeRestarting(false);
-      refreshInfo().then(() => { if (iframeRef.current) iframeRef.current.src = iframeRef.current.src; }).catch(() => {});
+      refreshInfo().then(() => {
+        setDailySummarySelection(undefined);
+        setRuntimeRestarting(false);
+        if (iframeRef.current) iframeRef.current.src = iframeRef.current.src;
+      }).catch(() => {
+        setRuntimeRestarting(true);
+        setDailySummarySelection(undefined);
+      });
     } else {
       setRuntimeRestarting(true);
+      setDailySummarySelection(undefined);
       if (event.message) setMessage(event.message);
     }
   }), []);
@@ -717,6 +898,7 @@ export function App() {
         </nav>
         <nav className="utility-nav" aria-label="Application">
            <button className={`nav-item utility ${view.kind === "plugins" ? "is-selected" : ""}`} onClick={() => setView({ kind: "plugins" })} type="button"><span className="utility-icon"><Plug size={17} /></span><span className="nav-label">Plugins</span></button>
+           <button className={`nav-item utility ${view.kind === "daily-summary" ? "is-selected" : ""}`} onClick={() => setView({ kind: "daily-summary" })} type="button"><span className="utility-icon"><FileText size={17} /></span><span className="nav-label">Daily Summary</span></button>
            <button className={`nav-item utility ${view.kind === "batch" ? "is-selected" : ""}`} onClick={openBatchRefresh} type="button"><span className="utility-icon"><RefreshCw size={17} /></span><span className="nav-label">Batch refresh</span>{runtime?.activeBatch && <span className="nav-badge">{runtime.activeBatch.counts.remaining}</span>}</button>
            <button className={`nav-item utility ${view.kind === "logs" ? "is-selected" : ""}`} onClick={() => setView({ kind: "logs" })} type="button"><span className="utility-icon"><ScrollText size={17} /></span><span className="nav-label">Logs</span></button>
           <button className={`nav-item utility ${view.kind === "settings" ? "is-selected" : ""}`} onClick={() => setView({ kind: "settings" })} type="button"><span className="utility-icon"><Settings size={17} /></span><span className="nav-label">Settings</span></button>
@@ -733,6 +915,7 @@ export function App() {
         )}
         {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? "Plugin"} workspace`} allow="clipboard-write" />}
         {status === "ready" && view.kind === "batch" && runtime && <BatchRefreshView runtime={runtime} initialBatchId={batchId} onBatchIdChange={setBatchId} onBatchStarted={observeBatch} onOpenLogs={openBatchLogs} />}
+        {status === "ready" && !runtimeRestarting && view.kind === "daily-summary" && runtime && <DailySummaryView runtime={runtime} onOpenBatch={openBatchRefresh} onNotice={showNotice} selectedPluginIds={dailySummarySelection} onSelectionChange={setDailySummarySelection} />}
         {status === "ready" && view.kind === "plugins" && runtime && (
           <section className="host-page plugin-manager">
             <header className="page-header"><div><h1>Plugins</h1><p>Installed packages and local diagnostics</p></div><button className="primary-button" onClick={install}><FolderPlus size={17} />Install plugin</button></header>

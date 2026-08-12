@@ -17,6 +17,7 @@ import { normalizeTaskRefreshOutcome, shortRefreshMessage } from "./refresh-outc
 import { refreshInputKey, sanitizeRefreshOptions } from "./refresh-options.mjs";
 import { BatchManager, BATCH_TERMINAL_STATES } from "./batch-manager.mjs";
 import { garbageCollectAdapterStore, preparePluginAdapterScope, removePluginAdapterScope } from "./adapter-scope.mjs";
+import { aggregateDailySummary } from "./daily-summary.mjs";
 
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
   ? path.resolve(process.env.INFOLENS_PROJECT_ROOT)
@@ -41,6 +42,8 @@ const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.
 const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? path.join(path.dirname(dataRoot), "opencli-adapters"));
 const batchStatePath = process.env.INFOLENS_BATCH_STATE_PATH ? path.resolve(process.env.INFOLENS_BATCH_STATE_PATH) : undefined;
 const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID;
+const dailySummaryTimeZone = process.env.INFOLENS_DAILY_SUMMARY_TIME_ZONE || undefined;
+const dailySummaryNow = process.env.INFOLENS_DAILY_SUMMARY_NOW || undefined;
 const openCliRuntime = await resolveBundledOpenCli({ fallbackRoot: path.join(projectRoot, "resources", "opencli") });
 const openCliAdapter = createOpenCliAdapter(openCliRuntime);
 const validationRuntime = {
@@ -360,6 +363,7 @@ async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticM
     workspaceRoot: validated.workspaceRoot,
     routes: new Map(),
     registrations: { routes: [], tasks: [], schedules: [] },
+    dailySummaryProvider: undefined,
     diagnostic: diagnostic ? { mode: true, phase: "activation", violations: [] } : undefined,
     lifecycle: undefined,
     logger,
@@ -439,6 +443,20 @@ async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticM
     setRefreshOptions(provider) {
       if (typeof provider !== "function") throw new TypeError("Refresh options provider must be a function");
       plugin.refreshOptions = provider;
+    },
+    registerDailySummaryProvider(provider) {
+      if (typeof provider !== "function") {
+        const error = new TypeError("Daily Summary provider must be a function");
+        error.code = "INVALID_DAILY_SUMMARY_PROVIDER";
+        throw error;
+      }
+      if (plugin.dailySummaryProvider) {
+        const error = new Error("Plugin may register only one Daily Summary provider");
+        error.code = "DUPLICATE_DAILY_SUMMARY_PROVIDER";
+        throw error;
+      }
+      plugin.dailySummaryProvider = provider;
+      plugin.registrations.dailySummary = true;
     },
     logger,
     opencli: {
@@ -596,6 +614,31 @@ function publicPlugin(plugin, origin) {
     browserDependent: Object.values(plugin.manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC"),
     statusSnapshot,
   };
+}
+
+function dailySummaryPlugin(descriptor) {
+  const id = descriptor.validated.manifest.id;
+  const active = findPlugin(id);
+  const manifest = descriptor.validated.manifest;
+  const enabled = !descriptor.deactivated && hostState.snapshot().enabledPluginIds.includes(id);
+  return {
+    pluginId: id,
+    name: manifest.name,
+    version: manifest.version,
+    enabled,
+    active: Boolean(active && !descriptor.deactivated && active.lifecycle !== undefined),
+    state: active?.status.state ?? (enabled ? "unavailable" : "disabled"),
+    browserDependent: Object.values(manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC"),
+    ...(active?.dailySummaryProvider ? { provider: active.dailySummaryProvider } : {}),
+  };
+}
+
+async function dailySummaryAggregate(signal) {
+  const now = dailySummaryNow ? new Date(dailySummaryNow) : new Date();
+  return aggregateDailySummary(
+    compatiblePlugins.filter((descriptor) => !descriptor.deactivated).map((descriptor) => dailySummaryPlugin(descriptor)),
+    { now, timeZone: dailySummaryTimeZone, signal },
+  );
 }
 
 function publicCompatiblePlugin(descriptor, origin) {
@@ -908,6 +951,18 @@ const server = createServer(async (request, response) => {
     json(response, 200, taskQueue.snapshot());
     return;
   }
+  if (url.pathname === "/runtime/daily-summary" && request.method === "GET") {
+    const requestContext = requestAbortContext(request, response);
+    try {
+      const aggregate = await dailySummaryAggregate(requestContext.signal);
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, 200, aggregate);
+    } catch {
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, 503, { error: "Daily Summary is unavailable", code: "DAILY_SUMMARY_UNAVAILABLE" });
+    } finally {
+      requestContext.cleanup();
+    }
+    return;
+  }
   if (["/runtime/batches/targets", "/runtime/batch-refresh/targets"].includes(url.pathname) && request.method === "GET") {
     json(response, 200, { targets: compatiblePlugins.filter((descriptor) => !descriptor.deactivated).map((descriptor) => batchTarget(descriptor.validated.manifest.id)) });
     return;
@@ -1133,7 +1188,12 @@ function diagnosticResult(plugin) {
     checks.push({ id: "doctor.activation", severity: "info", status: "passed", phase: "activation", details: { state: plugin.status.state } });
   }
   const registrations = plugin.taskManager.diagnosticSnapshot();
-  const registrationDetails = { routes: plugin.registrations.routes, tasks: registrations.registrations.tasks, schedules: registrations.registrations.schedules };
+  const registrationDetails = {
+    routes: plugin.registrations.routes,
+    tasks: registrations.registrations.tasks,
+    schedules: registrations.registrations.schedules,
+    ...(plugin.registrations.dailySummary ? { dailySummary: true } : {}),
+  };
   checks.push({ id: "doctor.registrations", severity: "info", status: "passed", phase: "activation", details: registrationDetails });
   for (const violation of registrations.violations.concat(diagnostic.violations ?? [])) {
     checks.push({ id: "doctor.side-effect", severity: "error", status: "failed", phase: "activation", code: violation.code, message: `Diagnostic mode blocked ${violation.type}` });

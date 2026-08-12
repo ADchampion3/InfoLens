@@ -1,5 +1,6 @@
 import { openStore } from "./storage.js";
 import { downloadableResponse } from "@infolens/plugin-sdk";
+import { readLatestDailySnapshot } from "@infolens/plugin-sdk/daily-summary-store";
 import { createExport, normalizeExportDate } from "./export.js";
 
 const POLICIES = new Set(["manual", "disabled", "fixed"]);
@@ -39,6 +40,42 @@ export function validateCollection(result) {
   });
 }
 
+function dailySummary(filename, input) {
+  const snapshot = readLatestDailySnapshot(filename, {
+    ...input,
+    stateQuery: "SELECT repository_id AS id, is_read AS isRead FROM repository_user_state",
+    identity: (value) => value.id,
+    parse: (row) => {
+      let records;
+      try { records = JSON.parse(row.payload); } catch { throw new Error("GitHub Trending snapshot payload is malformed"); }
+      if (!Array.isArray(records)) throw new Error("GitHub Trending snapshot payload is malformed");
+      return records;
+    },
+  });
+  if (snapshot.state === "no-data") return snapshot;
+  return {
+    state: "ready",
+    collectedAt: snapshot.collectedAt,
+    recordCount: snapshot.records.length,
+    records: snapshot.records.map((repository) => {
+      if (!repository || typeof repository !== "object" || typeof repository.id !== "string" || !repository.id.trim() || typeof repository.name !== "string" || !repository.name.trim()) throw new Error("GitHub Trending snapshot repository is malformed");
+      if (!Number.isInteger(repository.rank) || repository.rank < 0 || !Number.isInteger(repository.stars) || repository.stars < 0 || !Number.isInteger(repository.forks) || repository.forks < 0 || !Number.isInteger(repository.starsGained) || repository.starsGained < 0) throw new Error("GitHub Trending snapshot repository is malformed");
+      if (typeof repository.owner !== "string" || typeof repository.url !== "string") throw new Error("GitHub Trending snapshot repository is malformed");
+      const fields = {
+        owner: repository.owner,
+        repository: repository.id,
+        stars: repository.stars,
+        forks: repository.forks,
+        starsGained: repository.starsGained,
+        ...(repository.description ? { description: repository.description } : {}),
+        ...(repository.language ? { language: repository.language } : {}),
+        ...(repository.languageColor ? { languageColor: repository.languageColor } : {}),
+      };
+      return { title: repository.name, url: repository.url, rank: repository.rank, read: repository.read, fields };
+    }),
+  };
+}
+
 export function validateReadmeCollection(result, repository) {
   if (!Array.isArray(result) || result.length !== 1) throw new Error("GitHub README OpenCLI result must contain one row");
   const row = result[0];
@@ -57,6 +94,7 @@ export function validateReadmeCollection(result, repository) {
 
 export async function activate(context) {
   const store = openStore(context.resolveDataPath("github-trending.sqlite"));
+  const storeFilename = context.resolveDataPath("github-trending.sqlite");
   store.cleanupOnActivation();
   let cancelSchedule;
   const summary = () => ({ source: "GitHub Trending", repositories: store.list(), settings: store.settings(), view: store.view(), ...store.metadata() });
@@ -91,6 +129,7 @@ export async function activate(context) {
     }
   });
   context.route("GET", "/summary", summary);
+  context.registerDailySummaryProvider((input) => dailySummary(storeFilename, input));
   context.route("POST", "/refresh", async () => {
     if (store.settings().policy === "disabled") return { ok: false, disabled: true, ...summary() };
     return context.enqueue("refresh", undefined, { reason: "manual", coalesceKey: "collection" });
