@@ -91,6 +91,17 @@ test("the bare Vite preview root resolves Runtime info as JSON",async()=>{
   }finally{vite?.kill();if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}
 });
 
+test("the bare Vite root reports a missing Runtime origin as JSON",async()=>{
+  let vite;
+  try{
+    const port=await freePort();const environment={...process.env};delete environment.INFOLENS_RUNTIME_ORIGIN;
+    vite=spawn(process.execPath,[path.join(root,"node_modules/vite/bin/vite.js"),"--config",path.join(root,"apps/desktop/vite.config.ts"),"--configLoader","runner","--host","127.0.0.1","--port",String(port),"--strictPort"],{cwd:root,env:environment,stdio:["ignore","ignore","pipe"]});
+    await waitForUrl(`http://127.0.0.1:${port}/`);const response=await fetch(`http://127.0.0.1:${port}/runtime-info.json`);const text=await response.text();
+    assert.equal(response.status,503);assert.match(response.headers.get("content-type")??"",/application\/json/);assert.doesNotMatch(text,/^\s*<!doctype html>/i);
+    assert.deepEqual(JSON.parse(text),{code:"RUNTIME_ORIGIN_NOT_CONFIGURED",error:"Plugin Runtime origin is not configured."});
+  }finally{vite?.kill()}
+});
+
 test("Sprint 4 fixtures contain no authentication or browser-session artifacts",async()=>{
   const files=await readdir(path.join(root,"tests/fixtures/sprint4/opencli"),{recursive:true});
   for(const relative of files){const filename=path.join(root,"tests/fixtures/sprint4/opencli",relative);if((await stat(filename)).isDirectory())continue;const content=await readFile(filename,"utf8");assert.doesNotMatch(content,/authorization\s*[:=]|set-cookie|chrome[\\/]user data|contextId\s*[:=]|webSocketDebuggerUrl/i,relative)}

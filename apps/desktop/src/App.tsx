@@ -25,11 +25,22 @@ async function getRuntimeInfo(): Promise<RuntimeInfo> {
   if (window.infolens) {
     const info = await window.infolens.getRuntimeInfo();
     if (info) return info;
+    throw new Error("Plugin services are unavailable.");
   }
   const origin = previewOrigin();
   const response = await fetch(origin ? `${origin}/runtime/info` : "/runtime-info.json");
+  const body = await readJsonResponse<RuntimeInfo>(response, "Plugin services are unavailable.");
   if (!response.ok) throw new Error("Plugin services are unavailable.");
-  return response.json();
+  return body;
+}
+
+async function readJsonResponse<T>(response: Response, invalidResponseMessage: string): Promise<T> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(response.ok ? "Plugin services returned invalid JSON." : invalidResponseMessage);
+  }
 }
 
 async function runtimeRequest<T>(runtime: RuntimeInfo, route: string, init?: RequestInit): Promise<T> {
@@ -37,7 +48,7 @@ async function runtimeRequest<T>(runtime: RuntimeInfo, route: string, init?: Req
     ...init,
     headers: { "content-type": "application/json", ...init?.headers },
   });
-  const body = await response.json();
+  const body = await readJsonResponse<{ error?: string; code?: string } & T>(response, "Plugin services are unavailable.");
   if (!response.ok) throw Object.assign(new Error(body.error ?? "Operation failed"), { code: body.code });
   return body;
 }

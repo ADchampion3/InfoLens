@@ -12,6 +12,7 @@ const bundledPluginsRoot = path.join(projectRoot, "plugins");
 if (process.env.INFOLENS_USER_DATA_ROOT) app.setPath("userData", path.resolve(process.env.INFOLENS_USER_DATA_ROOT));
 let runtimeProcess;
 let runtimeInfo;
+let runtimeStartPromise;
 let mainWindow;
 let quitting = false;
 let quitPromptActive = false;
@@ -79,7 +80,7 @@ async function seedBundledPlugins() {
   }
 }
 
-async function startRuntime() {
+async function startRuntimeProcess() {
   await logService?.write({ level: "info", message: "Plugin Runtime starting" });
   let proxyRules = "DIRECT";
   try { proxyRules = await session.defaultSession.resolveProxy("https://github.com"); } catch {}
@@ -134,6 +135,17 @@ async function startRuntime() {
       if (!quitting && !suppressRestart) restartRuntime();
     });
   });
+}
+
+async function startRuntime() {
+  if (runtimeStartPromise) return runtimeStartPromise;
+  const promise = startRuntimeProcess();
+  runtimeStartPromise = promise;
+  try {
+    return await promise;
+  } finally {
+    if (runtimeStartPromise === promise) runtimeStartPromise = undefined;
+  }
 }
 
 async function restartRuntime() {
@@ -242,6 +254,9 @@ function createWindow() {
 }
 
 ipcMain.handle("runtime:get-info", async () => {
+  if (!runtimeInfo?.origin && runtimeStartPromise) {
+    try { await runtimeStartPromise; } catch {}
+  }
   if (!runtimeInfo?.origin) return runtimeInfo;
   try {
     const response = await fetch(`${runtimeInfo.origin}/runtime/info`);
@@ -365,8 +380,9 @@ app.whenReady().then(async () => {
   installWorkspacePermissionHandlers();
   await initializeLogService();
   await seedBundledPlugins();
+  const initialRuntime = startRuntime();
   createWindow();
-  try { await startRuntime(); publishRuntimeStatus("running", { info: runtimeInfo }); }
+  try { await initialRuntime; publishRuntimeStatus("running", { info: runtimeInfo }); }
   catch (error) { publishRuntimeStatus("unavailable", { message: error instanceof Error ? error.message : String(error) }); restartRuntime(); }
 });
 app.on("window-all-closed", () => app.quit());
