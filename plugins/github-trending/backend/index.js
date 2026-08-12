@@ -11,9 +11,45 @@ const LANGUAGE_OPTIONS = ["all", "TypeScript", "Python", "Rust", "Go", "C++"];
 const LANGUAGE_COLORS = { TypeScript: "#3178c6", JavaScript: "#f1e05a", Python: "#3572A5", Rust: "#dea584", Go: "#00ADD8", "C++": "#f34b7d" };
 const README_CACHE_MS = 6 * 60 * 60 * 1000;
 const MAX_README_BYTES = 2 * 1024 * 1024;
+const TRANSIENT_RETRY_DELAY_MS = 200;
 
 function requiredString(value, field) { if (typeof value !== "string" || !value.trim()) throw new Error(`GitHub Trending result has invalid ${field}`); return value; }
 function nonNegative(value, field) { if (!Number.isInteger(value) || value < 0) throw new Error(`GitHub Trending result has invalid ${field}`); return value; }
+
+function isTransientNetworkFailure(error) {
+  if (error?.code !== "OPENCLI_FAILED") return false;
+  const message = [error.message, error.cause?.message].filter(Boolean).join(" ");
+  return /\b(?:ECONNRESET|ECONNABORTED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up)\b|\bfetch failed\b/i.test(message);
+}
+
+function waitForRetry(signal) {
+  let onAbort;
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("GitHub Trending refresh was cancelled"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, TRANSIENT_RETRY_DELAY_MS);
+    onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new Error("GitHub Trending refresh was cancelled"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export async function runTrendingRepositories(opencli, args, signal) {
+  try {
+    return await opencli.run("trendingRepositories", args, signal);
+  } catch (error) {
+    if (!isTransientNetworkFailure(error) || signal?.aborted) throw error;
+    await waitForRetry(signal);
+    return opencli.run("trendingRepositories", args, signal);
+  }
+}
 
 function normalizeView(value, fallback) {
   const current = fallback ?? { period: "daily", language: "all" };
@@ -118,7 +154,7 @@ export async function activate(context) {
       const view = normalizeView(input, store.view());
       const args = [`--since=${view.period}`, "--limit=25"];
       if (view.language !== "all") args.push(`--language=${view.language.toLowerCase()}`);
-      const repositories = validateCollection(await context.opencli.run("trendingRepositories", args, task.signal));
+      const repositories = validateCollection(await runTrendingRepositories(context.opencli, args, task.signal));
       store.replace(repositories, new Date().toISOString()); updateHealth(); return { ok: true, ...summary() };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

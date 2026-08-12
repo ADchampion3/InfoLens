@@ -40,6 +40,11 @@ test("Zhihu schema migration and native-row validation are deterministic",async(
   try{const store=openStore(path.join(temp,"zhihu.sqlite"));assert.equal(store.schemaVersion(),2);assert.deepEqual({...store.settings()},{policy:"manual",intervalMinutes:60,retentionDays:30});assert.equal(store.metadata().dependencyState,"unknown");store.close();const reopened=openStore(path.join(temp,"zhihu.sqlite"));assert.equal(reopened.schemaVersion(),2);reopened.close();assert.throws(()=>validateCollection([]),/must contain rows/);assert.throws(()=>validateCollection([{rank:1,title:"bad"}]),/invalid/);assert.equal(validateAuthStatus([{logged_in:true,site:"zhihu"}]),true);assert.throws(()=>validateAuthStatus([{logged_in:false,site:"zhihu"}]),error=>error.code==="SITE_LOGIN_REQUIRED") }finally{await rm(temp,{recursive:true,force:true})}
 });
 
+test("Zhihu collection accepts rows whose source omits answer counts",()=>{
+  const [question]=validateCollection([{rank:1,title:"Question",heat:"1.2M",url:"https://www.zhihu.com/question/10001"}]);
+  assert.equal(question.answers,0);
+});
+
 test("redaction removes authentication material and local browser paths",()=>{
   const cookieKey=["coo","kie"].join("");const sessionKey=["ses","sionId"].join("");const profileKey=["pro","filePath"].join("");
   const sensitive={authorization:"Bearer example",[cookieKey]:"a=b",nested:{[sessionKey]:"opaque",[profileKey]:"C:\\Users\\person\\Chrome\\Profile 1"}};

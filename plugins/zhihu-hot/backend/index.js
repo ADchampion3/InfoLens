@@ -37,7 +37,7 @@ export function validateCollection(result) {
     title: requiredString(row?.title, `rows[${index}].title`),
     excerpt: typeof row.excerpt === "string" && row.excerpt.trim() ? row.excerpt.trim() : null,
     heat: requiredString(row?.heat, `rows[${index}].heat`),
-    answers: nonNegative(row?.answers, `rows[${index}].answers`),
+    answers: row?.answers === undefined ? 0 : nonNegative(row.answers, `rows[${index}].answers`),
     url: questionUrl(row?.url, `rows[${index}].url`),
     thumbnailUrl: typeof row.thumbnailUrl === "string" && row.thumbnailUrl ? row.thumbnailUrl : null,
   }));
