@@ -100,7 +100,7 @@ async function startRuntimeProcess() {
         INFOLENS_HOST_STATE_PATH: hostStatePath,
         INFOLENS_BATCH_STATE_PATH: batchStatePath,
         INFOLENS_APPLICATION_SESSION_ID: applicationSessionId,
-        INFOLENS_RUNTIME_PORT: "0",
+        INFOLENS_RUNTIME_PORT: process.env.INFOLENS_RUNTIME_PORT ?? "0",
       },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,

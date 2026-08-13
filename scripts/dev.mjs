@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { developmentLaunchConfig } from "./dev-config.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -17,6 +18,10 @@ async function portIsOpen(port) {
 
 let rendererPort = 5173;
 while (await portIsOpen(rendererPort)) rendererPort += 1;
+let runtimePort = Number(process.env.INFOLENS_RUNTIME_PORT) || 62000;
+while (await portIsOpen(runtimePort)) runtimePort += 1;
+
+const launchConfig = developmentLaunchConfig({ rendererPort, runtimePort });
 
 const processes = new Set();
 let stopping = false;
@@ -46,7 +51,7 @@ function shutdown(code = 0) {
 process.on("SIGINT", () => shutdown());
 process.on("SIGTERM", () => shutdown());
 
-start("npm", ["run", "dev:web", "--", "--port", String(rendererPort), "--strictPort"]);
+start("npm", ["run", "dev:web", "--", "--configLoader", "runner", "--port", String(rendererPort), "--strictPort"], launchConfig.viteEnvironment);
 
 const waitForRenderer = async () => {
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -65,5 +70,5 @@ await waitForRenderer();
 start(
   path.join(projectRoot, "node_modules", ".bin", process.platform === "win32" ? "electron.cmd" : "electron"),
   ["."],
-  { INFOLENS_RENDERER_URL: `http://127.0.0.1:${rendererPort}` },
+  launchConfig.electronEnvironment,
 );

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -494,6 +494,12 @@ test("Host Daily Summary selection, deterministic Markdown, escaping, and previe
   const changed = toggleDailySummarySelection(aggregate, selected, "beta");
   assert(!isDailySummaryPreviewCurrent(preview, aggregate, changed));
   assert.throws(() => createDailySummaryPreview(aggregate, ["delta", "epsilon"]), /Select at least one/);
+});
+
+test("Host Daily Summary Generate preview invokes the preview workflow", async () => {
+  const appSource = await readFile(path.join(root, "apps", "desktop", "src", "App.tsx"), "utf8");
+  assert.doesNotMatch(appSource, /onClick=\{\(\) => void generatePreview\}/u);
+  assert.match(appSource, /onClick=\{\(\) => void generatePreview\(\)\}/u);
 });
 
 test("Host delivery decisions gate privacy and reuse one frozen UTF-8 Markdown value", () => {

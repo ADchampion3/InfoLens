@@ -405,7 +405,7 @@ function DailySummaryView({
             </label>;
           })}
           {!aggregate.plugins.length && <div className="daily-summary-state">No enabled Plugins participate in Daily Summary.</div>}
-          <div className="daily-summary-toolbar"><span>{selection.size} selected</span><button className="primary-button" type="button" disabled={!selection.size || loading} onClick={() => void generatePreview}><ListChecks size={15} />Generate preview</button></div>
+          <div className="daily-summary-toolbar"><span>{selection.size} selected</span><button className="primary-button" type="button" disabled={!selection.size || loading} onClick={() => void generatePreview()}><ListChecks size={15} />Generate preview</button></div>
         </div>
         <div className="daily-summary-preview">
           <div className="daily-summary-preview-header"><h2>Markdown preview</h2>{preview && <span>{isDailySummaryPreviewCurrent(preview, aggregate, selection) ? "Current" : "Regenerate required"}</span>}</div>
