@@ -20,12 +20,17 @@ import {
   createDailySummaryPreview,
   dailySummaryDeliveryDecision,
   dailySummaryFilename,
+  dailySummaryPromptFilename,
   dailySummaryRelativeAge,
   dailySummarySourceMetadata,
+  dailySummaryWrittenFilename,
   defaultDailySummarySelection,
+  groupDailySummaryEntries,
   isDailySummaryPreviewCurrent,
   normalizeDailySummarySelection,
+  renderDailySummaryPrompt,
   renderDailySummaryMarkdown,
+  renderDailySummaryWrittenMarkdown,
   toggleDailySummarySelection,
 } from "../apps/desktop/src/daily-summary.ts";
 
@@ -500,6 +505,35 @@ test("Host Daily Summary Generate preview invokes the preview workflow", async (
   const appSource = await readFile(path.join(root, "apps", "desktop", "src", "App.tsx"), "utf8");
   assert.doesNotMatch(appSource, /onClick=\{\(\) => void generatePreview\}/u);
   assert.match(appSource, /onClick=\{\(\) => void generatePreview\(\)\}/u);
+});
+
+test("Host Daily Summary prepares a topic-based writing prompt and authored export", () => {
+  const aggregate = hostAggregate();
+  aggregate.plugins[0].context.records[0].fields.topic = "AI tooling";
+  aggregate.plugins[0].context.records.push({ title: "Second topic item", fields: { category: "AI tooling" } });
+  const groups = groupDailySummaryEntries(aggregate, ["alpha"]);
+  assert.deepEqual(groups.map(({ topic }) => topic), ["AI tooling"]);
+  assert.equal(groups[0].entries.length, 2);
+
+  const prompt = renderDailySummaryPrompt(aggregate, ["alpha", "beta"]);
+  assert.match(prompt, /按内容主题/);
+  assert.match(prompt, /每个 entry 只能在一个最合适的主题/);
+  assert.match(prompt, /今日信息素材/);
+  assert.match(prompt, /AI tooling/);
+  assert.match(prompt, /No qualifying Collection Snapshot exists/);
+
+  const written = renderDailySummaryWrittenMarkdown(aggregate, ["alpha"], "## AI tooling\n- 今日有一个值得跟进的变化。");
+  assert.match(written, /## Written summary/);
+  assert.match(written, /今日有一个值得跟进的变化/);
+  assert.equal(dailySummaryPromptFilename(LOCAL_DATE), "infolens-daily-summary-prompt-2026-08-12.md");
+  assert.equal(dailySummaryWrittenFilename(LOCAL_DATE), "infolens-daily-summary-written-2026-08-12.md");
+  assert.throws(() => renderDailySummaryWrittenMarkdown(aggregate, ["alpha"], "  \n  "), /Write a Daily Summary/);
+
+  const preview = createDailySummaryPreview(aggregate, ["alpha"]);
+  const exportedPrompt = dailySummaryDeliveryDecision({ aggregate, selectedPluginIds: ["alpha"], preview, acknowledgedPreviewKey: preview.key, deliveryText: prompt, deliveryFilename: dailySummaryPromptFilename(LOCAL_DATE) });
+  assert.equal(exportedPrompt.allowed, true);
+  assert.equal(exportedPrompt.text, prompt);
+  assert.equal(exportedPrompt.filename, "infolens-daily-summary-prompt-2026-08-12.md");
 });
 
 test("Host delivery decisions gate privacy and reuse one frozen UTF-8 Markdown value", () => {

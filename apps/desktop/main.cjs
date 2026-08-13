@@ -342,7 +342,7 @@ ipcMain.handle("clipboard:write-text", (_event, value) => { clipboard.writeText(
 ipcMain.handle("daily-summary:download", async (_event, value = {}) => {
   const filename = String(value.filename ?? "");
   const text = String(value.text ?? "");
-  if (!/^infolens-daily-summary-\d{4}-\d{2}-\d{2}\.md$/u.test(filename)) throw new Error("Daily Summary filename is invalid");
+  if (!/^infolens-daily-summary-(?:(?:prompt|written)-)?\d{4}-\d{2}-\d{2}\.md$/u.test(filename)) throw new Error("Daily Summary filename is invalid");
   let filePath = process.env.INFOLENS_TEST_DAILY_SUMMARY_PATH ? path.resolve(process.env.INFOLENS_TEST_DAILY_SUMMARY_PATH) : undefined;
   if (!filePath) {
     const result = await dialog.showSaveDialog(mainWindow, {

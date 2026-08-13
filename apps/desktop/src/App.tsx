@@ -9,13 +9,15 @@ import {
 } from "./batch-refresh";
 import {
   createDailySummaryPreview, dailySummaryDeliveryDecision,
-  dailySummarySourceMetadata, defaultDailySummarySelection, isDailySummaryPreviewCurrent, isDailySummarySelectable, preserveDailySummarySelection,
+  dailySummaryPromptFilename, dailySummarySourceMetadata, dailySummaryWrittenFilename, defaultDailySummarySelection, isDailySummaryPreviewCurrent, isDailySummarySelectable, preserveDailySummarySelection,
+  renderDailySummaryPrompt, renderDailySummaryWrittenMarkdown,
   toggleDailySummarySelection,
 } from "./daily-summary";
 import type { DailySummaryAggregate, DailySummaryPreview } from "./daily-summary";
 
 type HostView = { kind: "plugin"; id: string } | { kind: "plugins" } | { kind: "logs" } | { kind: "settings" } | { kind: "batch" } | { kind: "daily-summary" };
 type Status = "loading" | "ready" | "error";
+type DailySummaryDeliveryMode = `${"facts" | "prompt" | "written"}:${"copy" | "download"}`;
 
 function previewOrigin() {
   return new URLSearchParams(window.location.search).get("runtimeOrigin");
@@ -270,11 +272,13 @@ function DailySummaryView({
 }) {
   const [aggregate, setAggregate] = useState<DailySummaryAggregate>();
   const [preview, setPreview] = useState<DailySummaryPreview>();
+  const [promptText, setPromptText] = useState("");
+  const [writtenContent, setWrittenContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [privacyKey, setPrivacyKey] = useState<string>();
   const [privacySources, setPrivacySources] = useState<string[]>([]);
-  const [privacyMode, setPrivacyMode] = useState<"copy" | "download">();
+  const [privacyMode, setPrivacyMode] = useState<DailySummaryDeliveryMode>();
   const selection = selectedPluginIds ?? new Set<string>();
   const runtimeOrigin = runtime.origin;
 
@@ -282,6 +286,8 @@ function DailySummaryView({
     setAggregate(next);
     onSelectionChange(nextSelection);
     setPreview(undefined);
+    setPromptText(nextSelection.size ? renderDailySummaryPrompt(next, nextSelection) : "");
+    setWrittenContent("");
     setPrivacyKey(undefined);
     setPrivacyMode(undefined);
     setPrivacySources([]);
@@ -305,7 +311,10 @@ function DailySummaryView({
 
   const selectionChanged = (pluginId: string) => {
     if (!aggregate) return;
-    onSelectionChange(toggleDailySummarySelection(aggregate, selection, pluginId));
+    const nextSelection = toggleDailySummarySelection(aggregate, selection, pluginId);
+    onSelectionChange(nextSelection);
+    setPromptText(nextSelection.size ? renderDailySummaryPrompt(aggregate, nextSelection) : "");
+    setWrittenContent("");
     setPreview(undefined);
     setPrivacyKey(undefined);
     setPrivacyMode(undefined);
@@ -331,6 +340,8 @@ function DailySummaryView({
       onSelectionChange(nextSelection);
       const nextPreview = createDailySummaryPreview(next, nextSelection);
       setPreview(nextPreview);
+      setPromptText(renderDailySummaryPrompt(next, nextSelection));
+      setWrittenContent("");
       setPrivacyKey(undefined);
       setPrivacyMode(undefined);
       setPrivacySources([]);
@@ -341,26 +352,41 @@ function DailySummaryView({
     }
   };
 
-  const deliver = async (mode: "copy" | "download", acknowledgedKey?: string) => {
+  const deliver = async (kind: "facts" | "prompt" | "written", mode: "copy" | "download", acknowledgedKey?: string) => {
     if (!aggregate) return;
-    const decision = dailySummaryDeliveryDecision({ aggregate, selectedPluginIds: selection, preview, acknowledgedPreviewKey: acknowledgedKey ?? privacyKey });
+    let deliveryText: string | undefined;
+    let deliveryFilename: string | undefined;
+    try {
+      if (kind === "prompt") {
+        deliveryText = promptText;
+        deliveryFilename = dailySummaryPromptFilename(aggregate.localDate);
+      } else if (kind === "written") {
+        deliveryText = renderDailySummaryWrittenMarkdown(aggregate, selection, writtenContent);
+        deliveryFilename = dailySummaryWrittenFilename(aggregate.localDate);
+      }
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "Daily Summary content is unavailable.");
+      return;
+    }
+    const decision = dailySummaryDeliveryDecision({ aggregate, selectedPluginIds: selection, preview, acknowledgedPreviewKey: acknowledgedKey ?? privacyKey, deliveryText, deliveryFilename });
     if (!decision.allowed) {
       if (decision.requiresPrivacyConfirmation && preview) {
         setPrivacySources(decision.privacySources ?? []);
         setPrivacyKey(preview.key);
-        setPrivacyMode(mode);
-      } else onNotice(decision.reason === "preview-required" ? "Generate a preview before delivery." : "Generate a new preview for the current selection.");
+        setPrivacyMode(`${kind}:${mode}`);
+      } else if (decision.reason === "content-required") onNotice("Write a Daily Summary before exporting it.");
+      else onNotice(decision.reason === "preview-required" ? "Generate a preview before delivery." : "Generate a new preview for the current selection.");
       return;
     }
     try {
       if (mode === "copy") {
         if (window.infolens) await window.infolens.copyText(decision.text!);
         else await navigator.clipboard.writeText(decision.text!);
-        onNotice("Daily Summary copied.");
+        onNotice(kind === "prompt" ? "Writing prompt copied." : kind === "written" ? "Written summary copied." : "Daily Summary copied.");
       } else {
         if (!window.infolens) throw new Error("File delivery is unavailable.");
         const result = await window.infolens.downloadText({ filename: decision.filename!, text: decision.text! });
-        if (!result.canceled) onNotice("Daily Summary downloaded.");
+        if (!result.canceled) onNotice(kind === "prompt" ? "Writing prompt downloaded." : kind === "written" ? "Written summary downloaded." : "Daily Summary downloaded.");
       }
     } catch {
       onNotice("Daily Summary delivery failed.");
@@ -371,7 +397,10 @@ function DailySummaryView({
     const mode = privacyMode;
     setPrivacySources([]);
     setPrivacyMode(undefined);
-    if (mode) void deliver(mode, privacyKey);
+    if (mode) {
+      const [kind, deliveryMode] = mode.split(":") as ["facts" | "prompt" | "written", "copy" | "download"];
+      void deliver(kind, deliveryMode, privacyKey);
+    }
   };
 
   const cancelPrivacy = () => {
@@ -407,11 +436,23 @@ function DailySummaryView({
           {!aggregate.plugins.length && <div className="daily-summary-state">No enabled Plugins participate in Daily Summary.</div>}
           <div className="daily-summary-toolbar"><span>{selection.size} selected</span><button className="primary-button" type="button" disabled={!selection.size || loading} onClick={() => void generatePreview()}><ListChecks size={15} />Generate preview</button></div>
         </div>
-        <div className="daily-summary-preview">
-          <div className="daily-summary-preview-header"><h2>Markdown preview</h2>{preview && <span>{isDailySummaryPreviewCurrent(preview, aggregate, selection) ? "Current" : "Regenerate required"}</span>}</div>
-          {!preview && <div className="daily-summary-preview-empty">Generate a preview to freeze the selected facts.</div>}
-          {preview && <pre aria-label="Daily Summary Markdown preview">{preview.markdown}</pre>}
-          <div className="daily-summary-delivery"><button type="button" disabled={!preview} onClick={() => void deliver("copy")}><Copy size={15} />Copy</button><button type="button" disabled={!preview} onClick={() => void deliver("download")}><Download size={15} />Download Markdown</button></div>
+        <div className="daily-summary-workbench">
+          <section className="daily-summary-panel daily-summary-prompt-panel">
+            <div className="daily-summary-preview-header"><div><h2>Writing prompt</h2><p>按 topic 重新归类 entry，并生成可回溯的每日摘要。</p></div><span>{promptText ? "Editable" : "Select a source"}</span></div>
+            <textarea aria-label="Daily Summary writing prompt" value={promptText} onChange={(event) => setPromptText(event.currentTarget.value)} placeholder="Generate a preview to prepare the writing prompt." />
+            <div className="daily-summary-delivery"><button type="button" disabled={!promptText.trim() || !preview} onClick={() => void deliver("prompt", "copy")}><Copy size={15} />Copy prompt</button><button type="button" disabled={!promptText.trim() || !preview} onClick={() => void deliver("prompt", "download")}><Download size={15} />Export prompt</button></div>
+          </section>
+          <section className="daily-summary-panel daily-summary-written-panel">
+            <div className="daily-summary-preview-header"><div><h2>Written summary</h2><p>粘贴或撰写模型输出，完成后导出。</p></div><span>{writtenContent.trim() ? `${writtenContent.trim().length} chars` : "Draft"}</span></div>
+            <textarea aria-label="Written Daily Summary" value={writtenContent} onChange={(event) => setWrittenContent(event.currentTarget.value)} placeholder="在这里粘贴或撰写按主题组织的每日摘要..." />
+            <div className="daily-summary-delivery"><button type="button" disabled={!writtenContent.trim() || !preview} onClick={() => void deliver("written", "copy")}><Copy size={15} />Copy summary</button><button type="button" className="primary-button" disabled={!writtenContent.trim() || !preview} onClick={() => void deliver("written", "download")}><Download size={15} />Export summary</button></div>
+          </section>
+          <section className="daily-summary-panel daily-summary-facts-panel">
+            <div className="daily-summary-preview-header"><div><h2>Facts preview</h2><p>导出 prompt 和摘要使用的冻结素材。</p></div>{preview && <span>{isDailySummaryPreviewCurrent(preview, aggregate, selection) ? "Current" : "Regenerate required"}</span>}</div>
+            {!preview && <div className="daily-summary-preview-empty">Generate a preview to freeze the selected facts.</div>}
+            {preview && <pre aria-label="Daily Summary Markdown preview">{preview.markdown}</pre>}
+            <div className="daily-summary-delivery"><button type="button" disabled={!preview} onClick={() => void deliver("facts", "copy")}><Copy size={15} />Copy facts</button><button type="button" disabled={!preview} onClick={() => void deliver("facts", "download")}><Download size={15} />Export facts</button></div>
+          </section>
         </div>
       </div>
     </>}
