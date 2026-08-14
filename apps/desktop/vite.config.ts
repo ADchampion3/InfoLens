@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import type { Connect, Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +15,7 @@ const runtimeInfoProxy = runtimeOrigin ? {
   },
 } : undefined;
 
-function missingRuntimeOriginMiddleware(req: IncomingMessage, res: ServerResponse, next: () => void) {
+function missingRuntimeOriginMiddleware(req: IncomingMessage, res: ServerResponse, next: Connect.NextFunction) {
   if (req.url?.split("?", 1)[0] !== "/runtime-info.json") {
     next();
     return;
@@ -27,13 +28,13 @@ function missingRuntimeOriginMiddleware(req: IncomingMessage, res: ServerRespons
   }));
 }
 
-function runtimeInfoEndpoint() {
+function runtimeInfoEndpoint(): Plugin {
   return {
     name: "infolens-runtime-info-endpoint",
-    configureServer(server: { middlewares: { use: (middleware: typeof missingRuntimeOriginMiddleware) => void } }) {
+    configureServer(server) {
       if (!runtimeOrigin) server.middlewares.use(missingRuntimeOriginMiddleware);
     },
-    configurePreviewServer(server: { middlewares: { use: (middleware: typeof missingRuntimeOriginMiddleware) => void } }) {
+    configurePreviewServer(server) {
       if (!runtimeOrigin) server.middlewares.use(missingRuntimeOriginMiddleware);
     },
   };
