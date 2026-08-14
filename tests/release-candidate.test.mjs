@@ -3,7 +3,7 @@ import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/pro
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { launchPackagedApp, waitFor } from "./helpers/sprint7-packaged-app.mjs";
+import { launchPackagedApp, waitFor } from "./helpers/packaged-app.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const releaseRoot = path.join(root, "release", "infolens-win32-x64");
@@ -50,19 +50,19 @@ test("release candidate contains the pinned production assembly", async () => {
   for (const id of officialIds) await access(path.join(releaseRoot, "resources", "app", "plugins", id, "manifest.json"));
 });
 
-test("packaged Electron executes the full Sprint 7 integration matrix", { timeout: 90_000 }, async () => {
-  const profile = await mkdtemp(path.join(os.tmpdir(), "infolens-sprint7-"));
+test("packaged Electron executes the full release integration matrix", { timeout: 90_000 }, async () => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), "infolens-release-candidate-"));
   const pluginsRoot = path.join(profile, "plugins");
   const stateFile = path.join(profile, "opencli-state.json");
   await mkdir(pluginsRoot, { recursive: true });
-  await cp(path.join(root, "tests", "fixtures", "sprint6", "rejected-plugin"), path.join(pluginsRoot, "future-reader"), { recursive: true });
+  await cp(path.join(root, "tests", "fixtures", "plugin-packages", "rejected-plugin"), path.join(pluginsRoot, "future-reader"), { recursive: true });
   await writeFile(stateFile, `${JSON.stringify({ producthunt: "success" }, null, 2)}\n`, "utf8");
   const environment = {
     INFOLENS_USER_DATA_ROOT: profile,
-    INFOLENS_BUNDLED_OPENCLI_ROOT: path.join(root, "tests", "fixtures", "sprint5", "opencli"),
+    INFOLENS_BUNDLED_OPENCLI_ROOT: path.join(root, "tests", "fixtures", "runtime-opencli", "opencli"),
     INFOLENS_TEST_OPENCLI_STATE: stateFile,
     INFOLENS_TEST_CONTROL: "1",
-    INFOLENS_TEST_INSTALL_PATH: path.join(root, "tests", "fixtures", "sprint6", "installable-plugin"),
+    INFOLENS_TEST_INSTALL_PATH: path.join(root, "tests", "fixtures", "plugin-packages", "installable-plugin"),
   };
   let app = await launchPackagedApp(root, environment);
   try {

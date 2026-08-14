@@ -1,6 +1,6 @@
 import { redactSensitiveValue } from "../packages/plugin-runtime/src/redaction.mjs";
 
-export const sprint8Plugins = [
+export const releasePlugins = [
   { id: "hn", name: "Hacker News", strategy: "PUBLIC", command: "hackernews top", field: "stories", rowSelector: ".story-row", database: "hacker-news.sqlite" },
   { id: "github-trending", name: "GitHub Trending", strategy: "PUBLIC", command: "github-trending repos", field: "repositories", rowSelector: ".repo-row", database: "github-trending.sqlite" },
   { id: "zhihu-hot", name: "Zhihu Hot List", strategy: "COOKIE", command: "zhihu whoami + zhihu hot", field: "questions", rowSelector: ".question-row", database: "zhihu-hot.sqlite" },
@@ -16,7 +16,7 @@ export function renderEvidenceMarkdown(evidence) {
   const rows = evidence.plugins.map((plugin) =>
     `| ${plugin.name} | \`${plugin.strategy}\` | \`${plugin.command}\` | ${plugin.recordCount ?? 0} | ${plugin.workspaceRows ?? 0} | ${state(plugin.persistedAfterRestart)} | ${plugin.result} |`,
   );
-  return `# Sprint 8 Real-Source Evidence
+  return `# Real-Source Evidence
 
 - Run: \`${evidence.runId}\`
 - Started: ${evidence.startedAt}

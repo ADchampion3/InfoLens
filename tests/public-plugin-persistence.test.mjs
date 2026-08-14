@@ -12,7 +12,7 @@ import { validateCollection as validateGithub } from "../plugins/github-trending
 import { loadBundledOpenCli } from "../packages/plugin-runtime/src/opencli-adapter.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
-const mockOpenCli = path.join(root, "tests/fixtures/sprint3/opencli");
+const mockOpenCli = path.join(root, "tests/fixtures/public-plugins/opencli");
 
 test("production distribution pins official OpenCLI and its two built-in PUBLIC adapters", async () => {
   const distribution=path.join(root,"resources/opencli");
@@ -40,7 +40,7 @@ async function stopRuntime(child){if(child.exitCode!==null)return; child.stdin.w
 async function api(origin, plugin, route, method="GET"){const response=await fetch(`${origin}/plugins/${plugin}/api/${route}`,{method});assert.equal(response.status,200,`${plugin} ${route}`);return response.json();}
 
 test("plugin-owned SQLite migrations and validators reject malformed public results", async () => {
-  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint3-store-"));
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-public-plugin-store-"));
   try {
     const hn=openHnStore(path.join(temp,"hn.sqlite")); const gh=openGithubStore(path.join(temp,"github.sqlite"));
     assert.equal(hn.schemaVersion(),2); assert.equal(gh.schemaVersion(),3); assert.deepEqual({...hn.settings()},{policy:"manual",intervalMinutes:60,retentionDays:30}); assert.deepEqual({...gh.settings()},{policy:"manual",intervalMinutes:60,retentionDays:30});
@@ -71,7 +71,7 @@ test("Hacker News validator accepts native job rows with missing or null comment
 });
 
 test("both PUBLIC plugins persist independently, reopen retained content, and preserve it after failures", async () => {
-  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint3-runtime-")); const dataRoot=path.join(temp,"data"); const stateFile=path.join(temp,"state.json"); await writeFile(stateFile,JSON.stringify({hn:"success",github:"success"}));
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-public-plugin-runtime-")); const dataRoot=path.join(temp,"data"); const stateFile=path.join(temp,"state.json"); await writeFile(stateFile,JSON.stringify({hn:"success",github:"success"}));
   let runtime;
   try {
     runtime=await startRuntime(dataRoot,stateFile); const {origin,plugins}=runtime.message; assert.deepEqual(plugins.map(({id})=>id).sort(),["github-trending","hn"]);

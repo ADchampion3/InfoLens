@@ -8,8 +8,8 @@ import { test } from "node:test";
 import { observeWorkspaceTheme, workspaceTheme } from "@infolens/plugin-sdk";
 
 const root = path.resolve(import.meta.dirname, "..");
-const openCliRoot = path.join(root, "tests/fixtures/sprint2/opencli");
-const providedOpenCliRoot = path.join(root, "tests/fixtures/sprint5/opencli");
+const openCliRoot = path.join(root, "tests/fixtures/plugin-contract/opencli");
+const providedOpenCliRoot = path.join(root, "tests/fixtures/runtime-opencli/opencli");
 
 async function packageFixture(packageRoot, id, { valid = true } = {}) {
   await mkdir(path.join(packageRoot, "backend"), { recursive: true });
@@ -96,7 +96,7 @@ async function request(origin, route, options) {
 }
 
 test("host state, package lifecycle, diagnostics, and removal run through Runtime", async () => {
-  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-sprint6-"));
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-lifecycle-"));
   const installedRoot = path.join(temporaryRoot, "managed-plugins", "existing");
   const sourceRoot = path.join(temporaryRoot, "source-package");
   const rejectedRoot = path.join(temporaryRoot, "managed-plugins", "rejected-package");
@@ -176,7 +176,7 @@ test("SDK theme convention reads initial configuration and observes live updates
 });
 
 test("removal requests a Runtime restart before deleting a module that will not settle", async () => {
-  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-sprint6-timeout-"));
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-lifecycle-timeout-"));
   const packageRoot = path.join(temporaryRoot, "managed-plugins", "stuck-plugin");
   await packageFixture(packageRoot, "stuck-plugin");
   await writeFile(path.join(packageRoot, "backend/index.mjs"), `export function activate(context) { context.setHealth({ state: "ready" }); return { deactivate() { return new Promise(() => {}); } }; }`);
@@ -196,7 +196,7 @@ test("removal requests a Runtime restart before deleting a module that will not 
 });
 
 test("duplicate plugin ids are rejected before an existing Adapter Scope is changed", async () => {
-  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-sprint6-duplicate-scope-"));
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-lifecycle-duplicate-scope-"));
   const firstRoot = path.join(temporaryRoot, "managed-plugins", "a-first");
   const duplicateRoot = path.join(temporaryRoot, "managed-plugins", "z-duplicate");
   await packageProvidedFixture(firstRoot, "shared-id", "1.0.0");
@@ -220,7 +220,7 @@ test("duplicate plugin ids are rejected before an existing Adapter Scope is chan
 
 test("bundled OpenCLI receives Node-shaped arguments from an Electron-hosted Runtime", async () => {
   const electronExecutable = path.join(root, "node_modules", "electron", "dist", process.platform === "win32" ? "electron.exe" : "electron");
-  const runner = path.join(root, "tests", "fixtures", "sprint6", "electron-adapter-runner.mjs");
+    const runner = path.join(root, "tests", "fixtures", "plugin-packages", "electron-adapter-runner.mjs");
   const child = spawn(electronExecutable, [runner], {
     cwd: root,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },

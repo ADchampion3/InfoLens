@@ -1,13 +1,13 @@
 import { spawn } from "node:child_process";
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { launchPackagedApp, waitFor } from "../tests/helpers/sprint7-packaged-app.mjs";
-import { renderEvidenceMarkdown, safeEvidence, sprint8Plugins } from "./sprint8-evidence.mjs";
+import { launchPackagedApp, waitFor } from "../tests/helpers/packaged-app.mjs";
+import { renderEvidenceMarkdown, safeEvidence, releasePlugins } from "./release-evidence.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const releaseRoot = path.join(root, "release", "infolens-win32-x64");
 const runId = new Date().toISOString().replace(/[:.]/g, "-");
-const runRoot = path.join(root, ".infolens-acceptance", "sprint8", "runs", runId);
+const runRoot = path.join(root, ".infolens-acceptance", "real-source", "runs", runId);
 const profile = path.join(runRoot, "profile");
 const screenshotRoot = path.join(runRoot, "screenshots");
 const manifest = JSON.parse(await readFile(path.join(releaseRoot, "release-manifest.json"), "utf8"));
@@ -17,7 +17,7 @@ const evidence = {
   startedAt: new Date().toISOString(),
   release: manifest,
   browserBridge: { passed: false },
-  plugins: sprint8Plugins.map(({ id, name, strategy, command }) => ({ id, name, strategy, command, result: "Pending" })),
+  plugins: releasePlugins.map(({ id, name, strategy, command }) => ({ id, name, strategy, command, result: "Pending" })),
   lifecycle: { cleanStart: true },
   result: "Failed",
 };
@@ -94,10 +94,10 @@ try {
   app = await launchPackagedApp(root, environment);
   const initial = await waitFor(async () => {
     const info = await runtimeInfo(app);
-    return info?.plugins?.length === sprint8Plugins.length ? info : undefined;
+    return info?.plugins?.length === releasePlugins.length ? info : undefined;
   }, "Packaged Runtime did not activate all official plugins", 20_000);
 
-  for (const plugin of sprint8Plugins) {
+  for (const plugin of releasePlugins) {
     process.stdout.write(`Collecting ${plugin.name} through its packaged workspace...\n`);
     const record = evidence.plugins.find(({ id }) => id === plugin.id);
     record.result = "Running";
@@ -113,7 +113,7 @@ try {
   evidence.lifecycle.shutdown = true;
   app = await launchPackagedApp(root, environment);
   const restarted = await waitFor(() => runtimeInfo(app), "Packaged application did not restart", 20_000);
-  for (const plugin of sprint8Plugins) {
+  for (const plugin of releasePlugins) {
     const summary = await request(restarted.origin, `/plugins/${plugin.id}/api/summary`);
     const targetPath = await openWorkspace(app, plugin);
     const workspaceRows = await waitFor(() => app.cdp.evaluateTarget(targetPath, `document.querySelectorAll(${JSON.stringify(plugin.rowSelector)}).length`), `${plugin.name} retained rows did not render after restart`);
@@ -126,9 +126,9 @@ try {
   await app.cdp.evaluate("window.infolens.testTerminateRuntime()");
   const recovered = await waitFor(async () => {
     const info = await runtimeInfo(app);
-    return info?.origin && info.origin !== oldOrigin && info.plugins.length === sprint8Plugins.length ? info : undefined;
+    return info?.origin && info.origin !== oldOrigin && info.plugins.length === releasePlugins.length ? info : undefined;
   }, "Runtime did not recover", 20_000);
-  for (const plugin of sprint8Plugins) {
+  for (const plugin of releasePlugins) {
     const summary = await request(recovered.origin, `/plugins/${plugin.id}/api/summary`);
     if (summary[plugin.field].length !== evidence.plugins.find(({ id }) => id === plugin.id).recordCount) {
       throw Object.assign(new Error(`${plugin.name} records changed during Runtime recovery`), { code: "RUNTIME_RECOVERY_FAILED" });
@@ -148,6 +148,6 @@ try {
   const safe = safeEvidence(evidence);
   await writeFile(path.join(runRoot, "evidence.json"), `${JSON.stringify(safe, null, 2)}\n`, "utf8");
   await writeFile(path.join(runRoot, "evidence.md"), renderEvidenceMarkdown(safe), "utf8");
-  await writeFile(path.join(root, ".infolens-acceptance", "sprint8", "latest-run.txt"), `${runRoot}\n`, "utf8");
-  process.stdout.write(`Sprint 8 evidence: ${path.join(runRoot, "evidence.md")}\nResult: ${evidence.result}\n`);
+  await writeFile(path.join(root, ".infolens-acceptance", "real-source", "latest-run.txt"), `${runRoot}\n`, "utf8");
+  process.stdout.write(`Real-source evidence: ${path.join(runRoot, "evidence.md")}\nResult: ${evidence.result}\n`);
 }

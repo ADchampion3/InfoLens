@@ -11,7 +11,7 @@ import { normalizeRefreshInput } from "../packages/plugin-runtime/src/refresh-op
 import { createLogService } from "../packages/log-service/src/index.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
-const mockOpenCli = path.join(root, "tests/fixtures/sprint5/opencli");
+const mockOpenCli = path.join(root, "tests/fixtures/runtime-opencli/opencli");
 
 function target(pluginId, overrides = {}) {
   return { pluginId, targetId: `${pluginId}@1.0.0`, name: pluginId, version: "1.0.0", state: "ready", enabled: true, eligible: true, ...overrides };

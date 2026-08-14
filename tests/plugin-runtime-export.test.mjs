@@ -11,7 +11,7 @@ import { openStore as openProductHunt } from "../plugins/product-hunt/backend/st
 import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/storage.js";
 
 const root = path.resolve(import.meta.dirname, "..");
-const openCliRoot = path.join(root, "tests", "fixtures", "sprint5", "opencli");
+const openCliRoot = path.join(root, "tests", "fixtures", "runtime-opencli", "opencli");
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));

@@ -640,7 +640,7 @@ Source-level checks for this repository are:
 ~~~powershell
 npm run typecheck:sdk
 npm run verify:release
-npm run package:sprint7
+npm run package:release
 ~~~
 
 These verify SDK types, release metadata, and package boundaries. They do not

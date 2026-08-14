@@ -50,6 +50,6 @@ test("Thin Plugin SDK does not own Workspace history UI", async () => {
   );
   const sdkStyles = await readFile(path.join(root, "packages/plugin-sdk/src/workspace.css"), "utf8");
   assert.doesNotMatch(sdkStyles, /history-calendar|history-view-bar|infolens-confirm-dialog/);
-  const packager = await readFile(path.join(root, "scripts/package-sprint7.mjs"), "utf8");
+  const packager = await readFile(path.join(root, "scripts/package-release.mjs"), "utf8");
   assert.match(packager, /\["packages\/plugin-workspace",\s*"packages\/plugin-workspace"\]/);
 });

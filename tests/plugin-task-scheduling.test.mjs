@@ -10,7 +10,7 @@ import { validateCollection } from "../plugins/product-hunt/backend/index.js";
 import { PluginTaskManager, SharedTaskQueue } from "../packages/plugin-runtime/src/task-manager.mjs";
 
 const root=path.resolve(import.meta.dirname,"..");
-const mockOpenCli=path.join(root,"tests/fixtures/sprint5/opencli");
+const mockOpenCli=path.join(root,"tests/fixtures/runtime-opencli/opencli");
 const tick=()=>new Promise((resolve)=>setImmediate(resolve));
 
 function controlledTask(counter, maximum, gates) {
@@ -52,7 +52,7 @@ async function api(origin,plugin,route,method="GET"){const response=await fetch(
 test("Product Hunt INTERCEPT collection validates, persists, and serializes with COOKIE work",async()=>{
   const productionAdapter=await readFile(path.join(root,"plugins/product-hunt/opencli-adapters/producthunt/today.js"),"utf8");assert.match(productionAdapter,/strategy:\s*Strategy\.INTERCEPT/);assert.match(productionAdapter,/installInterceptor\("producthunt\.com"\)/);
   assert.throws(()=>validateCollection([{rank:1,name:"Bad",votes:"1",url:"https://example.com/product"}]),/invalid/);
-  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint5-runtime-"));const dataRoot=path.join(temp,"data");const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({delayMs:150}));let runtime;
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-task-scheduling-runtime-"));const dataRoot=path.join(temp,"data");const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({delayMs:150}));let runtime;
   try {
     runtime=await startRuntime(dataRoot,stateFile);assert.deepEqual(runtime.message.plugins.map(({id})=>id).sort(),["github-trending","hn","product-hunt","zhihu-hot"]);
     const [productHunt,zhihu]=await Promise.all([api(runtime.message.origin,"product-hunt","refresh","POST"),api(runtime.message.origin,"zhihu-hot","refresh","POST")]);assert.equal(productHunt.ok,true);assert.equal(productHunt.products.length,12);assert.equal(zhihu.ok,true);
@@ -63,7 +63,7 @@ test("Product Hunt INTERCEPT collection validates, persists, and serializes with
 });
 
 test("Runtime deactivation cancels active plugin work and unregisters future activity",async()=>{
-  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint5-deactivate-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({delayMs:10000}));let runtime;
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-task-scheduling-deactivate-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({delayMs:10000}));let runtime;
   try {
     runtime=await startRuntime(path.join(temp,"data"),stateFile);const refresh=fetch(`${runtime.message.origin}/plugins/product-hunt/api/refresh`,{method:"POST"});
     for(let attempt=0;attempt<50;attempt+=1){const tasks=await fetch(`${runtime.message.origin}/runtime/tasks`).then((response)=>response.json());if(tasks.activePlugins.includes("product-hunt"))break;await new Promise((resolve)=>setTimeout(resolve,20))}

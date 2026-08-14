@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { healthResponse, pluginApiUrl, pluginHealthUrl, pluginWorkspaceUrl } from "@infolens/plugin-sdk";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const fixturesRoot = path.join(import.meta.dirname, "fixtures", "sprint2");
+const fixturesRoot = path.join(import.meta.dirname, "fixtures", "plugin-contract");
 
 async function materializePlugins(root) {
   const manifestsRoot = path.join(fixturesRoot, "manifests");
@@ -75,8 +75,8 @@ test("SDK workspace URL helpers retain the Runtime-owned plugin boundary", () =>
   assert.deepEqual(healthResponse("refreshing", { badge: "2" }), { state: "refreshing", badge: "2" });
 });
 
-test("Sprint 2 contracts execute through the actual Plugin Runtime", async () => {
-  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-sprint2-"));
+test("Plugin contracts execute through the actual Plugin Runtime", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-contract-"));
   const pluginsRoot = path.join(temporaryRoot, "plugins");
   const dataRoot = path.join(temporaryRoot, "data");
   await mkdir(pluginsRoot, { recursive: true });

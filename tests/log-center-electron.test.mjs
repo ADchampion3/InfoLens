@@ -3,7 +3,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { launchPackagedApp, waitFor } from "./helpers/sprint7-packaged-app.mjs";
+import { launchPackagedApp, waitFor } from "./helpers/packaged-app.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -33,17 +33,17 @@ test("packaged Host Shell keeps retained logs available while Plugin Runtime res
   const profile = await mkdtemp(path.join(os.tmpdir(), "infolens-log-center-"));
   const pluginsRoot = path.join(profile, "plugins");
   await mkdir(pluginsRoot, { recursive: true });
-  await cp(path.join(root, "tests", "fixtures", "sprint6", "rejected-plugin"), path.join(pluginsRoot, "future-reader"), { recursive: true });
+  await cp(path.join(root, "tests", "fixtures", "plugin-packages", "rejected-plugin"), path.join(pluginsRoot, "future-reader"), { recursive: true });
   const activationRoot = path.join(pluginsRoot, "activation-failure");
   await mkdir(path.join(activationRoot, "backend"), { recursive: true });
   await mkdir(path.join(activationRoot, "web"), { recursive: true });
-  await cp(path.join(root, "tests", "fixtures", "sprint2", "manifests", "activation-failure.json"), path.join(activationRoot, "manifest.json"));
-  await cp(path.join(root, "tests", "fixtures", "sprint2", "backends", "activation-failure.mjs"), path.join(activationRoot, "backend", "index.mjs"));
+  await cp(path.join(root, "tests", "fixtures", "plugin-contract", "manifests", "activation-failure.json"), path.join(activationRoot, "manifest.json"));
+  await cp(path.join(root, "tests", "fixtures", "plugin-contract", "backends", "activation-failure.mjs"), path.join(activationRoot, "backend", "index.mjs"));
   await writeFile(path.join(activationRoot, "web", "index.html"), "<!doctype html><title>Activation Failure</title>");
   const environment = {
     INFOLENS_USER_DATA_ROOT: profile,
     INFOLENS_TEST_CONTROL: "1",
-    INFOLENS_BUNDLED_OPENCLI_ROOT: path.join(root, "tests", "fixtures", "sprint5", "opencli"),
+    INFOLENS_BUNDLED_OPENCLI_ROOT: path.join(root, "tests", "fixtures", "runtime-opencli", "opencli"),
     INFOLENS_TEST_EXPORT_PATH: path.join(profile, "filtered-logs.jsonl"),
   };
   let app = await launchPackagedApp(root, environment);

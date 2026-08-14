@@ -35,7 +35,7 @@ import {
 } from "../apps/desktop/src/daily-summary.ts";
 
 const root = path.resolve(import.meta.dirname, "..");
-const mockOpenCli = path.join(root, "tests", "fixtures", "sprint5", "opencli");
+const mockOpenCli = path.join(root, "tests", "fixtures", "runtime-opencli", "opencli");
 const GENERATED_AT = "2026-08-12T03:00:00.000Z";
 const TIME_ZONE = "Asia/Shanghai";
 const LOCAL_DATE = "2026-08-12";

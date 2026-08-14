@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { renderEvidenceMarkdown, safeEvidence, sprint8Plugins } from "../scripts/sprint8-evidence.mjs";
+import { renderEvidenceMarkdown, safeEvidence, releasePlugins } from "../scripts/release-evidence.mjs";
 import { applyOpenCliOverrides, patchOpenCliDiscovery } from "../scripts/apply-opencli-overrides.mjs";
 
 const require = createRequire(import.meta.url);
@@ -19,13 +19,13 @@ test("Runtime enables Node environment proxy support without overriding explicit
   assert.deepEqual(runtimeProxyEnvironment({}, "DIRECT"), {});
 });
 
-test("Sprint 8 evidence covers every strategy and redacts authentication material", () => {
-  assert.deepEqual(sprint8Plugins.map(({ strategy }) => strategy), ["PUBLIC", "PUBLIC", "COOKIE", "INTERCEPT"]);
+test("Release evidence covers every strategy and redacts authentication material", () => {
+  assert.deepEqual(releasePlugins.map(({ strategy }) => strategy), ["PUBLIC", "PUBLIC", "COOKIE", "INTERCEPT"]);
   const evidence = safeEvidence({ cookie: "secret", profilePath: "C:\\Users\\person\\Chrome", failure: "token=abc" });
   assert.equal(evidence.cookie, "[REDACTED]");
   assert.equal(evidence.profilePath, "[REDACTED]");
   assert.doesNotMatch(evidence.failure, /abc|person/);
-  const markdown = renderEvidenceMarkdown({ runId: "run", startedAt: "now", result: "Passed", browserBridge: { passed: true }, release: {}, plugins: sprint8Plugins.map((plugin) => ({ ...plugin, result: "Passed" })), lifecycle: {} });
+  const markdown = renderEvidenceMarkdown({ runId: "run", startedAt: "now", result: "Passed", browserBridge: { passed: true }, release: {}, plugins: releasePlugins.map((plugin) => ({ ...plugin, result: "Passed" })), lifecycle: {} });
   assert.match(markdown, /Hacker News/);
   assert.match(markdown, /INTERCEPT/);
 });

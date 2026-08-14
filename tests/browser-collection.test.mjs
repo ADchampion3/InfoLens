@@ -12,7 +12,7 @@ import { loadBundledOpenCli } from "../packages/plugin-runtime/src/opencli-adapt
 import { redactSensitiveText, redactSensitiveValue } from "../packages/plugin-runtime/src/redaction.mjs";
 
 const root=path.resolve(import.meta.dirname,"..");
-const mockOpenCli=path.join(root,"tests/fixtures/sprint4/opencli");
+const mockOpenCli=path.join(root,"tests/fixtures/browser-collection/opencli");
 
 async function startRuntime(dataRoot,stateFile){
   const child=spawn(process.execPath,[path.join(root,"packages/plugin-runtime/src/server.mjs")],{cwd:root,env:{...process.env,INFOLENS_PROJECT_ROOT:root,INFOLENS_PLUGIN_DATA_ROOT:dataRoot,INFOLENS_BUNDLED_OPENCLI_ROOT:mockOpenCli,INFOLENS_TEST_OPENCLI_STATE:stateFile,INFOLENS_RUNTIME_PORT:"0"},stdio:["pipe","pipe","pipe"]});
@@ -36,7 +36,7 @@ test("production metadata exposes the official Zhihu COOKIE adapter",async()=>{
 });
 
 test("Zhihu schema migration and native-row validation are deterministic",async()=>{
-  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint4-store-"));
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-browser-collection-store-"));
   try{const store=openStore(path.join(temp,"zhihu.sqlite"));assert.equal(store.schemaVersion(),2);assert.deepEqual({...store.settings()},{policy:"manual",intervalMinutes:60,retentionDays:30});assert.equal(store.metadata().dependencyState,"unknown");store.close();const reopened=openStore(path.join(temp,"zhihu.sqlite"));assert.equal(reopened.schemaVersion(),2);reopened.close();assert.throws(()=>validateCollection([]),/must contain rows/);assert.throws(()=>validateCollection([{rank:1,title:"bad"}]),/invalid/);assert.equal(validateAuthStatus([{logged_in:true,site:"zhihu"}]),true);assert.throws(()=>validateAuthStatus([{logged_in:false,site:"zhihu"}]),error=>error.code==="SITE_LOGIN_REQUIRED") }finally{await rm(temp,{recursive:true,force:true})}
 });
 
@@ -53,7 +53,7 @@ test("redaction removes authentication material and local browser paths",()=>{
 });
 
 test("COOKIE collection persists, degrades only Zhihu, and distinguishes dependency states",async()=>{
-  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint4-runtime-"));const dataRoot=path.join(temp,"data");const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success"}));let runtime;
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-browser-collection-runtime-"));const dataRoot=path.join(temp,"data");const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success"}));let runtime;
   try{
     runtime=await startRuntime(dataRoot,stateFile);const ids=runtime.message.plugins.map(({id})=>id).sort();assert.deepEqual(ids,["github-trending","hn","zhihu-hot"]);
     let zhihu=await api(runtime.message.origin,"zhihu-hot","summary");assert.equal(zhihu.questions.length,0);assert.equal(zhihu.dependencyState,"unknown");
@@ -70,7 +70,7 @@ test("COOKIE collection persists, degrades only Zhihu, and distinguishes depende
 });
 
 test("Browser Bridge status is read-only until an explicit check or reconnect",async()=>{
-  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint4-browser-status-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success"}));let runtime;
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-browser-status-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success"}));let runtime;
   try{
     runtime=await startRuntime(path.join(temp,"data"),stateFile);
     const statusPath=`${stateFile}.calls`;
@@ -83,7 +83,7 @@ test("Browser Bridge status is read-only until an explicit check or reconnect",a
 });
 
 test("a successful refresh replaces failed content and clears stale failure feedback",async()=>{
-  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint4-recovery-"));const dataRoot=path.join(temp,"data");const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success",zhihuDataVersion:1}));let runtime;
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-browser-recovery-"));const dataRoot=path.join(temp,"data");const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success",zhihuDataVersion:1}));let runtime;
   try{
     runtime=await startRuntime(dataRoot,stateFile);let result=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.match(result.questions[0].title,/v1-/);
     await writeFile(stateFile,JSON.stringify({zhihu:"malformed",zhihuDataVersion:1}));result=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.equal(result.ok,false);assert.ok(result.lastError);assert.match(result.questions[0].title,/v1-/);
@@ -96,7 +96,7 @@ test("every bundled workspace reconciles committed summary state after refresh",
 });
 
 test("the bare Vite preview root resolves Runtime info as JSON",async()=>{
-  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint4-preview-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success"}));let runtime;let vite;
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-browser-preview-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success"}));let runtime;let vite;
   try{
     runtime=await startRuntime(path.join(temp,"data"),stateFile);const port=await freePort();
     vite=spawn(process.execPath,[path.join(root,"node_modules/vite/bin/vite.js"),"--config",path.join(root,"apps/desktop/vite.config.ts"),"--configLoader","runner","--host","127.0.0.1","--port",String(port),"--strictPort"],{cwd:root,env:{...process.env,INFOLENS_RUNTIME_ORIGIN:runtime.message.origin},stdio:["ignore","ignore","pipe"]});
@@ -115,7 +115,7 @@ test("the bare Vite root reports a missing Runtime origin as JSON",async()=>{
   }finally{vite?.kill()}
 });
 
-test("Sprint 4 fixtures contain no authentication or browser-session artifacts",async()=>{
-  const files=await readdir(path.join(root,"tests/fixtures/sprint4/opencli"),{recursive:true});
-  for(const relative of files){const filename=path.join(root,"tests/fixtures/sprint4/opencli",relative);if((await stat(filename)).isDirectory())continue;const content=await readFile(filename,"utf8");assert.doesNotMatch(content,/authorization\s*[:=]|set-cookie|chrome[\\/]user data|contextId\s*[:=]|webSocketDebuggerUrl/i,relative)}
+test("Browser collection fixtures contain no authentication or browser-session artifacts",async()=>{
+  const files=await readdir(path.join(root,"tests/fixtures/browser-collection/opencli"),{recursive:true});
+  for(const relative of files){const filename=path.join(root,"tests/fixtures/browser-collection/opencli",relative);if((await stat(filename)).isDirectory())continue;const content=await readFile(filename,"utf8");assert.doesNotMatch(content,/authorization\s*[:=]|set-cookie|chrome[\\/]user data|contextId\s*[:=]|webSocketDebuggerUrl/i,relative)}
 });

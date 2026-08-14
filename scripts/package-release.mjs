@@ -8,7 +8,7 @@ const electronDist = path.join(root, "node_modules", "electron", "dist");
 const outputRoot = path.join(root, "release", "infolens-win32-x64");
 
 if (process.platform !== "win32" || process.arch !== "x64") {
-  throw new Error("Sprint 7 currently packages the Windows x64 release candidate");
+  throw new Error("Release packaging currently targets Windows x64");
 }
 
 const sourceVerification = await verifyRelease({ root });
@@ -105,7 +105,7 @@ try {
   await rm(outputRoot, { recursive: true, force: true });
   await atomicRename(stagingRoot, outputRoot);
   published = true;
-  process.stdout.write(`Sprint 7 release candidate: ${outputRoot}\n`);
+  process.stdout.write(`Release candidate: ${outputRoot}\n`);
 } finally {
   if (!published) await rm(stagingRoot, { recursive: true, force: true });
 }
