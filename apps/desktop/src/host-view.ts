@@ -1,4 +1,5 @@
 export type HostView =
+  | { kind: "overview" }
   | { kind: "plugin"; id: string }
   | { kind: "plugins" }
   | { kind: "logs" }

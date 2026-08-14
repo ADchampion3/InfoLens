@@ -1,4 +1,4 @@
-import { AlertCircle, CircleOff, FileText, LoaderCircle, Plug, RefreshCw, ScrollText, Search, Settings } from "lucide-react";
+import { AlertCircle, CircleOff, FileText, LayoutDashboard, LoaderCircle, Plug, RefreshCw, ScrollText, Search, Settings } from "lucide-react";
 import type { HostView } from "../host-view";
 
 export function sourceInitial(plugin: RuntimePlugin) {
@@ -32,6 +32,7 @@ export function InstrumentRail({ runtime, view, onSelectPlugin, onOpenView, onOp
         <Search size={15} aria-hidden="true" /><span>Command...</span><kbd>Ctrl K</kbd>
       </button>
       <nav className="plugin-nav" aria-label="Plugins">
+        <button className={`nav-item utility ${view.kind === "overview" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "overview" })} type="button"><span className="utility-icon"><LayoutDashboard size={17} /></span><span className="nav-label">Overview</span></button>
         <div className="nav-caption">Sources</div>
         {runtime?.plugins.map((plugin) => (
           <button className={`nav-item ${view.kind === "plugin" && plugin.id === view.id ? "is-selected" : ""}`} key={plugin.id} onClick={() => onSelectPlugin(plugin)} type="button">

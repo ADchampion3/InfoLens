@@ -16,6 +16,7 @@ import {
 import type { DailySummaryAggregate, DailySummaryPreview } from "./daily-summary";
 import { InstrumentRail, Lifecycle, sourceInitial } from "./components/InstrumentRail";
 import { CommandPalette } from "./components/CommandPalette";
+import { OverviewView } from "./components/OverviewView";
 import type { CommandItem } from "./components/CommandPalette";
 import { readJsonResponse, runtimeRequest } from "./runtime-api";
 import { useTheme } from "./useTheme";
@@ -710,7 +711,7 @@ export function App() {
   const [status, setStatus] = useState<Status>("loading");
   const [message, setMessage] = useState("Starting plugin services...");
   const [runtime, setRuntime] = useState<RuntimeInfo>();
-  const [view, setView] = useState<HostView>({ kind: "plugins" });
+  const [view, setView] = useState<HostView>({ kind: "overview" });
   const [dailySummarySelection, setDailySummarySelection] = useState<Set<string>>();
   const [batchId, setBatchId] = useState<string>();
   const [managedKey, setManagedKey] = useState<string>();
@@ -743,9 +744,7 @@ export function App() {
 
   useEffect(() => {
     refreshInfo().then((info) => {
-      const restored = info.plugins.find((plugin) => plugin.id === info.hostState.lastSelection && available(plugin));
-      const selected = restored ?? info.plugins.find(available);
-      setView(selected ? { kind: "plugin", id: selected.id } : { kind: "plugins" });
+      setView({ kind: "overview" });
       setManagedKey(info.plugins[0]?.id ?? info.rejectedPlugins[0]?.package);
     }).catch((error: unknown) => {
       setMessage(error instanceof Error ? error.message : "Plugin services did not start.");
@@ -933,6 +932,7 @@ export function App() {
 
   const commands = useMemo<CommandItem[]>(() => {
     const goTo: CommandItem[] = [
+      { id: "view-overview", group: "Go to", label: "Overview", action: () => setView({ kind: "overview" }) },
       { id: "view-plugins", group: "Go to", label: "Plugins", action: () => setView({ kind: "plugins" }) },
       { id: "view-daily-summary", group: "Go to", label: "Daily Summary", action: () => setView({ kind: "daily-summary" }) },
       { id: "view-batch", group: "Go to", label: "Batch refresh", action: () => void openBatchRefresh() },
@@ -971,6 +971,7 @@ export function App() {
           <div className="system-state"><CircleOff size={28} /><h1>{selected.name} is disabled</h1><button className="primary-button" onClick={() => runtime && mutate(() => runtimeRequest(runtime, `/runtime/plugins/${selected.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: true }) }), `${selected.name} enabled`)}>Enable in Plugins</button></div>
         )}
         {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? "Plugin"} workspace`} allow="clipboard-write" />}
+        {status === "ready" && view.kind === "overview" && runtime && <OverviewView runtime={runtime} onOpenPlugin={(plugin) => void selectPlugin(plugin)} onOpenBatch={() => void openBatchRefresh()} onOpenDailySummary={() => setView({ kind: "daily-summary" })} onOpenSettings={() => setView({ kind: "settings" })} />}
         {status === "ready" && view.kind === "batch" && runtime && <BatchRefreshView runtime={runtime} initialBatchId={batchId} onBatchIdChange={setBatchId} onBatchStarted={observeBatch} onOpenLogs={openBatchLogs} />}
         {status === "ready" && !runtimeRestarting && view.kind === "daily-summary" && runtime && <DailySummaryView runtime={runtime} onOpenBatch={openBatchRefresh} onNotice={showNotice} selectedPluginIds={dailySummarySelection} onSelectionChange={setDailySummarySelection} />}
         {status === "ready" && view.kind === "plugins" && runtime && (

@@ -173,6 +173,59 @@ dd { margin: 0; }
 .log-guidance { display: grid; gap: 4px; margin-top: 8px; padding: 12px; border-left: 3px solid var(--color-accent); border-radius: 0 var(--radius-ctl) var(--radius-ctl) 0; background: var(--color-surface); font-family: var(--font-body); font-size: 12px; }
 .log-guidance span { color: var(--color-muted); }
 
+/* ── Overview (signal deck) ────────────────────────────────────────── */
+
+.overview-page { padding: 0 28px 28px; }
+.overview-header { padding: 26px 0 18px; }
+.overview-weekday { color: var(--color-faint); font: 600 11px var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; }
+.overview-header h1 { margin: 4px 0 2px; font-family: var(--font-display); font-size: var(--text-display); font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+.overview-header p { margin: 0; color: var(--color-muted); font-size: 12px; }
+
+.signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.signal-card { display: grid; gap: 8px; justify-items: start; padding: 14px; border: 1px solid var(--color-rule); border-radius: var(--radius-surface); background: var(--color-surface); text-align: left; cursor: pointer; transition: border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
+.signal-card:hover { border-color: var(--color-accent); }
+.signal-card:active { transform: translateY(1px); }
+.signal-card-top { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+.signal-card-name { font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--color-ink); }
+.signal-card-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--color-muted); font: 11px var(--font-mono); }
+.signal-card-badge { color: var(--color-ink); font-weight: 600; }
+.fresh-meter { display: block; width: 100%; height: 2px; margin-top: 2px; border-radius: 1px; background: var(--color-rule); overflow: hidden; }
+.fresh-fill { display: block; height: 100%; background: var(--color-accent); transition: width var(--dur-med) var(--ease-out); }
+.signal-card--hn .fresh-fill { background: var(--brand-hn); }
+.signal-card--github-trending .fresh-fill { background: var(--brand-gh); }
+.signal-card--zhihu-hot .fresh-fill { background: var(--brand-zh); }
+.signal-card--product-hunt .fresh-fill { background: var(--brand-ph); }
+
+.ov-pill { padding: 2px 7px; border: 1px solid var(--color-rule); border-radius: 999px; color: var(--color-muted); font: 10px var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+.ov-pill--ok { border-color: color-mix(in srgb, var(--color-ok) 45%, var(--color-rule)); color: var(--color-ok); }
+.ov-pill--busy { border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-rule)); color: var(--color-accent); }
+.ov-pill--warn { border-color: color-mix(in srgb, var(--color-warn) 45%, var(--color-rule)); color: var(--color-warn); }
+.ov-pill--bad { border-color: color-mix(in srgb, var(--color-bad) 45%, var(--color-rule)); color: var(--color-bad); }
+
+.ov-band { margin-top: 16px; padding: 16px 18px; border: 1px solid var(--color-graphite-2); border-radius: var(--radius-surface); background: var(--color-graphite); color: var(--color-graphite-ink); }
+.ov-band-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.ov-band-head h2 { margin: 0; font-family: var(--font-display); font-size: 15px; font-weight: 600; }
+.ov-band-action { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--color-graphite-ink) 35%, transparent); border-radius: var(--radius-ctl); background: transparent; color: var(--color-graphite-ink); font-size: 11px; font-weight: 650; cursor: pointer; transition: background var(--dur-fast) var(--ease-out); }
+.ov-band-action:hover { background: var(--color-graphite-2); }
+.ov-band-counts { display: flex; gap: 18px; margin-top: 10px; color: var(--color-graphite-muted); font-size: 12px; }
+.ov-band-counts strong { margin-right: 4px; color: var(--color-graphite-ink); font: 600 13px var(--font-mono); }
+.ov-band-rows { display: grid; gap: 2px; margin-top: 10px; }
+.ov-band-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid color-mix(in srgb, var(--color-graphite-ink) 12%, transparent); font-size: 12px; }
+.ov-band-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-band-note { margin: 8px 0 0; color: var(--color-graphite-muted); font-size: 12px; }
+
+.ov-duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 16px; }
+.ov-card { padding: 14px 16px; border: 1px solid var(--color-rule); border-radius: var(--radius-surface); background: var(--color-surface); }
+.ov-card-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.ov-card-head h2 { margin: 0; font-family: var(--font-display); font-size: 14px; font-weight: 600; }
+.ov-card-action { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px; border: 1px solid var(--color-rule-2); border-radius: var(--radius-ctl); background: var(--color-surface); color: var(--color-ink); font-size: 11px; font-weight: 650; cursor: pointer; transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+.ov-card-action:hover { border-color: var(--color-accent); color: var(--color-accent); }
+.ov-card-state { display: flex; align-items: center; gap: 8px; min-height: 44px; color: var(--color-muted); font-size: 12px; }
+.ov-card-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--color-muted); font: 11px var(--font-mono); }
+.ov-status-rows { display: grid; gap: 2px; margin-top: 10px; }
+.ov-status-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid var(--color-rule); font-size: 12px; }
+.ov-bridge { display: grid; justify-items: start; gap: 8px; }
+
 /* ── Dialogs & toast ───────────────────────────────────────────────── */
 
 .dialog-scrim { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--scrim); }
