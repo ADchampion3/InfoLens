@@ -1,6 +1,6 @@
-/* Infolens design tokens — Cobalt (modern-minimal instrument console)
- * Ported from apps/desktop/prototype/tokens.css. Single source of truth for
- * color, type, space, shape, and motion. Components reference tokens only.
+/* Infolens design tokens - Cobalt (modern-minimal instrument console)
+ * Single source of truth for color, type, space, shape, and motion.
+ * Components reference tokens only.
  * Dark theme activates via [data-theme="dark"] on <html>.
  */
 

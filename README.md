@@ -1,0 +1,180 @@
+# Infolens
+
+Infolens is a local-first Electron host for source-oriented information
+plugins. It provides one desktop shell for following several sources while
+letting each plugin own its collection strategy, local data, refresh policy,
+and reading workspace.
+
+The project is in active development. APIs, package contracts, and user
+interfaces may change between revisions.
+
+## What It Includes
+
+The repository ships four bundled plugins:
+
+| Plugin | Collection strategy | Browser Bridge |
+| --- | --- | --- |
+| Hacker News | `PUBLIC` | Not required |
+| GitHub Trending | `PUBLIC` | Not required |
+| Zhihu Hot List | `COOKIE` | Required, with a logged-in Chrome profile |
+| Product Hunt | `INTERCEPT` | Required for live collection |
+
+Each plugin has its own backend, SQLite store, refresh behavior, and static
+workspace. The Host Shell does not flatten their records into a shared feed.
+
+The application bundles OpenCLI 1.8.6 and invokes the local runtime. A global
+OpenCLI installation is not required. Browser-backed plugins use the OpenCLI
+Browser Bridge extension and the user's existing Chrome session.
+
+## Requirements
+
+- Node.js 22 or newer is recommended.
+- npm 10 or newer.
+- Windows is the currently maintained packaged-release target. Electron
+  development can be run on other platforms, but cross-platform packaging is
+  not part of the current release workflow.
+- Chrome and the OpenCLI Browser Bridge extension for `COOKIE` and
+  `INTERCEPT` collection.
+
+## Quick Start
+
+```powershell
+git clone <repository-url>
+cd infolens
+npm install
+npm run dev
+```
+
+`npm install` also installs the pinned OpenCLI distribution under
+`resources/opencli` and applies the repository's version-checked overrides.
+The install therefore needs network access the first time it runs.
+
+To build and launch the local production renderer:
+
+```powershell
+npm run build
+npm start
+```
+
+The development command starts the Vite renderer, Electron host, and shared
+Plugin Runtime together. Development state is written under the ignored
+`.infolens-data` directory.
+
+## Common Commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the Electron development session |
+| `npm run build` | Verify release metadata and build the renderer |
+| `npm run typecheck` | Type-check the desktop host and Plugin SDK |
+| `npm test` | Build the local package and run the repository test suite |
+| `npm run verify:release` | Check package and bundled OpenCLI version consistency |
+| `npm run plugin -- validate <path>` | Validate a plugin package |
+| `npm run plugin -- doctor <path>` | Run isolated plugin lifecycle and workspace checks |
+| `npm run plugin -- adapters list <path>` | Inspect bundled and provided OpenCLI adapters |
+| `npm run plugin -- pack <path> --out <directory>` | Create a validated plugin package |
+
+For a focused test run, use Node's test runner directly:
+
+```powershell
+node --test tests/browser-bridge.test.mjs tests/opencli-adapter.test.mjs
+```
+
+The repository's automated checks do not replace live-source verification for
+browser-backed plugins. A release-candidate check with Browser Bridge and the
+required site sessions is still needed for `COOKIE` and `INTERCEPT` sources.
+
+## Browser Bridge
+
+The Host Shell does not probe the Browser Bridge during startup. Open Settings
+to read the cached status, then use `Check connection` or `Reconnect` when a
+browser-backed workflow needs recovery.
+
+Browser-dependent collection is isolated to the plugin that needs it. A
+missing bridge or site login does not make public-source plugins unavailable,
+and retained plugin content remains readable after a failed refresh.
+
+Automation uses background windows and ephemeral site sessions. The Runtime
+releases its own temporary session leases after successful and failed commands;
+it does not close user-owned Chrome tabs when the application exits.
+
+## Architecture
+
+```text
+Electron Main Process
+  Host Shell (React, Vite, TypeScript)
+    Plugin navigation and host settings
+    Plugin workspace frames
+          |
+          v
+  Shared Plugin Runtime (Node)
+    Plugin backends and task scheduling
+    Plugin-scoped HTTP APIs and static workspaces
+    Plugin-owned SQLite stores
+    Bundled OpenCLI process boundary
+          |
+          v
+  OpenCLI 1.8.6
+    Public adapters and browser-backed adapters
+    Browser Bridge daemon and Chrome session
+```
+
+The main architecture references are:
+
+- [Architecture baseline](ARCHITECTURE.md)
+- [Plugin development guide](docs/plugin-development.md)
+- [Architecture decisions](docs/adr/)
+- [Browser Bridge session contract](docs/adr/0058-browser-bridge-session-ux.md)
+
+## Plugin Development
+
+Plugins are trusted local packages. A plugin backend is ordinary Node.js code
+loaded by the shared Plugin Runtime; the current package model is not a
+security sandbox or a permission system.
+
+The package contract requires a manifest, a backend entry, and a built static
+workspace. Every OpenCLI command must be declared in the manifest. Provided
+adapters are copied and verified during packaging; package scripts, network
+installation, and arbitrary dependency installation are not part of the
+adapter workflow.
+
+Start with the [plugin development guide](docs/plugin-development.md), then
+run validation from the repository root:
+
+```powershell
+npm run plugin -- validate path\to\my-plugin
+npm run plugin -- doctor path\to\my-plugin --timeout 10000
+npm run plugin -- adapters list path\to\my-plugin
+npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.infolens-plugin
+```
+
+## Data and Privacy
+
+Infolens is local-first. Host state, plugin records, and logs are stored on
+the local machine. Each plugin owns its own data directory and persistence
+schema. The application does not provide cloud synchronization or a hosted
+crawler service.
+
+Browser login state remains in Chrome and is accessed through Browser Bridge.
+Do not commit Chrome profiles, cookies, exported logs, generated release
+directories, or `.infolens-data` to the repository.
+
+## Contributing
+
+Before opening a change, run the checks relevant to the affected boundary:
+
+```powershell
+npm run typecheck
+npm run build
+npm test
+```
+
+Keep source-specific behavior in the owning plugin, preserve the Plugin
+Runtime process boundary, and update the relevant ADR when an architectural
+decision changes. See `AGENTS.md` for repository workflow conventions.
+
+## License
+
+This repository does not yet contain a license file. A license should be
+selected and added before external redistribution or accepting third-party
+contributions.
