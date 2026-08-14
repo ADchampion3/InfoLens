@@ -17,9 +17,12 @@ my-plugin/
 Adapter JavaScript imports only Node built-ins, relative files, and OpenCLI public exports such as `@jackwener/opencli/registry`. Bundle other production dependencies before validation. Do not include `node_modules`, TypeScript-only commands, lifecycle hooks, or install scripts.
 
 ```powershell
+infolens-plugin help
+infolens-plugin init . --check --format text
 infolens-plugin validate .
 infolens-plugin doctor . --timeout 10000
 infolens-plugin dev .
+infolens-plugin preview . --format text
 infolens-plugin adapters list .
 infolens-plugin pack . --out ..\my-plugin.infolens-plugin
 ```
@@ -28,13 +31,43 @@ Inside the Infolens source workspace, use `npm run plugin -- <command> ...` befo
 
 `validate` is the fast package-contract gate. It checks the Manifest, required files, command mappings, and Provided OpenCLI Adapter Scope without importing or activating the Plugin Backend Module. `doctor` includes those checks, then imports and activates the real Backend in a temporary Plugin Runtime, records routes, tasks, and schedules, checks Plugin Health, runs cleanup, and walks the static Workspace Bundle graph. `pack` filters the exact package contents into a unique staging directory and runs the complete `doctor` gate against that staged directory before writing `adapter-integrity.json` and publishing it by atomic rename. An existing output path is rejected.
 
-The three commands are nested: `validate` is the contract subset, `doctor` is the lifecycle and Workspace superset, and `pack` is a staged `doctor` plus integrity and publication. Warnings and informational findings are included in the JSON result but do not fail a command; error findings produce a nonzero exit status. The stable automation fields are `ok`, `command`, `environment`, `checks`, and `error.code`/`error.phase`/`error.checkId`. Human messages and resolved filesystem paths are diagnostic details.
+The commands are layered: `validate` is the contract subset, `doctor` is the lifecycle and Workspace superset, `preview` is the foreground author loop, and `pack` is a staged `doctor` plus integrity and publication. Warnings and informational findings are included in the JSON result but do not fail a command; error findings produce a nonzero exit status. The stable automation fields are `ok`, `command`, `environment`, `checks`, and `error.code`/`error.phase`/`error.checkId`. Human messages and resolved filesystem paths are diagnostic details.
 
 All author commands report the resolved Plugin Contract Version, target Host version, and Bundled OpenCLI version with their logical source and, where available, a source path. `--target-host-version <semver>` changes only the Minimum Host Version comparison and reports `cli-option` as its source. It cannot change the supported Contract Version or the command capabilities. `--timeout <ms>` applies to each doctor lifecycle phase and defaults to 10 seconds; `pack` passes the same value to its staged doctor.
 
 Doctor uses temporary Plugin, data, Host State, Managed Adapter Store, and Adapter Scope roots and loads only the target package. This is state and lifecycle isolation, not a Node or operating-system security sandbox: trusted Backend code remains ordinary Node code and can use filesystem, network, environment, or subprocess APIs. Doctor never starts Electron, opens a browser, executes Workspace JavaScript, invokes OpenCLI during activation, arms schedules, or runs tasks.
 
 `dev` uses the same environment resolution and creates `.infolens-dev/opencli-adapters` with a linked development Scope (junctions and hard links on Windows). `adapters list` reports the same Bundled OpenCLI inventory and Provided Adapter Scope used by the other commands. The `INFOLENS_BUNDLED_OPENCLI_ROOT` environment variable is available for controlled fixtures and its override path is reported in the result.
+
+## Scaffold a Plugin
+
+Use `init` to create a minimal framework-neutral package. From the Infolens
+source workspace, run:
+
+~~~powershell
+npm run plugin -- init path\to\my-plugin --check --format text
+~~~
+
+The target directory must be empty or absent. The command infers a lowercase
+hyphenated Plugin ID from the directory name; use `--id <id>` and
+`--name <name>` to override it. It creates `manifest.json`, `package.json`, an
+ESM Backend, and a static Workspace Bundle under `web/dist/` with
+`index.html`, `workspace.js`, and `styles.css`. The generated package has
+empty OpenCLI declarations and includes `validate`, `doctor`, `dev`, `preview`,
+and `pack` scripts that call the `infolens-plugin` binary. The binary must be available
+from the author environment; `init` does not add an SDK dependency or imply an
+external package distribution workflow.
+
+`--check` runs the full `doctor` command after writing the files. A failed check
+returns a nonzero exit status but leaves the generated package in place for
+inspection. `--format text` prints the Plugin identity, resolved environment,
+check counts, failed check IDs/codes/phases, warnings, and next actions. JSON
+remains the default for automation.
+
+The generated Workspace calls the Plugin API through the Runtime mount. Its
+dynamic API URL is reported as a `WORKSPACE_DYNAMIC_REFERENCE` warning by the
+static Workspace diagnosis; this is expected because the URL is supplied by
+the Host at runtime and does not make the package fail.
 
 ## Package Contract
 
@@ -442,8 +475,10 @@ Do not edit that file by hand; installation checks it again.
 
 ## Author Workflow
 
-All author commands print a JSON result and set a nonzero exit code when
-<code>ok</code> is false. Automation should rely on <code>ok</code>,
+Operational author commands print a JSON result by default and set a nonzero
+exit code when <code>ok</code> is false. <code>help</code> prints human-readable
+usage text. Add <code>--format text</code> to an operational command for a
+compact author summary; JSON remains the automation contract. Automation should rely on <code>ok</code>,
 <code>command</code>, <code>environment</code>, <code>checks</code>, and
 <code>error.code</code>/<code>error.phase</code>/<code>error.checkId</code>.
 Human messages and resolved paths are diagnostic details.
@@ -451,6 +486,8 @@ Human messages and resolved paths are diagnostic details.
 From this repository:
 
 ~~~powershell
+npm run plugin -- help
+npm run plugin -- init . --check --format text
 npm run plugin -- validate .
 npm run plugin -- doctor . --timeout 10000
 npm run plugin -- adapters list .
@@ -462,12 +499,37 @@ From a project with the SDK installed, use the equivalent
 <code>infolens-plugin</code> binary:
 
 ~~~powershell
+infolens-plugin help
+infolens-plugin init . --check --format text
 infolens-plugin validate .
 infolens-plugin doctor . --timeout 10000
 infolens-plugin adapters list .
 infolens-plugin dev .
 infolens-plugin pack . --out ..\my-plugin.infolens-plugin
 ~~~
+
+The generated package provides a short local workflow after the author CLI is
+available:
+
+~~~powershell
+infolens-plugin init .\my-plugin
+cd .\my-plugin
+npm run doctor
+npm run pack
+~~~
+
+### init
+
+`init <path>` creates a new package without overwriting an existing file. The
+default ID is derived from the target directory, the default display name is
+derived from that ID, and the generated version is `0.1.0`. The command uses
+the resolved Contract and Minimum Host versions from release metadata. A
+`--target-host-version` override changes only the validation comparison; it
+does not change the generated `minHostVersion`.
+
+`init` is a repository-root author workflow in the current release. It does
+not install dependencies, publish SDK packages, start Plugin Runtime, serve a
+Workspace, or create a development link.
 
 ### validate
 
@@ -507,6 +569,25 @@ range does not match.
 On Windows it uses junctions and hard links. It does not start the Plugin
 Runtime, serve a Workspace, watch files, or provide hot reload. Remove the
 generated directory before packaging; <code>pack</code> filters it automatically.
+
+### preview
+
+<code>preview</code> validates the package, copies a filtered snapshot into
+temporary roots, and starts one isolated Plugin Runtime in the foreground. It
+reports the same Plugin Workspace, Plugin API, and Plugin Health URL shape used
+by the Host. The default command watches the source package and restarts the
+Runtime from a fresh snapshot after a debounced change while preserving the
+preview session's temporary data and loopback port.
+
+~~~powershell
+infolens-plugin preview . --format text
+~~~
+
+Press <code>Ctrl+C</code> or write <code>shutdown</code> to stdin to stop the
+preview. Preview serves the built static Workspace Bundle; it does not compile
+frontend source, execute Workspace JavaScript, render a browser, or verify a
+real Browser Bridge session. It does not create a Development Link or change
+the managed Plugin Directory, and <code>pack</code> never invokes it.
 
 ### pack
 

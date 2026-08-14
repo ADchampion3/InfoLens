@@ -7,12 +7,13 @@ import { test } from "node:test";
 import { createReleaseManifest, verifyRelease } from "../scripts/verify-release.mjs";
 import { loadBundledOpenCli } from "../packages/plugin-runtime/src/opencli-adapter.mjs";
 import { diagnoseWorkspaceBundle } from "../packages/plugin-runtime/src/workspace-diagnostics.mjs";
+import { createPreviewSession } from "../packages/plugin-sdk/src/preview.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "packages", "plugin-sdk", "bin", "infolens-plugin.mjs");
 const officialIds = ["hn", "github-trending", "product-hunt", "zhihu-hot"];
 
-async function runCli(cliPath, cwd, args, extraEnvironment = {}) {
+async function runCliProcess(cliPath, cwd, args, extraEnvironment = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd,
@@ -25,12 +26,45 @@ async function runCli(cliPath, cwd, args, extraEnvironment = {}) {
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.once("error", reject);
-    child.once("close", (code, signal) => {
-      let result;
-      try { result = JSON.parse(stdout); }
-      catch (error) { reject(new Error(`CLI did not return JSON (${code ?? signal}): ${error.message}\n${stdout}\n${stderr}`)); return; }
-      resolve({ code, signal, result, stdout, stderr });
+    child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+}
+
+async function runCli(cliPath, cwd, args, extraEnvironment = {}) {
+  const output = await runCliProcess(cliPath, cwd, args, extraEnvironment);
+  let result;
+  try { result = JSON.parse(output.stdout); }
+  catch (error) { throw new Error(`CLI did not return JSON (${output.code ?? output.signal}): ${error.message}\n${output.stdout}\n${output.stderr}`); }
+  return { ...output, result };
+}
+
+async function runCliText(cliPath, cwd, args, extraEnvironment = {}) {
+  return runCliProcess(cliPath, cwd, args, extraEnvironment);
+}
+
+async function runNpmScript(cwd, script, args = []) {
+  const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const env = {
+    ...process.env,
+    [pathKey]: `${path.join(root, "node_modules", ".bin")}${path.delimiter}${process.env[pathKey] ?? ""}`,
+  };
+  const command = process.platform === "win32" ? "npm.cmd" : "npm";
+  const npmArgs = ["run", script, ...(args.length ? ["--", ...args] : [])];
+  const executable = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : command;
+  const commandArgs = process.platform === "win32" ? ["/d", "/s", "/c", command, ...npmArgs] : npmArgs;
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, commandArgs, {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
 }
 
@@ -83,6 +117,287 @@ async function createFixture(projectRoot, id, { backend, workspace = "<!doctype 
 function failedCheck(result, code) {
   return result.checks.find((check) => check.code === code && check.severity === "error");
 }
+
+test("init creates a doctor-ready Plugin and text output stays useful for authors", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-init-"));
+  try {
+    const help = await runCliText(cli, root, ["--help"]);
+    assert.equal(help.code, 0);
+    assert.match(help.stdout, /init <path>/);
+    assert.match(help.stdout, /--format <json\|text>/);
+    assert.match(help.stdout, /Omitted plugin paths default to the current directory/);
+    assert.match(help.stdout, /pack defaults to a sibling .*infolens-plugin path/);
+
+    const packageRoot = path.join(temporaryRoot, "reading-notes");
+    const initialized = await runCli(cli, root, ["init", packageRoot]);
+    assert.equal(initialized.code, 0, initialized.stderr);
+    assert.equal(initialized.result.ok, true);
+    assert.deepEqual(initialized.result.plugin, {
+      id: "reading-notes",
+      name: "Reading Notes",
+      version: "0.1.0",
+      path: packageRoot,
+      packagePath: packageRoot,
+    });
+    assert.deepEqual(initialized.result.created.sort(), [
+      "backend/index.mjs",
+      "manifest.json",
+      "package.json",
+      "web/dist/index.html",
+      "web/dist/styles.css",
+      "web/dist/workspace.js",
+    ]);
+
+    const manifest = JSON.parse(await readFile(path.join(packageRoot, "manifest.json"), "utf8"));
+    assert.deepEqual(manifest.openCliAdapters, {});
+    assert.deepEqual(manifest.openCliCommands, {});
+    assert.equal(manifest.ui.entry, "web/dist/index.html");
+    const packageManifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+    assert.equal(packageManifest.private, true);
+    assert.deepEqual(packageManifest.scripts, {
+      validate: "infolens-plugin validate . --format text",
+      doctor: "infolens-plugin doctor . --format text",
+      dev: "infolens-plugin dev . --format text",
+      preview: "infolens-plugin preview . --format text",
+      pack: "infolens-plugin pack . --format text",
+    });
+
+    const scriptDoctor = await runNpmScript(packageRoot, "doctor", ["--timeout", "5000"]);
+    assert.equal(scriptDoctor.code, 0, `${scriptDoctor.stdout}\n${scriptDoctor.stderr}`);
+    assert.match(scriptDoctor.stdout, /doctor: passed/);
+    const scriptPack = await runNpmScript(packageRoot, "pack");
+    assert.equal(scriptPack.code, 0, `${scriptPack.stdout}\n${scriptPack.stderr}`);
+    assert.match(scriptPack.stdout, /pack: passed/);
+    assert.equal(await readdir(temporaryRoot).then((entries) => entries.includes("reading-notes.infolens-plugin")), true);
+
+    const previewChild = spawn(process.execPath, [cli, "preview", packageRoot, "--format", "text", "--timeout", "5000"], {
+      cwd: root,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let previewStdout = "";
+    let previewStderr = "";
+    const previewReady = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Preview did not start:\n${previewStdout}\n${previewStderr}`)), 15_000);
+      previewChild.stdout.on("data", (chunk) => {
+        previewStdout += String(chunk);
+        if (previewStdout.includes("Workspace: http://")) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      previewChild.stderr.on("data", (chunk) => { previewStderr += String(chunk); });
+      previewChild.once("error", (error) => { clearTimeout(timer); reject(error); });
+      previewChild.once("exit", (code, signal) => {
+        if (code !== null) reject(new Error(`Preview exited before ready (${code ?? signal})`));
+      });
+    });
+    const previewExit = new Promise((resolve) => previewChild.once("close", (code, signal) => resolve({ code, signal })));
+    await previewReady;
+    assert.match(previewStdout, /API: http:\/\//);
+    assert.match(previewStdout, /pluginId=reading-notes/);
+    assert.match(previewStdout, /apiBaseUrl=http%3A%2F%2F/);
+    assert.match(previewStdout, /Watch: /);
+    previewChild.stdin.end("shutdown\n");
+    const previewResult = await previewExit;
+    assert.equal(previewResult.code, 0, `${previewStdout}\n${previewStderr}`);
+
+    const targetedRoot = path.join(temporaryRoot, "targeted-plugin");
+    const targeted = await runCli(cli, root, ["init", targetedRoot, "--target-host-version", "9.0.0"]);
+    assert.equal(targeted.code, 0, targeted.result.error?.message);
+    assert.equal(targeted.result.environment.targetHost.value, "9.0.0");
+    assert.equal(JSON.parse(await readFile(path.join(targetedRoot, "manifest.json"), "utf8")).minHostVersion, "0.2.0");
+
+    const checkedRoot = path.join(temporaryRoot, "checked-plugin");
+    const checked = await runCli(cli, root, ["init", checkedRoot, "--check", "--timeout", "5000"]);
+    assert.equal(checked.code, 0, checked.result.error?.message);
+    assert.equal(checked.result.ok, true);
+    assert.equal(checked.result.checked, true);
+    assert.equal(checked.result.health.state, "ready");
+    assert(checked.result.workspace.visited.includes("index.html"));
+
+    const text = await runCliText(cli, root, ["doctor", packageRoot, "--format", "text", "--timeout", "5000"]);
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(text.stdout, /^doctor: passed/m);
+    assert.match(text.stdout, /Environment: Contract 2 \/ Host 0\.2\.0 \/ OpenCLI 1\.8\.6/);
+    assert.match(text.stdout, /Checks: \d+ passed, \d+ warning\(s\), 0 error\(s\)/);
+    assert.match(text.stdout, /WORKSPACE_DYNAMIC_REFERENCE/);
+    assert.match(text.stdout, /Next: npm run plugin -- pack/);
+    assert.doesNotMatch(text.stdout, /^\s*\{/m);
+
+    const nonEmptyRoot = path.join(temporaryRoot, "non-empty");
+    await mkdir(nonEmptyRoot, { recursive: true });
+    await writeFile(path.join(nonEmptyRoot, "keep.txt"), "keep\n", "utf8");
+    const refused = await runCli(cli, root, ["init", nonEmptyRoot]);
+    assert.notEqual(refused.code, 0);
+    assert.equal(refused.result.error.code, "INIT_DIRECTORY_NOT_EMPTY");
+    assert.equal(await readFile(path.join(nonEmptyRoot, "keep.txt"), "utf8"), "keep\n");
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("preview restarts the isolated Runtime after package changes", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-preview-"));
+  let resolveRestart;
+  let rejectRestart;
+  const restart = new Promise((resolve, reject) => {
+    resolveRestart = resolve;
+    rejectRestart = reject;
+  });
+  const restartTimer = setTimeout(() => rejectRestart(new Error("Preview did not restart after the package changed")), 15_000);
+  const events = [];
+  const session = createPreviewSession({
+    packageRoot: path.join(temporaryRoot, "fixture"),
+    pluginId: "fixture",
+    sdkRoot: path.join(root, "packages", "plugin-sdk"),
+    runtimePackageRoot: path.join(root, "packages", "plugin-runtime"),
+    bundledOpenCliRoot: path.join(root, "resources", "opencli"),
+    timeoutMs: 5_000,
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type === "restarted") resolveRestart(event);
+    },
+  });
+  try {
+    const packageRoot = await createFixture(temporaryRoot, "fixture", {
+      backend: "export async function activate(context) { context.route(\"GET\", \"/version\", () => ({ version: \"one\" })); context.setHealth({ state: \"ready\" }); }",
+    });
+    const started = await session.start();
+    const readVersion = async () => {
+      const response = await fetch(new URL("version", started.apiBaseUrl));
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    assert.deepEqual(await readVersion(), { version: "one" });
+
+    await writeFile(path.join(packageRoot, "backend", "index.mjs"), "export async function activate(context) { context.route(\"GET\", \"/version\", () => ({ version: \"two\" })); context.setHealth({ state: \"ready\" }); }", "utf8");
+    const restarted = await restart;
+    assert.equal(restarted.origin, started.origin);
+    assert.deepEqual(await readVersion(), { version: "two" });
+    assert.equal(events.filter((event) => event.type === "restarted").length, 1);
+  } finally {
+    clearTimeout(restartTimer);
+    await session.stop("test");
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("preview stop cancels startup without leaving temporary state", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-preview-stop-"));
+  const packageRoot = await createFixture(temporaryRoot, "fixture");
+  const prefix = "infolens-plugin-preview-";
+  const before = new Set((await readdir(os.tmpdir())).filter((entry) => entry.startsWith(prefix)));
+  const session = createPreviewSession({
+    packageRoot,
+    pluginId: "fixture",
+    sdkRoot: path.join(root, "packages", "plugin-sdk"),
+    runtimePackageRoot: path.join(root, "packages", "plugin-runtime"),
+    bundledOpenCliRoot: path.join(root, "resources", "opencli"),
+    timeoutMs: 5_000,
+  });
+  try {
+    const starting = session.start();
+    const stopped = await session.stop("signal");
+    await assert.rejects(starting, (error) => {
+      assert.equal(error.code, "PREVIEW_STOPPED");
+      return true;
+    });
+    assert.deepEqual(stopped, { code: 0, reason: "signal" });
+    assert.deepEqual(await session.wait(), stopped);
+    const after = new Set((await readdir(os.tmpdir())).filter((entry) => entry.startsWith(prefix)));
+    assert.deepEqual([...after].filter((entry) => !before.has(entry)), []);
+  } finally {
+    await session.stop("test");
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("preview accepts shutdown while Runtime startup is still pending", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-preview-input-"));
+  const packageRoot = await createFixture(temporaryRoot, "fixture", {
+    backend: "await new Promise((resolve) => setTimeout(resolve, 2_000));\nexport async function activate(context) { context.setHealth({ state: \"ready\" }); }",
+  });
+  const prefix = "infolens-plugin-preview-";
+  const before = new Set((await readdir(os.tmpdir())).filter((entry) => entry.startsWith(prefix)));
+  const child = spawn(process.execPath, [cli, "preview", packageRoot, "--format", "text", "--timeout", "5000"], {
+    cwd: root,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const exit = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  let previewDirectory;
+  let exitTimer;
+  try {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const entries = await readdir(os.tmpdir());
+      previewDirectory = entries.find((entry) => entry.startsWith(prefix) && !before.has(entry));
+      if (previewDirectory) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert(previewDirectory, `Preview did not create a temporary root:\n${stdout}\n${stderr}`);
+    child.stdin.end("shutdown\n");
+    exitTimer = setTimeout(() => child.kill(), 10_000);
+    const result = await exit;
+    assert.equal(result.code, 0, `${stdout}\n${stderr}`);
+    assert.doesNotMatch(stdout, /Workspace: http:\/\//);
+  } finally {
+    clearTimeout(exitTimer);
+    if (child.exitCode === null) child.kill();
+    if (previewDirectory) await rm(path.join(os.tmpdir(), previewDirectory), { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("preview cleans up when terminated during Runtime startup", { skip: process.platform === "win32" }, async () => {
+  const packageRoot = path.join(root, "plugins", "hn");
+  const prefix = "infolens-plugin-preview-";
+  const before = new Set((await readdir(os.tmpdir())).filter((entry) => entry.startsWith(prefix)));
+  const child = spawn(process.execPath, [cli, "preview", packageRoot, "--format", "text", "--timeout", "5000"], {
+    cwd: root,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const exit = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  let previewDirectory;
+  try {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const entries = await readdir(os.tmpdir());
+      previewDirectory = entries.find((entry) => entry.startsWith(prefix) && !before.has(entry));
+      if (previewDirectory) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert(previewDirectory, `Preview did not create a temporary root:\n${stdout}\n${stderr}`);
+    child.kill("SIGTERM");
+    const result = await exit;
+    assert.equal(result.code, 0, `${stdout}\n${stderr}`);
+
+    const cleanupDeadline = Date.now() + 5_000;
+    while (Date.now() < cleanupDeadline && (await readdir(os.tmpdir())).includes(previewDirectory)) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal((await readdir(os.tmpdir())).includes(previewDirectory), false);
+  } finally {
+    if (child.exitCode === null) child.kill();
+    if (previewDirectory) await rm(path.join(os.tmpdir(), previewDirectory), { recursive: true, force: true });
+  }
+});
 
 test("official Plugins pass the author command matrix and an independent project uses package boundaries", async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-author-matrix-"));

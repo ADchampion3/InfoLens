@@ -69,6 +69,8 @@ Plugin Runtime together. Development state is written under the ignored
 | `npm run typecheck` | Type-check the desktop host and Plugin SDK |
 | `npm test` | Build the local package and run the repository test suite |
 | `npm run verify:release` | Check package and bundled OpenCLI version consistency |
+| `npm run plugin -- help` | Show Plugin author commands and options |
+| `npm run plugin -- init <path>` | Create a minimal Plugin scaffold |
 | `npm run plugin -- validate <path>` | Validate a plugin package |
 | `npm run plugin -- doctor <path>` | Run isolated plugin lifecycle and workspace checks |
 | `npm run plugin -- adapters list <path>` | Inspect bundled and provided OpenCLI adapters |
@@ -139,14 +141,18 @@ installation, and arbitrary dependency installation are not part of the
 adapter workflow.
 
 Start with the [plugin development guide](docs/plugin-development.md), then
-run validation from the repository root:
+create and check a package from the repository root:
 
 ```powershell
-npm run plugin -- validate path\to\my-plugin
-npm run plugin -- doctor path\to\my-plugin --timeout 10000
-npm run plugin -- adapters list path\to\my-plugin
+npm run plugin -- init path\to\my-plugin --check --format text
+npm run plugin -- doctor path\to\my-plugin --format text
 npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.infolens-plugin
 ```
+
+The scaffold is framework-neutral and does not add SDK dependencies. Its
+generated `validate`, `doctor`, `dev`, `preview`, and `pack` scripts call
+`infolens-plugin`; use them when the author CLI is available on `PATH`. The
+external package distribution workflow remains separate.
 
 ## Data and Privacy
 

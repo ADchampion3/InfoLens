@@ -8,11 +8,59 @@ import readline from "node:readline";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import semver from "semver";
+import { createPreviewSession } from "../src/preview.mjs";
 
 const require = createRequire(import.meta.url);
 const sdkRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryFallbackRoot = path.resolve(sdkRoot, "../../resources/opencli");
 const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_PLUGIN_VERSION = "0.1.0";
+let activePreviewSession;
+let previewSignalReason;
+let previewSignalStop;
+const HELP_TEXT = `Infolens Plugin Author CLI
+
+Usage:
+  infolens-plugin <command> [plugin-path] [options]
+
+Commands:
+  init <path>                 Create a minimal framework-neutral Plugin package
+  validate <path>             Check the package contract without activation
+  doctor <path>               Check lifecycle, health, cleanup, and Workspace assets
+  dev <path>                  Prepare the development Adapter Scope
+  preview <path>              Run an isolated Runtime and serve the Workspace
+  adapters list <path>        List bundled and Provided OpenCLI Adapters
+  pack <path>                 Validate and publish a staged Plugin package
+  help                        Show this help
+
+Options:
+  --format <json|text>        Output JSON (default) or a human-readable summary
+  --target-host-version <v>  Override only the Minimum Host Version comparison
+  --timeout <milliseconds>   Set the doctor phase timeout (default: 10000)
+  --out <path>                Output package path for pack
+
+Path defaults:
+  Omitted plugin paths default to the current directory
+  pack defaults to a sibling <plugin-directory>.infolens-plugin path
+
+JSON contract:
+  Stable fields include ok, command, environment, checks, and error identity
+
+Init options:
+  --id <id>                   Override the ID inferred from the target directory
+  --name <name>               Override the display name inferred from the ID
+  --check                     Run doctor after creating the package
+
+Examples:
+  infolens-plugin init .\\my-plugin --check --format text
+  infolens-plugin doctor . --format text
+  infolens-plugin pack . --out ..\\my-plugin.infolens-plugin
+
+Operational commands return stable JSON by default. Use --format text for a
+compact summary with failed check IDs, codes, phases, and next actions.
+Preview runs in the foreground, watches package files, and restarts its
+isolated Runtime after changes. Press Ctrl+C or type shutdown to stop it.
+`;
 
 function codedError(code, message, phase = "bootstrap", checkId) {
   const error = new Error(message);
@@ -20,6 +68,13 @@ function codedError(code, message, phase = "bootstrap", checkId) {
   error.phase = phase;
   if (checkId) error.checkId = checkId;
   return error;
+}
+
+function requestPreviewStop(reason) {
+  previewSignalReason ??= reason;
+  if (!activePreviewSession) return;
+  previewSignalStop ??= activePreviewSession.stop(reason).catch(() => {});
+  return previewSignalStop;
 }
 
 function sourceValue(value, source, sourcePath, expectedSource) {
@@ -113,6 +168,70 @@ function setFailure(result, error, { phase, checkId, id = checkId ?? "command.fa
   addCheck(result, id, "error", "failed", { phase: record.phase, code: record.code, message: record.message });
   result.ok = false;
   return result;
+}
+
+function environmentSummary(environment) {
+  return [
+    ["Contract", environment?.contractVersion?.value],
+    ["Host", environment?.targetHost?.value],
+    ["OpenCLI", environment?.opencli?.value],
+  ].map(([label, value]) => `${label} ${value ?? "unresolved"}`).join(" / ");
+}
+
+function checkLabel(check) {
+  const identity = [check.id ?? check.checkId, check.code, check.phase].filter(Boolean).join(" / ");
+  return identity || "unknown check";
+}
+
+function checkAdvice(check) {
+  if (check.phase === "workspace" || String(check.code ?? "").startsWith("WORKSPACE_")) return "Inspect the referenced local Workspace asset and rerun doctor.";
+  if (check.phase === "adapter-probe" || check.id === "plugin.adapters") return "Run adapters list and check the declared Adapter Scope.";
+  if (check.phase === "activation" || check.phase === "health" || check.phase === "cleanup") return "Inspect Backend activation and cleanup, then rerun doctor.";
+  if (check.phase === "bootstrap") return "Check the resolved Host, Contract, and Bundled OpenCLI environment.";
+  return "Inspect the check details in JSON output and rerun the command.";
+}
+
+function defaultNextActions(result) {
+  const packagePath = result.plugin?.path ?? ".";
+  if (!result.ok) return [];
+  if (result.command === "validate") return [`npm run plugin -- doctor ${packagePath} --format text`];
+  if (result.command === "doctor") return [`npm run plugin -- pack ${packagePath} --out ${path.join(path.dirname(packagePath), `${result.plugin?.id ?? "my-plugin"}.infolens-plugin`)}`];
+  if (result.command === "adapters list") return [`npm run plugin -- doctor ${packagePath} --format text`];
+  return [];
+}
+
+function formatText(result) {
+  const checks = Array.isArray(result.checks) ? result.checks : [];
+  const passed = checks.filter((check) => check.status === "passed").length;
+  const warnings = checks.filter((check) => check.severity === "warning").length;
+  const failures = checks.filter((check) => check.severity === "error" && check.status === "failed");
+  const lines = [`${result.command}: ${result.ok ? "passed" : "failed"}`];
+
+  if (result.plugin) lines.push(`Plugin: ${result.plugin.name ?? result.plugin.id ?? "unknown"} (${result.plugin.id ?? "unknown"})`);
+  lines.push(`Environment: ${environmentSummary(result.environment)}`);
+  if (result.preview) {
+    lines.push(`Workspace: ${result.preview.workspaceUrl}`);
+    lines.push(`API: ${result.preview.apiBaseUrl}`);
+    lines.push(`Health: ${result.preview.healthUrl}`);
+    lines.push(`Watch: ${result.preview.watch ? "enabled" : "unavailable"}`);
+  }
+  if (result.created?.length) lines.push(`Created: ${result.created.join(", ")}`);
+  if (result.output) lines.push(`Output: ${result.output}`);
+  lines.push(`Checks: ${passed} passed, ${warnings} warning(s), ${failures.length} error(s)`);
+
+  for (const check of failures) {
+    lines.push(`ERROR ${checkLabel(check)}: ${check.message ?? result.error?.message ?? "check failed"}`);
+    lines.push(`  Next: ${checkAdvice(check)}`);
+  }
+  for (const check of checks.filter((entry) => entry.severity === "warning")) {
+    lines.push(`WARN ${checkLabel(check)}: ${check.message ?? "warning reported"}`);
+  }
+  if (!failures.length && result.error) {
+    lines.push(`ERROR ${checkLabel(result.error)}: ${result.error.message}`);
+    lines.push(`  Next: Inspect the command error and rerun it after fixing the reported input.`);
+  }
+  for (const next of result.next?.length ? result.next : defaultNextActions(result)) lines.push(`Next: ${next}`);
+  return `${lines.join("\n")}\n`;
 }
 
 async function readManifest(packageRoot) {
@@ -459,6 +578,185 @@ async function runDoctor(packageRoot, deps, context, timeoutMs) {
   }
 }
 
+function initPluginId(value, packageRoot) {
+  const inferred = path.basename(packageRoot).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const id = value === undefined ? inferred : String(value).trim();
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(id)) {
+    throw codedError("INVALID_INIT_ID", `Plugin ID '${id}' must contain lowercase letters, numbers, and hyphens`, "init", "init.identity");
+  }
+  return id;
+}
+
+function initPluginName(value, id) {
+  const name = value === undefined
+    ? id.split("-").map((part) => part ? `${part[0].toUpperCase()}${part.slice(1)}` : part).join(" ")
+    : String(value).trim();
+  if (!name) throw codedError("INVALID_INIT_NAME", "Plugin name must not be empty", "init", "init.identity");
+  return name;
+}
+
+async function ensureEmptyInitDirectory(packageRoot) {
+  try {
+    const entries = await readdir(packageRoot);
+    if (entries.length) throw codedError("INIT_DIRECTORY_NOT_EMPTY", `Init target is not empty: ${packageRoot}`, "init", "init.directory");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      await mkdir(packageRoot, { recursive: true });
+      return;
+    }
+    if (error.code === "INIT_DIRECTORY_NOT_EMPTY") throw error;
+    if (error.code === "ENOTDIR") throw codedError("INIT_TARGET_NOT_DIRECTORY", `Init target is not a directory: ${packageRoot}`, "init", "init.directory");
+    throw error;
+  }
+}
+
+function initFiles({ id, name, contractVersion, minHostVersion }) {
+  const manifest = {
+    id,
+    name,
+    version: DEFAULT_PLUGIN_VERSION,
+    contractVersion: String(contractVersion),
+    minHostVersion,
+    backend: { entry: "backend/index.mjs" },
+    ui: { entry: "web/dist/index.html" },
+    openCliAdapters: {},
+    openCliCommands: {},
+  };
+  const packageManifest = {
+    name: `infolens-plugin-${id}`,
+    version: DEFAULT_PLUGIN_VERSION,
+    private: true,
+    type: "module",
+    scripts: {
+      validate: "infolens-plugin validate . --format text",
+      doctor: "infolens-plugin doctor . --format text",
+      dev: "infolens-plugin dev . --format text",
+      preview: "infolens-plugin preview . --format text",
+      pack: "infolens-plugin pack . --format text",
+    },
+  };
+  const backend = `export async function activate(context) {
+  context.setHealth({ state: "ready" });
+  context.route("GET", "/summary", () => ({
+    pluginId: context.pluginId,
+    message: "Plugin scaffold is ready",
+  }));
+}
+`;
+  const workspace = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${name}</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main id="app" aria-live="polite">
+      <h1>${name}</h1>
+      <p>Loading Plugin API...</p>
+    </main>
+    <script type="module" src="./workspace.js"></script>
+  </body>
+</html>
+`;
+  const workspaceScript = `import { workspaceRuntimeConfig } from "/runtime/plugin-sdk.js";
+
+const app = document.querySelector("#app");
+const { apiBaseUrl } = workspaceRuntimeConfig();
+
+try {
+  const response = await fetch(new URL("summary", apiBaseUrl));
+  if (!response.ok) throw new Error("Plugin API returned " + response.status);
+  const summary = await response.json();
+  app.querySelector("p").textContent = summary.message ?? "Plugin API is ready";
+} catch (error) {
+  app.querySelector("p").textContent = String(error);
+}
+`;
+  const styles = `:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  background: #f6f7f9;
+  color: #1f2933;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+main {
+  width: min(32rem, calc(100% - 3rem));
+  padding: 2rem;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+}
+
+p {
+  color: #52606d;
+}
+`;
+  return [
+    ["manifest.json", `${JSON.stringify(manifest, null, 2)}\n`],
+    ["package.json", `${JSON.stringify(packageManifest, null, 2)}\n`],
+    ["backend/index.mjs", backend],
+    ["web/dist/index.html", workspace],
+    ["web/dist/workspace.js", workspaceScript],
+    ["web/dist/styles.css", styles],
+  ];
+}
+
+async function writeInitFiles(packageRoot, files) {
+  for (const [relative, contents] of files) {
+    const filename = path.join(packageRoot, relative);
+    await mkdir(path.dirname(filename), { recursive: true });
+    await writeFile(filename, contents, { encoding: "utf8", flag: "wx" });
+  }
+}
+
+async function runInit(packageRoot, deps, context, { id: requestedId, name: requestedName, check = false, timeoutMs }) {
+  const result = baseResult("init", context.environment, undefined, packageRoot);
+  addEnvironmentChecks(result);
+  if (context.bootstrapError) return { result: setFailure(result, context.bootstrapError, { id: "environment.bootstrap" }) };
+  if (context.targetError) return { result: setFailure(result, context.targetError, { phase: "arguments", checkId: "environment.target-host", id: "environment.target-host" }) };
+
+  try {
+    const id = initPluginId(requestedId, packageRoot);
+    const name = initPluginName(requestedName, id);
+    const files = initFiles({ id, name, contractVersion: context.metadata.contractVersion, minHostVersion: context.metadata.hostVersion });
+    await ensureEmptyInitDirectory(packageRoot);
+    await writeInitFiles(packageRoot, files);
+
+    const manifest = JSON.parse(files.find(([relative]) => relative === "manifest.json")[1]);
+    result.plugin = pluginIdentity(manifest, packageRoot);
+    result.created = files.map(([relative]) => relative);
+    result.next = [
+      `npm run plugin -- doctor ${packageRoot} --format text`,
+      `npm run plugin -- pack ${packageRoot} --out ${path.join(path.dirname(packageRoot), `${id}.infolens-plugin`)}`,
+    ];
+    const scaffoldCheck = { id: "init.scaffold", severity: "info", status: "passed", phase: "init", details: { files: result.created } };
+    if (check) {
+      const diagnosis = await runDoctor(packageRoot, deps, context, timeoutMs);
+      result.checked = true;
+      result.checks = [...diagnosis.result.checks, scaffoldCheck];
+      for (const key of ["health", "registrations", "cleanup", "workspace"]) {
+        if (diagnosis.result[key] !== undefined) result[key] = diagnosis.result[key];
+      }
+      result.ok = diagnosis.result.ok;
+      if (diagnosis.result.error) result.error = diagnosis.result.error;
+    } else {
+      result.checks.push(scaffoldCheck);
+      result.ok = true;
+    }
+    return { result };
+  } catch (error) {
+    return { result: setFailure(result, error, { phase: error.phase ?? "init", checkId: error.checkId ?? "init.scaffold", id: error.checkId ?? "init.scaffold" }) };
+  }
+}
+
 async function runValidate(packageRoot, deps, context) {
   return validatePackage(packageRoot, deps, context, { command: "validate" });
 }
@@ -482,6 +780,37 @@ async function runDev(packageRoot, deps, context) {
     return { result };
   } catch (error) {
     return { result: setFailure(result, error, { phase: error.phase ?? "validate", checkId: validationCheckId(error), id: validationCheckId(error) }) };
+  }
+}
+
+async function runPreview(packageRoot, deps, context, timeoutMs) {
+  const validation = await validatePackage(packageRoot, deps, context, { command: "preview" });
+  const result = validation.result;
+  if (!validation.validated || !result.ok) return { result };
+
+  const session = createPreviewSession({
+    packageRoot,
+    pluginId: validation.validated.manifest.id,
+    sdkRoot,
+    runtimePackageRoot: runtimePackageRoot(),
+    bundledOpenCliRoot: context.runtime.distributionRoot,
+    timeoutMs,
+  });
+  activePreviewSession = session;
+  if (previewSignalReason) {
+    await requestPreviewStop(previewSignalReason);
+    return { result, session };
+  }
+  try {
+    result.preview = await session.start();
+    addCheck(result, "preview.runtime", "info", "passed", { phase: "runtime-start", details: { origin: result.preview.origin } });
+    addCheck(result, "preview.workspace", "info", "passed", { phase: "runtime-start", details: { workspaceUrl: result.preview.workspaceUrl } });
+    result.ok = true;
+    return { result, session };
+  } catch (error) {
+    if (error.code === "PREVIEW_STOPPED" && previewSignalReason) return { result, session };
+    activePreviewSession = undefined;
+    return { result: setFailure(result, error, { phase: error.phase ?? "preview", checkId: "preview.runtime", id: "preview.runtime" }) };
   }
 }
 
@@ -572,14 +901,18 @@ async function runPack(packageRoot, deps, context, output, timeoutMs) {
 function parseOptions(argv) {
   const options = {};
   const positional = [];
+  const valueOptions = new Set(["target-host-version", "timeout", "out", "format", "id", "name"]);
+  const flagOptions = new Set(["check"]);
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value === "--target-host-version" || value === "--timeout" || value === "--out") {
+    const optionName = value.startsWith("--") ? value.slice(2).split("=", 1)[0] : undefined;
+    if (optionName && valueOptions.has(optionName) && !value.includes("=")) {
       if (index + 1 >= argv.length) throw codedError("INVALID_ARGUMENTS", `${value} requires a value`, "arguments");
-      options[value.slice(2).replaceAll("-", "_")] = argv[++index];
-    } else if (value.startsWith("--target-host-version=") || value.startsWith("--timeout=") || value.startsWith("--out=")) {
-      const [name, ...rest] = value.slice(2).split("=");
-      options[name.replaceAll("-", "_")] = rest.join("=");
+      options[optionName.replaceAll("-", "_")] = argv[++index];
+    } else if (optionName && valueOptions.has(optionName) && value.includes("=")) {
+      options[optionName.replaceAll("-", "_")] = value.slice(value.indexOf("=") + 1);
+    } else if (optionName && flagOptions.has(optionName)) {
+      options[optionName.replaceAll("-", "_")] = true;
     } else if (value.startsWith("--")) throw codedError("INVALID_ARGUMENTS", `Unknown option '${value}'`, "arguments");
     else positional.push(value);
   }
@@ -592,15 +925,36 @@ function parseTimeout(value) {
   return Number(value);
 }
 
+function parseFormat(value) {
+  if (value === undefined || value === "json") return "json";
+  if (value === "text") return "text";
+  throw codedError("INVALID_FORMAT", `Format must be 'json' or 'text', received '${value}'`, "arguments");
+}
+
 async function main(argv) {
+  if (argv.length === 0 || argv[0] === "help" || argv.includes("--help")) return { help: true };
   const command = argv[0];
   let parsed;
   try { parsed = parseOptions(argv.slice(1)); }
-  catch (error) { const result = baseResult(command ?? "unknown"); setFailure(result, error, { phase: "arguments", id: "arguments" }); return result; }
+  catch (error) { const result = baseResult(command ?? "unknown"); setFailure(result, error, { phase: "arguments", id: "arguments" }); return { result, format: "json" }; }
   const { options, positional } = parsed;
+  let outputFormat;
+  try { outputFormat = parseFormat(options.format); }
+  catch (error) { const result = baseResult(command ?? "unknown"); setFailure(result, error, { phase: "arguments", id: "arguments" }); return { result, format: "json" }; }
   let timeoutMs;
   try { timeoutMs = parseTimeout(options.timeout); }
-  catch (error) { const result = baseResult(command ?? "unknown"); setFailure(result, error, { phase: "arguments", id: "arguments" }); return result; }
+  catch (error) { const result = baseResult(command ?? "unknown"); setFailure(result, error, { phase: "arguments", id: "arguments" }); return { result, format: outputFormat }; }
+
+  if (command !== "init" && (options.id !== undefined || options.name !== undefined || options.check)) {
+    const result = baseResult(command ?? "unknown");
+    setFailure(result, codedError("INVALID_ARGUMENTS", "--id, --name, and --check are only valid for init", "arguments"), { phase: "arguments", id: "arguments" });
+    return { result, format: outputFormat };
+  }
+  if (command === "init" && positional.length !== 1) {
+    const result = baseResult(command);
+    setFailure(result, codedError("INVALID_ARGUMENTS", "Usage: infolens-plugin init <path> [--id <id>] [--name <name>] [--check] [--format <json|text>]", "arguments"), { phase: "arguments", id: "arguments" });
+    return { result, format: outputFormat };
+  }
 
   const packagePosition = command === "adapters" ? positional[1] : positional[0];
   const packageRoot = path.resolve(packagePosition ?? process.cwd());
@@ -609,27 +963,58 @@ async function main(argv) {
   try { deps = await loadDependencies(); }
   catch (error) {
     const result = baseResult(command ?? "unknown");
-    return setFailure(result, error, { phase: "bootstrap", id: "environment.bootstrap" });
+    return { result: setFailure(result, error, { phase: "bootstrap", id: "environment.bootstrap" }), format: outputFormat };
   }
   const context = await resolveContext(deps, targetOption);
   let outcome;
   try {
-    if (command === "validate") outcome = await runValidate(packageRoot, deps, context);
+    if (command === "init") outcome = await runInit(packageRoot, deps, context, { id: options.id, name: options.name, check: options.check, timeoutMs });
+    else if (command === "validate") outcome = await runValidate(packageRoot, deps, context);
     else if (command === "doctor") outcome = await runDoctor(packageRoot, deps, context, timeoutMs);
     else if (command === "pack") outcome = await runPack(packageRoot, deps, context, path.resolve(options.out ?? path.join(path.dirname(packageRoot), `${path.basename(packageRoot)}.infolens-plugin`)), timeoutMs);
     else if (command === "dev") outcome = await runDev(packageRoot, deps, context);
+    else if (command === "preview") outcome = await runPreview(packageRoot, deps, context, timeoutMs);
     else if (command === "adapters" && positional[0] === "list") outcome = await runListAdapters(packageRoot, deps, context);
     else {
       const result = baseResult(command ?? "unknown", context.environment);
-      outcome = { result: setFailure(result, codedError("INVALID_ARGUMENTS", "Usage: infolens-plugin <validate|doctor|dev|pack|adapters list> [plugin-path]", "arguments"), { phase: "arguments", id: "arguments" }) };
+      outcome = { result: setFailure(result, codedError("INVALID_ARGUMENTS", "Usage: infolens-plugin <init|validate|doctor|dev|preview|pack|adapters list> [plugin-path]", "arguments"), { phase: "arguments", id: "arguments" }) };
     }
   } catch (error) {
     const result = baseResult(command ?? "unknown", context.environment, await readManifest(packageRoot), packageRoot);
     outcome = { result: setFailure(result, error, { phase: error.phase ?? "command", id: error.checkId ?? "command.failure" }) };
   }
-  return outcome.result;
+  return { result: outcome.result, format: outputFormat, session: outcome.session };
 }
 
-const result = await main(process.argv.slice(2));
-process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-if (!result.ok) process.exitCode = 1;
+const previewCommand = process.argv[2] === "preview";
+const onPreviewSignal = () => { void requestPreviewStop("signal"); };
+const onPreviewInput = (chunk) => {
+  if (String(chunk).split(/\r?\n/).some((line) => line.trim() === "shutdown")) requestPreviewStop("input");
+};
+if (previewCommand) {
+  process.once("SIGINT", onPreviewSignal);
+  process.once("SIGTERM", onPreviewSignal);
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", onPreviewInput);
+}
+const outcome = await main(process.argv.slice(2));
+if (outcome.help) {
+  process.stdout.write(HELP_TEXT);
+} else {
+  const result = outcome.result;
+  process.stdout.write(outcome.format === "text" ? formatText(result) : `${JSON.stringify(result, null, 2)}\n`);
+  if (outcome.session) {
+    const stopped = await outcome.session.wait();
+    activePreviewSession = undefined;
+    if (stopped.code !== 0) {
+      if (stopped.error) process.stderr.write(`[preview] ${stopped.error.message}\n`);
+      process.exitCode = stopped.code ?? 1;
+    }
+  } else if (!result.ok) process.exitCode = 1;
+}
+if (previewCommand) {
+  process.stdin.off("data", onPreviewInput);
+  process.off("SIGINT", onPreviewSignal);
+  process.off("SIGTERM", onPreviewSignal);
+  if (previewSignalReason && !outcome.session && !outcome.result?.error) process.exitCode = 130;
+}
