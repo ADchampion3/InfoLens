@@ -63,6 +63,7 @@ kbd { padding: 2px 5px; border: 1px solid var(--color-rule-2); border-bottom-wid
 .system-state { display: grid; place-items: center; align-content: center; gap: 10px; width: 100%; height: 100%; color: var(--color-muted); }
 .system-state h1 { margin: 0; color: var(--color-ink); font-family: var(--font-display); font-size: 20px; }
 .system-state p { margin: 0; }
+.system-state--error h1 { color: var(--color-bad); }
 .spinner { animation: spin 0.85s linear infinite; }
 
 /* ── Pages ─────────────────────────────────────────────────────────── */
@@ -359,8 +360,8 @@ dd { margin: 0; }
 .daily-summary-preview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 10px; }
 .daily-summary-preview-header h2 { margin: 0; font-family: var(--font-display); font-size: 15px; }
 .daily-summary-preview-header span { color: var(--color-muted); font: 11px var(--font-mono); }
-.daily-summary-panel textarea, .daily-summary-preview pre { flex: 1; min-height: 120px; margin: 0; padding: 14px; overflow: auto; border: 1px solid var(--color-rule-2); border-radius: var(--radius-ctl); background: var(--color-surface); color: var(--color-ink); font: 12px/19px var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; resize: vertical; transition: border-color var(--dur-fast) var(--ease-out); }
-.daily-summary-panel textarea:hover, .daily-summary-preview pre:hover { border-color: var(--color-faint); }
+.daily-summary-panel textarea, .daily-summary-panel pre { flex: 1; min-height: 120px; margin: 0; padding: 14px; overflow: auto; border: 1px solid var(--color-rule-2); border-radius: var(--radius-ctl); background: var(--color-surface); color: var(--color-ink); font: 12px/19px var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; resize: vertical; transition: border-color var(--dur-fast) var(--ease-out); }
+.daily-summary-panel textarea:hover, .daily-summary-panel pre:hover { border-color: var(--color-faint); }
 .daily-summary-panel textarea { width: 100%; }
 .daily-summary-panel textarea::placeholder { color: var(--color-faint); }
 .daily-summary-preview-empty { display: grid; flex: 1; min-height: 120px; place-items: center; border: 1px dashed var(--color-rule-2); border-radius: var(--radius-ctl); color: var(--color-muted); font-size: 12px; }
@@ -396,7 +397,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .daily-summary-layout { grid-template-columns: 1fr; overflow: auto; }
   .daily-summary-sources { border-right: 0; border-bottom: 1px solid var(--color-rule); overflow: visible; }
   .daily-summary-workbench { grid-template-rows: repeat(3, minmax(260px, auto)); padding-inline: 16px; }
-  .daily-summary-panel textarea, .daily-summary-preview pre { min-height: 220px; }
+  .daily-summary-panel textarea, .daily-summary-panel pre { min-height: 220px; }
   .daily-summary-meta { padding-inline: 16px; }
   .daily-summary-actions { justify-content: flex-start; }
 }
