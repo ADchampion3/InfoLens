@@ -65,14 +65,14 @@ export async function activate(context) {
   store.cleanupOnActivation();
   let cancelSchedule;
   const summary = () => ({ source:"Product Hunt", collection:"Today's Top Launches", products:store.list(), settings:store.settings(), ...store.metadata() });
-  const updateHealth = () => { const data=summary(); const unavailable=data.dependencyState==="disconnected"; context.setHealth({state:unavailable?"unavailable":"ready",badge:unavailable?"!":String(data.products.filter((item)=>!item.read).length),lastSuccessfulRefresh:data.lastSuccessfulRefresh}); };
+  const updateHealth = () => { const data=summary(); context.setHealth({state:"ready",badge:data.dependencyState==="connected"?String(data.products.filter((item)=>!item.read).length):"!",lastSuccessfulRefresh:data.lastSuccessfulRefresh,dependencyState:data.dependencyState??"unknown",dependencyWarning:data.dependencyState!=="connected"}); };
   const configureSchedule = () => { cancelSchedule?.(); cancelSchedule=undefined; const settings=store.settings(); if(settings.policy==="fixed") cancelSchedule=context.schedule("refresh",{intervalMs:settings.intervalMinutes*60_000,reason:"schedule",coalesceKey:"collection"}); };
   context.task("refresh",async(_,task)=>{
     try {
       const products=validateCollection(await context.opencli.run("topLaunches",["--limit=20"],task.signal));
       store.replace(products,new Date().toISOString()); updateHealth(); return {ok:true,...summary()};
     } catch(error) {
-      const code=error?.code; const dependencyState=code==="BROWSER_BRIDGE_DISCONNECTED"?"disconnected":"connected";
+      const code=error?.code; const dependencyState=code==="BROWSER_BRIDGE_DISCONNECTED"?"disconnected":"unknown";
       const message=error instanceof Error?error.message:String(error); store.recordFailure(message,new Date().toISOString(),dependencyState);
       await context.logger.warn("collection-failed-retained-content-preserved",{code:typeof code==="string"?code:"COLLECTION_FAILED"});
       updateHealth(); return {ok:false,...summary()};

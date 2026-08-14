@@ -10,6 +10,7 @@ import { ContractError, validatePluginPackage } from "./contract.mjs";
 import { DEFAULT_TARGET_HOST_VERSION, PLUGIN_CONTRACT_VERSION } from "@infolens/release-metadata";
 import { createPluginLogger } from "./logger.mjs";
 import { createOpenCliAdapter, resolveBundledOpenCli } from "./opencli-adapter.mjs";
+import { createBrowserBridgeCoordinator } from "./browser-bridge.mjs";
 import { PluginTaskManager, SharedTaskQueue } from "./task-manager.mjs";
 import { redactSensitiveText, redactSensitiveValue } from "./redaction.mjs";
 import { HostStateStore } from "./host-state.mjs";
@@ -79,6 +80,7 @@ const rejectedPlugins = [];
 const installingPluginIds = new Set();
 const statusEvents = [];
 const taskQueue = new SharedTaskQueue();
+let browserBridge;
 let eventSequence = 0;
 const hostState = new HostStateStore(hostStatePath);
 await hostState.load();
@@ -478,6 +480,7 @@ async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticM
           return result;
         } catch (error) {
           await logger.error("opencli-failed", { commandKey, message: error instanceof Error ? error.message : String(error) });
+          if (mapping.strategy !== "PUBLIC") void browserBridge.bestEffortCheck().catch(() => {});
           throw error;
         }
       },
@@ -599,6 +602,8 @@ async function discoverPlugins() {
 function publicPlugin(plugin, origin) {
   const id = plugin.manifest.id;
   const statusSnapshot = hostState.snapshot().statusSnapshots[id];
+  const browserDependent = isBrowserDependentManifest(plugin.manifest);
+  const dependencyState = getDependencyState(plugin, browserDependent);
   return {
     id,
     name: plugin.manifest.name,
@@ -611,7 +616,8 @@ function publicPlugin(plugin, origin) {
     apiBaseUrl: `${origin}/plugins/${id}/api/`,
     packagePath: plugin.packageRoot,
     enabled: true,
-    browserDependent: Object.values(plugin.manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC"),
+    browserDependent,
+    ...(browserDependent ? { dependencyState, dependencyWarning: dependencyState !== "connected" } : { dependencyState: "not-required" }),
     statusSnapshot,
   };
 }
@@ -646,10 +652,12 @@ function publicCompatiblePlugin(descriptor, origin) {
   const active = findPlugin(id);
   if (active) return publicPlugin(active, origin);
   const manifest = descriptor.validated.manifest;
+  const browserDependent = isBrowserDependentManifest(manifest);
   return {
     id, name: manifest.name, version: manifest.version, icon: manifest.icon,
     state: "disabled", enabled: false, packagePath: descriptor.packageRoot,
-    browserDependent: Object.values(manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC"),
+    browserDependent,
+    ...(browserDependent ? { dependencyState: "unknown", dependencyWarning: true } : { dependencyState: "not-required" }),
     workspaceUrl: `${origin}/plugins/${id}/workspace/`, apiBaseUrl: `${origin}/plugins/${id}/api/`,
     statusSnapshot: hostState.snapshot().statusSnapshots[id],
   };
@@ -662,6 +670,39 @@ function findPlugin(id) {
 function findCompatible(id) {
   return compatiblePlugins.find((plugin) => plugin.validated.manifest.id === id);
 }
+
+const DEPENDENCY_STATES = new Set(["connected", "disconnected", "login-required", "unknown"]);
+
+function isBrowserDependentManifest(manifest) {
+  return Object.values(manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC");
+}
+
+function getDependencyState(plugin, browserDependent = true) {
+  if (!browserDependent) return "not-required";
+  const value = plugin?.status?.dependencyState;
+  return DEPENDENCY_STATES.has(value) ? value : "unknown";
+}
+
+function browserStatusAffected() {
+  return compatiblePlugins
+    .filter((descriptor) => !descriptor.deactivated && isBrowserDependentManifest(descriptor.validated.manifest))
+    .map((descriptor) => {
+      const id = descriptor.validated.manifest.id;
+      const plugin = findPlugin(id);
+      return {
+        id,
+        name: descriptor.validated.manifest.name,
+        state: plugin?.status.state ?? "disabled",
+        dependencyState: getDependencyState(plugin),
+      };
+    });
+}
+
+browserBridge = createBrowserBridgeCoordinator({
+  adapter: openCliAdapter,
+  taskQueue,
+  getAffected: browserStatusAffected,
+});
 
 function batchTarget(pluginId) {
   const descriptor = findCompatible(pluginId);
@@ -678,7 +719,7 @@ function batchTarget(pluginId) {
   else if (["disabled", "unavailable"].includes(state)) reason = state === "disabled" ? "Plugin Workspace is disabled" : "Plugin Workspace is unavailable";
   else if (["starting", "queued", "refreshing"].includes(state)) reason = "Plugin Workspace is already busy";
   else if (plugin?.taskManager?.isPending("refresh", "collection")) reason = "Plugin Workspace already has a refresh queued";
-  const browserDependent = Object.values(manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC");
+  const browserDependent = isBrowserDependentManifest(manifest);
   return {
     pluginId,
     targetId: `${pluginId}@${manifest.version}`,
@@ -690,7 +731,7 @@ function batchTarget(pluginId) {
     ...(reason ? { reason } : {}),
     ...(refreshOptions ? { refreshOptions } : {}),
     browserDependent,
-    ...(browserDependent ? { dependencyState: state === "unavailable" ? "unavailable" : "unknown", dependencyWarning: state !== "unavailable" } : { dependencyState: "not-required" }),
+    ...(browserDependent ? { dependencyState: getDependencyState(plugin), dependencyWarning: getDependencyState(plugin) !== "connected" } : { dependencyState: "not-required" }),
     ...(snapshot?.lastSuccessfulRefreshAt ? { lastSuccessfulRefreshAt: snapshot.lastSuccessfulRefreshAt } : {}),
     ...(snapshot?.failure ? { failure: snapshot.failure } : {}),
   };
@@ -1018,11 +1059,18 @@ const server = createServer(async (request, response) => {
     } catch (error) { json(response, 400, { error: errorDetails(error).message }); }
     return;
   }
-  if (url.pathname === "/runtime/browser-status") {
-    const affected = compatiblePlugins
-      .filter((plugin) => Object.values(plugin.validated.manifest.openCliCommands).some((mapping) => mapping.strategy !== "PUBLIC"))
-      .map((plugin) => ({ id: plugin.validated.manifest.id, name: plugin.validated.manifest.name, state: findPlugin(plugin.validated.manifest.id)?.status.state ?? "disabled" }));
-    json(response, 200, { connected: affected.every((plugin) => !["unavailable", "disconnected"].includes(plugin.state)), affected });
+  if (url.pathname === "/runtime/browser-status" && request.method === "GET") {
+    json(response, 200, browserBridge.getStatus());
+    return;
+  }
+  if (url.pathname === "/runtime/browser-status/check" && request.method === "POST") {
+    try { json(response, 200, await browserBridge.check()); }
+    catch (error) { const failure = errorDetails(error); json(response, 503, { ...browserBridge.getStatus(), code: failure.code, retryable: true, action: "retry" }); }
+    return;
+  }
+  if (url.pathname === "/runtime/browser-status/reconnect" && request.method === "POST") {
+    try { json(response, 200, await browserBridge.reconnect()); }
+    catch (error) { const failure = errorDetails(error); json(response, 503, { ...browserBridge.getStatus(), code: failure.code, retryable: true, action: "retry" }); }
     return;
   }
   if (url.pathname === "/runtime/plugins/install" && request.method === "POST") {
@@ -1105,10 +1153,12 @@ const server = createServer(async (request, response) => {
 
   if (section === "health") {
     const statusSnapshot = hostState.snapshot().statusSnapshots[pluginId];
+    const browserDependent = isBrowserDependentManifest(plugin.manifest);
     json(response, plugin.status.state === "failed" ? 503 : 200, {
       pluginId,
       state: plugin.status.state,
       badge: plugin.status.badge ?? plugin.lifecycle?.badge,
+      ...(browserDependent ? { dependencyState: getDependencyState(plugin), dependencyWarning: getDependencyState(plugin) !== "connected" } : { dependencyState: "not-required" }),
       ...(statusSnapshot?.lastSuccessfulRefreshAt ? { lastSuccessfulRefreshAt: statusSnapshot.lastSuccessfulRefreshAt } : {}),
       ...(statusSnapshot?.failure ? { failure: statusSnapshot.failure } : {}),
     });
@@ -1226,6 +1276,7 @@ async function shutdown(reason = "RUNTIME_RESTARTED") {
   process.stdin.pause();
   const diagnosticPlugin = diagnosticMode ? activePlugins.find((plugin) => plugin.manifest.id === diagnosticPluginId) : undefined;
   await batchManager.interruptActive(reason);
+  browserBridge.stop();
   taskQueue.stop();
   await new Promise((resolve) => server.close(resolve));
   for (const plugin of [...activePlugins]) await deactivatePlugin(plugin);

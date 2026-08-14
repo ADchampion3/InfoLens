@@ -88,8 +88,7 @@ export async function activate(context) {
   const summary = () => ({ source:"知乎热榜", questions:store.list(), settings:store.settings(), ...store.metadata() });
   const updateHealth = () => {
     const data=summary();
-    const unavailable=["disconnected","login-required"].includes(data.dependencyState);
-    context.setHealth({state:unavailable?"unavailable":"ready",badge:unavailable?"!":String(data.questions.filter((item)=>!item.read).length),lastSuccessfulRefresh:data.lastSuccessfulRefresh});
+    context.setHealth({state:"ready",badge:data.dependencyState==="connected"?String(data.questions.filter((item)=>!item.read).length):"!",lastSuccessfulRefresh:data.lastSuccessfulRefresh,dependencyState:data.dependencyState??"unknown",dependencyWarning:data.dependencyState!=="connected"});
   };
   const configureSchedule = () => {
     cancelSchedule?.(); cancelSchedule=undefined;
@@ -104,7 +103,7 @@ export async function activate(context) {
       return {ok:true,...summary()};
     } catch(error) {
       const code=error?.code;
-      const dependencyState=code==="BROWSER_BRIDGE_DISCONNECTED"?"disconnected":code==="SITE_LOGIN_REQUIRED"?"login-required":"connected";
+      const dependencyState=code==="BROWSER_BRIDGE_DISCONNECTED"?"disconnected":code==="SITE_LOGIN_REQUIRED"?"login-required":"unknown";
       const message=error instanceof Error?error.message:String(error);
       store.recordFailure(message,new Date().toISOString(),dependencyState);
       await context.logger.warn("collection-failed-retained-content-preserved",{code:typeof code==="string"?code:"COLLECTION_FAILED"});

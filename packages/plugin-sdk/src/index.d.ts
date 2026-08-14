@@ -33,6 +33,8 @@ export interface PluginHealth {
   badge?: string;
   lastSuccessfulRefresh?: string;
   message?: string;
+  dependencyState?: "connected" | "disconnected" | "login-required" | "unknown" | "not-required";
+  dependencyWarning?: boolean;
 }
 
 export interface PluginLogger {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FileText, FolderPlus, ListChecks,
-  LoaderCircle, Plug, RefreshCw, RotateCcw, ScrollText, Settings, Trash2, TriangleAlert, X,
+  LoaderCircle, Plug, RefreshCw, RotateCcw, ScrollText, Settings, Trash2, TriangleAlert,
 } from "lucide-react";
 import {
   batchCompletionNotice, exactLocalTime, freshnessLabel, hasExecutableSelection, localDayKey,
@@ -51,8 +51,15 @@ async function runtimeRequest<T>(runtime: RuntimeInfo, route: string, init?: Req
     headers: { "content-type": "application/json", ...init?.headers },
   });
   const body = await readJsonResponse<{ error?: string; code?: string } & T>(response, "Plugin services are unavailable.");
-  if (!response.ok) throw Object.assign(new Error(body.error ?? "Operation failed"), { code: body.code });
+  if (!response.ok) throw Object.assign(new Error(body.error ?? "Operation failed"), { code: body.code, body });
   return body;
+}
+
+function browserStatusFromError(error: unknown): BrowserStatus | undefined {
+  if (!error || typeof error !== "object" || !("body" in error)) return undefined;
+  const body = error.body;
+  if (!body || typeof body !== "object" || !("overall" in body)) return undefined;
+  return body as BrowserStatus;
 }
 
 function available(plugin: RuntimePlugin) {
@@ -735,8 +742,8 @@ export function App() {
   const [dailySummarySelection, setDailySummarySelection] = useState<Set<string>>();
   const [batchId, setBatchId] = useState<string>();
   const [managedKey, setManagedKey] = useState<string>();
-  const [bridgeDialog, setBridgeDialog] = useState(false);
-  const [bridgeStatus, setBridgeStatus] = useState<{ connected: boolean; affected: Array<{ id: string; name: string }> }>();
+  const [browserStatus, setBrowserStatus] = useState<BrowserStatus>();
+  const [browserAction, setBrowserAction] = useState<"check" | "reconnect">();
   const [runtimeRestarting, setRuntimeRestarting] = useState(false);
   const [removeKey, setRemoveKey] = useState<string>();
   const [toast, setToast] = useState<ToastNotice>();
@@ -768,17 +775,20 @@ export function App() {
       const selected = restored ?? info.plugins.find(available);
       setView(selected ? { kind: "plugin", id: selected.id } : { kind: "plugins" });
       setManagedKey(info.plugins[0]?.id ?? info.rejectedPlugins[0]?.package);
-      if (info.plugins.some((plugin) => plugin.browserDependent)) {
-        runtimeRequest<typeof bridgeStatus>(info, "/runtime/browser-status").then((result) => {
-          setBridgeStatus(result);
-          setBridgeDialog(true);
-        }).catch(() => {});
-      }
     }).catch((error: unknown) => {
       setMessage(error instanceof Error ? error.message : "Plugin services did not start.");
       setStatus("error");
     });
   }, []);
+
+  useEffect(() => {
+    if (status !== "ready" || !runtime || view.kind !== "settings" || !runtime.plugins.some((plugin) => plugin.browserDependent)) return;
+    let active = true;
+    runtimeRequest<BrowserStatus>(runtime, "/runtime/browser-status")
+      .then((next) => { if (active) setBrowserStatus(next); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [status, runtime?.origin, view.kind]);
 
   useEffect(() => {
     if (status !== "ready") return;
@@ -849,11 +859,10 @@ export function App() {
     const closeDialog = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (removeKey) setRemoveKey(undefined);
-      else if (bridgeDialog) setBridgeDialog(false);
     };
     window.addEventListener("keydown", closeDialog);
     return () => window.removeEventListener("keydown", closeDialog);
-  }, [bridgeDialog, removeKey]);
+  }, [removeKey]);
 
   const selected = useMemo(
     () => view.kind === "plugin" ? runtime?.plugins.find((plugin) => plugin.id === view.id) : undefined,
@@ -908,7 +917,30 @@ export function App() {
 
   const checkBridge = async () => {
     if (!runtime) return;
-    setBridgeStatus(await runtimeRequest(runtime, "/runtime/browser-status"));
+    setBrowserAction("check");
+    try {
+      setBrowserStatus(await runtimeRequest<BrowserStatus>(runtime, "/runtime/browser-status/check", { method: "POST" }));
+    } catch (error) {
+      const failedStatus = browserStatusFromError(error);
+      if (failedStatus) setBrowserStatus(failedStatus);
+      showNotice(error instanceof Error ? error.message : "Browser connection check failed.");
+    } finally {
+      setBrowserAction(undefined);
+    }
+  };
+
+  const reconnectBridge = async () => {
+    if (!runtime) return;
+    setBrowserAction("reconnect");
+    try {
+      setBrowserStatus(await runtimeRequest<BrowserStatus>(runtime, "/runtime/browser-status/reconnect", { method: "POST" }));
+    } catch (error) {
+      const failedStatus = browserStatusFromError(error);
+      if (failedStatus) setBrowserStatus(failedStatus);
+      showNotice(error instanceof Error ? error.message : "Browser reconnection failed.");
+    } finally {
+      setBrowserAction(undefined);
+    }
   };
 
   const openFailureLogs = (pluginId: string, failure: NonNullable<StatusSnapshot["failure"]>) => {
@@ -984,11 +1016,27 @@ export function App() {
           </section>
         )}
         {status === "ready" && view.kind === "settings" && (
-          <section className="host-page"><header className="page-header"><div><h1>Settings</h1><p>Application preferences</p></div></header><div className="settings-section"><h2>Appearance</h2><div className="setting-row"><span><strong>Theme</strong><small>Applied to the host and open plugin workspace</small></span><div className="segmented" aria-label="Theme">{(["system", "light", "dark"] as ThemePreference[]).map((item) => <button aria-pressed={theme === item} className={theme === item ? "active" : ""} key={item} onClick={() => changeTheme(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}</div></div></div></section>
+          <section className="host-page">
+            <header className="page-header"><div><h1>Settings</h1><p>Application preferences</p></div></header>
+            <div className="settings-section">
+              <h2>Appearance</h2>
+              <div className="setting-row"><span><strong>Theme</strong><small>Applied to the host and open plugin workspace</small></span><div className="segmented" aria-label="Theme">{(["system", "light", "dark"] as ThemePreference[]).map((item) => <button aria-pressed={theme === item} className={theme === item ? "active" : ""} key={item} onClick={() => changeTheme(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}</div></div>
+            </div>
+            {runtime && runtime.plugins.some((plugin) => plugin.browserDependent) && <div className="settings-section">
+              <h2>Browser Bridge</h2>
+              <div className="setting-row">
+                <span><strong>{browserStatus?.overall ?? "Not checked"}</strong><small>{browserStatus?.checkedAt ? `Last checked ${new Date(browserStatus.checkedAt).toLocaleString()}` : "Check only when you need browser-backed collection."}</small></span>
+                <div className="detail-actions">
+                  <button type="button" disabled={Boolean(browserAction)} onClick={checkBridge}>{browserAction === "check" ? <LoaderCircle className="spinner" size={16} /> : <RefreshCw size={16} />}Check connection</button>
+                  <button type="button" disabled={Boolean(browserAction)} onClick={reconnectBridge}>{browserAction === "reconnect" ? <LoaderCircle className="spinner" size={16} /> : <RotateCcw size={16} />}Reconnect</button>
+                </div>
+              </div>
+              {browserStatus && <dl><dt>Result</dt><dd>{browserStatus.code}</dd><dt>Affected Plugins</dt><dd>{browserStatus.affected.map((plugin) => plugin.name).join(", ") || "None"}</dd></dl>}
+            </div>}
+          </section>
         )}
       </main>
 
-      {bridgeDialog && bridgeStatus && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="bridge-title"><button className="dialog-close" aria-label="Close" onClick={() => setBridgeDialog(false)}><X size={17} /></button>{bridgeStatus.connected ? <CheckCircle2 className="dialog-symbol success" size={26} /> : <TriangleAlert className="dialog-symbol warning" size={26} />}<h2 id="bridge-title">Browser connection</h2><p>{bridgeStatus.connected ? "Browser Bridge is connected." : "Connect Browser Bridge to refresh browser-based plugins."}</p><small>Affects {bridgeStatus.affected.map((plugin) => plugin.name).join(" and ")} only.</small><div className="dialog-actions"><button onClick={() => setBridgeDialog(false)}>Continue</button><button className="primary-button" onClick={checkBridge}>Check again</button></div></div></div>}
       {removeKey && runtime && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="remove-title"><TriangleAlert className="dialog-symbol danger" size={26} /><h2 id="remove-title">Remove plugin?</h2><p>The plugin package, retained content, settings, and logs will be permanently deleted.</p><div className="dialog-actions"><button onClick={() => setRemoveKey(undefined)}>Cancel</button><button className="danger-button" onClick={() => mutate(async () => { if (window.infolens) await window.infolens.removePlugin(removeKey); else await runtimeRequest(runtime, `/runtime/plugins/${encodeURIComponent(removeKey)}/remove`, { method: "DELETE" }); setRemoveKey(undefined); setManagedKey(undefined); }, "Plugin removed")}>Remove plugin</button></div></div></div>}
       {toast && <div className="toast" role="status"><span>{toast.message}</span>{toast.batchId && <button type="button" onClick={() => { setBatchId(toast.batchId); setView({ kind: "batch" }); setToast(undefined); }}><ExternalLink size={14} />{toast.actionLabel ?? "View results"}</button>}</div>}
     </div>

@@ -119,7 +119,8 @@ test("packaged Electron executes the full Sprint 7 integration matrix", { timeou
     await writeFile(stateFile, `${JSON.stringify({ producthunt: "disconnected" }, null, 2)}\n`, "utf8");
     await request(initial.origin, "/plugins/product-hunt/api/refresh", { method: "POST" });
     const bridge = await request(initial.origin, "/runtime/browser-status");
-    assert.equal(bridge.connected, false);
+    assert.ok(["unknown", "disconnected"].includes(bridge.overall));
+    assert.equal("connected" in bridge, false);
     assert.deepEqual(bridge.affected.map(({ id }) => id).sort(), ["product-hunt", "zhihu-hot"]);
 
     const oldOrigin = initial.origin;

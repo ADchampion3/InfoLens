@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import semver from "semver";
 import { redactSensitiveText } from "./redaction.mjs";
+import { parseBrowserDoctorOutput } from "./browser-bridge.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -197,7 +198,7 @@ export async function resolveBundledOpenCli(options = {}) {
 }
 
 export function createOpenCliAdapter(runtime) {
-  function spawnJson(processArgs, signal, extraEnvironment = {}) {
+  function spawnCaptured(processArgs, signal, extraEnvironment = {}) {
     const command = processCommand(runtime.executablePath);
     return new Promise((resolve, reject) => {
       const child = spawn(command.file, [...command.prefix, ...processArgs], {
@@ -218,12 +219,38 @@ export function createOpenCliAdapter(runtime) {
       child.stderr.on("data", (chunk) => { stderr += chunk; });
       child.once("error", reject);
       child.once("close", (code) => {
-        if (code !== 0) { reject(classifyFailure(stderr, code)); return; }
-        try { resolve(JSON.parse(stdout)); }
-        catch { reject(new Error("Bundled OpenCLI did not return valid JSON")); }
+        if (code !== 0) { reject(classifyFailure(`${stderr}\n${stdout}`, code)); return; }
+        resolve({ stdout, stderr });
       });
     });
   }
+
+  async function spawnJson(processArgs, signal, extraEnvironment = {}) {
+    const output = await spawnCaptured(processArgs, signal, extraEnvironment);
+    try { return JSON.parse(output.stdout); }
+    catch { throw new Error("Bundled OpenCLI did not return valid JSON"); }
+  }
+
+  function stripManagedBrowserOptions(args) {
+    const managed = new Set(["--window", "--site-session", "--keep-tab"]);
+    const result = [];
+    for (let index = 0; index < args.length; index += 1) {
+      const argument = args[index];
+      const name = argument.split("=", 1)[0];
+      if (!managed.has(name)) {
+        result.push(argument);
+        continue;
+      }
+      if (argument === name) index += 1;
+    }
+    return result;
+  }
+
+  const browserLeaseOptions = Object.freeze([
+    "--window", "background",
+    "--site-session", "ephemeral",
+    "--keep-tab", "false",
+  ]);
 
   return {
     inspect(pluginPaths) {
@@ -233,6 +260,18 @@ export function createOpenCliAdapter(runtime) {
         OPENCLI_REGISTRATION_REPORT: "1",
       });
     },
+    async doctor(signal) {
+      const output = await spawnCaptured(["doctor"], signal, {
+        OPENCLI_DISABLE_USER_DISCOVERY: "1",
+        OPENCLI_WINDOW: "background",
+      });
+      return parseBrowserDoctorOutput(output.stdout);
+    },
+    async restartDaemon(signal) {
+      return spawnCaptured(["daemon", "restart"], signal, {
+        OPENCLI_DISABLE_USER_DISCOVERY: "1",
+      });
+    },
     run(mapping, args = [], signal, pluginPaths = []) {
       if (!Array.isArray(args) || args.some((argument) => typeof argument !== "string")) {
         throw new TypeError("OpenCLI arguments must be an array of strings");
@@ -240,7 +279,10 @@ export function createOpenCliAdapter(runtime) {
       if (args.some((argument) => argument === "--format" || argument === "-f" || argument.startsWith("--format="))) {
         throw new Error("OpenCLI output format is fixed by the plugin contract");
       }
-      return spawnJson([...mapping.command, ...args, "-f", "json"], signal, {
+      const commandArgs = mapping.strategy === "PUBLIC"
+        ? [...args]
+        : [...stripManagedBrowserOptions(args), ...browserLeaseOptions];
+      return spawnJson([...mapping.command, ...commandArgs, "-f", "json"], signal, {
         OPENCLI_DISABLE_USER_DISCOVERY: "1",
         ...(pluginPaths.length > 0 ? { OPENCLI_PLUGIN_PATHS: pluginPaths.join(path.delimiter) } : {}),
       });

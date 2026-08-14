@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -58,14 +58,27 @@ test("COOKIE collection persists, degrades only Zhihu, and distinguishes depende
     runtime=await startRuntime(dataRoot,stateFile);const ids=runtime.message.plugins.map(({id})=>id).sort();assert.deepEqual(ids,["github-trending","hn","zhihu-hot"]);
     let zhihu=await api(runtime.message.origin,"zhihu-hot","summary");assert.equal(zhihu.questions.length,0);assert.equal(zhihu.dependencyState,"unknown");
     zhihu=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.equal(zhihu.ok,true);assert.equal(zhihu.questions.length,15);assert.equal(zhihu.dependencyState,"connected");
-    const calls=(await readFile(`${stateFile}.calls`,"utf8")).trim().split(/\r?\n/).map(JSON.parse);assert.deepEqual(calls[0],["zhihu","whoami","-f","json"]);assert.deepEqual(calls[1],["zhihu","hot","--limit=30","-f","json"]);
+    const calls=(await readFile(`${stateFile}.calls`,"utf8")).trim().split(/\r?\n/).map(JSON.parse);assert.deepEqual(calls[0],["zhihu","whoami","--window","background","--site-session","ephemeral","--keep-tab","false","-f","json"]);assert.deepEqual(calls[1],["zhihu","hot","--limit=30","--window","background","--site-session","ephemeral","--keep-tab","false","-f","json"]);
     await api(runtime.message.origin,"zhihu-hot",`read?url=${encodeURIComponent(zhihu.questions[0].url)}`,"POST");await stopRuntime(runtime.child);
     const persisted=openStore(path.join(dataRoot,"zhihu-hot","zhihu-hot.sqlite"));assert.equal(persisted.snapshotCount(),1);assert.equal(persisted.list()[0].read,true);persisted.close();
     runtime=await startRuntime(dataRoot,stateFile);zhihu=await api(runtime.message.origin,"zhihu-hot","summary");assert.equal(zhihu.questions.length,15);assert.equal(zhihu.questions[0].read,true);
     await writeFile(stateFile,JSON.stringify({zhihu:"disconnected"}));zhihu=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.equal(zhihu.ok,false);assert.equal(zhihu.dependencyState,"disconnected");assert.equal(zhihu.questions.length,15);
-    let info=await fetch(`${runtime.message.origin}/runtime/info`).then(response=>response.json());assert.equal(info.plugins.find(({id})=>id==="zhihu-hot").state,"unavailable");assert.notEqual(info.plugins.find(({id})=>id==="hn").state,"unavailable");assert.equal((await api(runtime.message.origin,"hn","summary")).source,"Hacker News");
+    let info=await fetch(`${runtime.message.origin}/runtime/info`).then(response=>response.json());assert.equal(info.plugins.find(({id})=>id==="zhihu-hot").state,"ready");assert.equal(info.plugins.find(({id})=>id==="zhihu-hot").dependencyState,"disconnected");assert.notEqual(info.plugins.find(({id})=>id==="hn").state,"unavailable");assert.equal((await api(runtime.message.origin,"hn","summary")).source,"Hacker News");
     await writeFile(stateFile,JSON.stringify({zhihu:"expired"}));zhihu=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.equal(zhihu.dependencyState,"login-required");assert.equal(zhihu.questions.length,15);
     await writeFile(stateFile,JSON.stringify({zhihu:"success"}));zhihu=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.equal(zhihu.dependencyState,"connected");assert.equal(zhihu.ok,true);
+  }finally{if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}
+});
+
+test("Browser Bridge status is read-only until an explicit check or reconnect",async()=>{
+  const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-sprint4-browser-status-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success"}));let runtime;
+  try{
+    runtime=await startRuntime(path.join(temp,"data"),stateFile);
+    const statusPath=`${stateFile}.calls`;
+    let response=await fetch(`${runtime.message.origin}/runtime/browser-status`);let status=await response.json();assert.equal(response.status,200);assert.equal(status.overall,"unknown");await assert.rejects(access(statusPath));
+    response=await fetch(`${runtime.message.origin}/runtime/browser-status/check`,{method:"POST"});status=await response.json();assert.equal(response.status,200);assert.equal(status.overall,"disconnected");assert.equal(status.code,"OPENCLI_FAILED");assert.doesNotMatch(JSON.stringify(status),/unexpected command|context-id/u);
+    const cached=await fetch(`${runtime.message.origin}/runtime/browser-status`).then((result)=>result.json());assert.equal(cached.code,"OPENCLI_FAILED");
+    response=await fetch(`${runtime.message.origin}/runtime/browser-status/reconnect`,{method:"POST"});status=await response.json();assert.equal(response.status,200);assert.equal(status.code,"DAEMON_RESTART_FAILED");
+    const calls=(await readFile(statusPath,"utf8")).trim().split(/\r?\n/).map(JSON.parse);assert.deepEqual(calls,[ ["doctor"], ["daemon","restart"] ]);
   }finally{if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}
 });
 

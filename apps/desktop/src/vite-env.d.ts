@@ -25,11 +25,33 @@ interface RuntimePlugin {
   state: string;
   enabled: boolean;
   browserDependent: boolean;
+  dependencyState?: "connected" | "disconnected" | "login-required" | "unknown" | "not-required";
+  dependencyWarning?: boolean;
   packagePath: string;
   workspaceUrl: string;
   apiBaseUrl: string;
   statusSnapshot?: StatusSnapshot;
   failure?: { code: string; message: string; logId?: string; operationId?: string; batchId?: string; timestamp?: string };
+}
+
+type BrowserStatusOverall = "connected" | "degraded" | "disconnected" | "unknown";
+
+interface BrowserStatusCheck {
+  status: "ok" | "degraded" | "failed" | "unknown";
+  code?: string;
+  retryable?: boolean;
+  action?: string;
+}
+
+interface BrowserStatus {
+  overall: BrowserStatusOverall;
+  checks: { daemon: BrowserStatusCheck; extension: BrowserStatusCheck; browser: BrowserStatusCheck; profile: BrowserStatusCheck };
+  checkedAt?: string;
+  durationMs: number;
+  code: string;
+  retryable: boolean;
+  action: string;
+  affected: Array<{ id: string; name: string; state?: string; dependencyState?: string }>;
 }
 
 type RefreshOptionValue = string | number | boolean;

@@ -235,5 +235,11 @@ test("bundled OpenCLI receives Node-shaped arguments from an Electron-hosted Run
     child.once("exit", resolve);
   });
   assert.equal(code, 0, stderr);
-  assert.deepEqual(JSON.parse(stdout).args, ["fixture", "read", "-f", "json"]);
+  assert.deepEqual(JSON.parse(stdout).args, [
+    "fixture", "read",
+    "--window", "background",
+    "--site-session", "ephemeral",
+    "--keep-tab", "false",
+    "-f", "json",
+  ]);
 });
