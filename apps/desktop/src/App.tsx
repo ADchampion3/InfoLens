@@ -17,6 +17,7 @@ import type { DailySummaryAggregate, DailySummaryPreview } from "./daily-summary
 import { InstrumentRail, Lifecycle, sourceInitial } from "./components/InstrumentRail";
 import { CommandPalette } from "./components/CommandPalette";
 import { OverviewView } from "./components/OverviewView";
+import { BridgePanel } from "./components/BridgePanel";
 import type { CommandItem } from "./components/CommandPalette";
 import { readJsonResponse, runtimeRequest } from "./runtime-api";
 import { useTheme } from "./useTheme";
@@ -998,14 +999,7 @@ export function App() {
             </div>
             {runtime && runtime.plugins.some((plugin) => plugin.browserDependent) && <div className="settings-section">
               <h2>Browser Bridge</h2>
-              <div className="setting-row">
-                <span><strong>{browserStatus?.overall ?? "Not checked"}</strong><small>{browserStatus?.checkedAt ? `Last checked ${new Date(browserStatus.checkedAt).toLocaleString()}` : "Check only when you need browser-backed collection."}</small></span>
-                <div className="detail-actions">
-                  <button type="button" disabled={Boolean(browserAction)} onClick={checkBridge}>{browserAction === "check" ? <LoaderCircle className="spinner" size={16} /> : <RefreshCw size={16} />}Check connection</button>
-                  <button type="button" disabled={Boolean(browserAction)} onClick={reconnectBridge}>{browserAction === "reconnect" ? <LoaderCircle className="spinner" size={16} /> : <RotateCcw size={16} />}Reconnect</button>
-                </div>
-              </div>
-              {browserStatus && <dl><dt>Result</dt><dd>{browserStatus.code}</dd><dt>Affected Plugins</dt><dd>{browserStatus.affected.map((plugin) => plugin.name).join(", ") || "None"}</dd></dl>}
+              <BridgePanel status={browserStatus} action={browserAction} onCheck={() => void checkBridge()} onReconnect={() => void reconnectBridge()} />
             </div>}
           </section>
         )}
