@@ -22,4 +22,5 @@ else if(command==="zhihu whoami"){
   if(mode==="malformed"){process.stdout.write(JSON.stringify([{rank:1,title:"missing fields"}]));process.exit(0)}
   const version=state.zhihuDataVersion??1;
   process.stdout.write(JSON.stringify(Array.from({length:15},(_,index)=>({rank:index+1,title:`知乎热榜问题 v${version}-${index+1}`,heat:`${900-index*17} 万热度`,answers:120-index,url:`https://www.zhihu.com/question/${version*10000+index}`}))));
-}else{process.stderr.write("unexpected command\n");process.exit(8)}
+}else if(command==="browser __doctor__")process.stdout.write("closed");
+else{process.stderr.write("unexpected command\n");process.exit(8)}

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -8,10 +8,14 @@ import { createOpenCliAdapter } from "../packages/plugin-runtime/src/opencli-ada
 test("OpenCLI adapter owns browser lease options and keeps doctor probes backgrounded", async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-opencli-adapter-"));
   const executablePath = path.join(temporaryRoot, "fake-opencli.mjs");
+  const doctorWindowStatePath = path.join(temporaryRoot, "doctor-window.state");
   await writeFile(executablePath, `
+import { writeFileSync } from "node:fs";
+
 const args = process.argv.slice(process.versions.electron ? 1 : 2);
 if (args[0] === "doctor") {
   if (process.env.OPENCLI_WINDOW !== "background") process.exit(4);
+  writeFileSync(${JSON.stringify(doctorWindowStatePath)}, "open");
   process.stdout.write([
     "opencli v1.8.6 doctor",
     "",
@@ -19,6 +23,9 @@ if (args[0] === "doctor") {
     "[OK] Extension: connected (v1.0.22)",
     "[OK] Connectivity: connected in 0.1s",
   ].join("\\n"));
+} else if (args[0] === "browser" && args[1] === "__doctor__" && args[2] === "close") {
+  writeFileSync(${JSON.stringify(doctorWindowStatePath)}, "closed");
+  process.stdout.write("closed");
 } else if (args[0] === "daemon" && args[1] === "restart") {
   process.stdout.write("daemon restarted");
 } else {
@@ -38,6 +45,7 @@ if (args[0] === "doctor") {
 
     const doctor = await adapter.doctor();
     assert.equal(doctor.overall, "connected");
+    assert.equal(await readFile(doctorWindowStatePath, "utf8"), "closed");
     const restarted = await adapter.restartDaemon();
     assert.equal(restarted.stdout, "daemon restarted");
   } finally {

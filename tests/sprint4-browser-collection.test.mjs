@@ -78,7 +78,7 @@ test("Browser Bridge status is read-only until an explicit check or reconnect",a
     response=await fetch(`${runtime.message.origin}/runtime/browser-status/check`,{method:"POST"});status=await response.json();assert.equal(response.status,200);assert.equal(status.overall,"disconnected");assert.equal(status.code,"OPENCLI_FAILED");assert.doesNotMatch(JSON.stringify(status),/unexpected command|context-id/u);
     const cached=await fetch(`${runtime.message.origin}/runtime/browser-status`).then((result)=>result.json());assert.equal(cached.code,"OPENCLI_FAILED");
     response=await fetch(`${runtime.message.origin}/runtime/browser-status/reconnect`,{method:"POST"});status=await response.json();assert.equal(response.status,200);assert.equal(status.code,"DAEMON_RESTART_FAILED");
-    const calls=(await readFile(statusPath,"utf8")).trim().split(/\r?\n/).map(JSON.parse);assert.deepEqual(calls,[ ["doctor"], ["daemon","restart"] ]);
+    const calls=(await readFile(statusPath,"utf8")).trim().split(/\r?\n/).map(JSON.parse);assert.deepEqual(calls,[ ["doctor"], ["browser","__doctor__","close"], ["daemon","restart"] ]);
   }finally{if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}
 });
 

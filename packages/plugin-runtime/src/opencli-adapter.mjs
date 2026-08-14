@@ -37,6 +37,8 @@ function classifyFailure(stderr, code) {
   return new OpenCliError("OPENCLI_FAILED", `Bundled OpenCLI exited with code ${code}: ${redactSensitiveText(details.trim() || "no error output")}`);
 }
 
+const OPENCLI_DOCTOR_SESSION = "__doctor__";
+
 function processCommand(executablePath) {
   if (!executablePath.endsWith(".js") && !executablePath.endsWith(".mjs")) {
     return { file: executablePath, prefix: [], electronNodeMode: false };
@@ -261,11 +263,19 @@ export function createOpenCliAdapter(runtime) {
       });
     },
     async doctor(signal) {
-      const output = await spawnCaptured(["doctor"], signal, {
-        OPENCLI_DISABLE_USER_DISCOVERY: "1",
-        OPENCLI_WINDOW: "background",
-      });
-      return parseBrowserDoctorOutput(output.stdout);
+      try {
+        const output = await spawnCaptured(["doctor"], signal, {
+          OPENCLI_DISABLE_USER_DISCOVERY: "1",
+          OPENCLI_WINDOW: "background",
+        });
+        return parseBrowserDoctorOutput(output.stdout);
+      } finally {
+        const cleanupSignal = AbortSignal.timeout(3_000);
+        await spawnCaptured(["browser", OPENCLI_DOCTOR_SESSION, "close"], cleanupSignal, {
+          OPENCLI_DISABLE_USER_DISCOVERY: "1",
+          OPENCLI_WINDOW: "background",
+        }).catch(() => {});
+      }
     },
     async restartDaemon(signal) {
       return spawnCaptured(["daemon", "restart"], signal, {
