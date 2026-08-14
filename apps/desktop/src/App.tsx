@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FileText, FolderPlus, ListChecks,
-  LoaderCircle, Plug, RefreshCw, RotateCcw, ScrollText, Settings, Trash2, TriangleAlert,
+  AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FolderPlus, ListChecks,
+  LoaderCircle, RefreshCw, RotateCcw, ScrollText, Trash2, TriangleAlert,
 } from "lucide-react";
 import {
   batchCompletionNotice, exactLocalTime, freshnessLabel, hasExecutableSelection, localDayKey,
@@ -14,8 +14,13 @@ import {
   toggleDailySummarySelection,
 } from "./daily-summary";
 import type { DailySummaryAggregate, DailySummaryPreview } from "./daily-summary";
+import { InstrumentRail, Lifecycle, sourceInitial } from "./components/InstrumentRail";
+import { CommandPalette } from "./components/CommandPalette";
+import type { CommandItem } from "./components/CommandPalette";
+import { readJsonResponse, runtimeRequest } from "./runtime-api";
+import { useTheme } from "./useTheme";
+import type { HostView } from "./host-view";
 
-type HostView = { kind: "plugin"; id: string } | { kind: "plugins" } | { kind: "logs" } | { kind: "settings" } | { kind: "batch" } | { kind: "daily-summary" };
 type Status = "loading" | "ready" | "error";
 type DailySummaryDeliveryMode = `${"facts" | "prompt" | "written"}:${"copy" | "download"}`;
 
@@ -36,25 +41,6 @@ async function getRuntimeInfo(): Promise<RuntimeInfo> {
   return body;
 }
 
-async function readJsonResponse<T>(response: Response, invalidResponseMessage: string): Promise<T> {
-  const text = await response.text();
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new Error(response.ok ? "Plugin services returned invalid JSON." : invalidResponseMessage);
-  }
-}
-
-async function runtimeRequest<T>(runtime: RuntimeInfo, route: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${runtime.origin}${route}`, {
-    ...init,
-    headers: { "content-type": "application/json", ...init?.headers },
-  });
-  const body = await readJsonResponse<{ error?: string; code?: string } & T>(response, "Plugin services are unavailable.");
-  if (!response.ok) throw Object.assign(new Error(body.error ?? "Operation failed"), { code: body.code, body });
-  return body;
-}
-
 function browserStatusFromError(error: unknown): BrowserStatus | undefined {
   if (!error || typeof error !== "object" || !("body" in error)) return undefined;
   const body = error.body;
@@ -64,20 +50,6 @@ function browserStatusFromError(error: unknown): BrowserStatus | undefined {
 
 function available(plugin: RuntimePlugin) {
   return plugin.enabled && !["disabled", "failed", "unavailable", "cancelled"].includes(plugin.state);
-}
-
-function sourceInitial(plugin: RuntimePlugin) {
-  if (plugin.id === "hn") return "Y";
-  if (plugin.id === "github-trending") return "GH";
-  return plugin.name.slice(0, 2);
-}
-
-function Lifecycle({ state }: { state: string }) {
-  if (["refreshing", "queued", "starting"].includes(state)) return <LoaderCircle className="lifecycle spinner" aria-label={state} size={15} />;
-  if (state === "failed") return <AlertCircle className="lifecycle danger" aria-label="Failed" size={15} />;
-  if (state === "unavailable") return <CircleOff className="lifecycle danger" aria-label="Unavailable" size={15} />;
-  if (state === "disabled") return <CircleOff className="lifecycle muted" aria-label="Disabled" size={15} />;
-  return <span className="running-dot" aria-label="Running" />;
 }
 
 const INITIAL_LOG_FILTERS: LogFilters = { sources: [], levels: ["info", "warn", "error"], from: "", to: "", keyword: "", operationId: "", batchId: "" };
@@ -749,7 +721,7 @@ export function App() {
   const [toast, setToast] = useState<ToastNotice>();
   const [logFilters, setLogFilters] = useState<LogFilters>(INITIAL_LOG_FILTERS);
   const [focusedLogId, setFocusedLogId] = useState<string>();
-  const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const observedBatchIds = useRef(new Set<string>());
   const notifiedBatchIds = useRef(new Set<string>());
@@ -836,18 +808,7 @@ export function App() {
     }
   }), []);
 
-  const theme = runtime?.hostState.theme ?? "system";
-  const actualTheme = theme === "system" ? (systemDark ? "dark" : "light") : theme;
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const update = () => setSystemDark(media.matches);
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
-  useEffect(() => {
-    document.documentElement.dataset.theme = actualTheme;
-    iframeRef.current?.contentWindow?.postMessage({ type: "infolens:theme", theme: actualTheme }, "*");
-  }, [actualTheme, view]);
+  const { theme, actualTheme, changeTheme } = useTheme(runtime, setRuntime, iframeRef, view);
 
   useEffect(() => {
     if (!toast) return;
@@ -909,12 +870,6 @@ export function App() {
     }, "Plugin installed and enabled");
   };
 
-  const changeTheme = async (nextTheme: ThemePreference) => {
-    if (!runtime) return;
-    const hostState = await runtimeRequest<HostState>(runtime, "/runtime/host-state", { method: "PATCH", body: JSON.stringify({ theme: nextTheme }) });
-    setRuntime({ ...runtime, hostState });
-  };
-
   const checkBridge = async () => {
     if (!runtime) return;
     setBrowserAction("check");
@@ -965,29 +920,47 @@ export function App() {
     setView({ kind: "logs" });
   };
 
+  useEffect(() => {
+    const togglePalette = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", togglePalette);
+    return () => window.removeEventListener("keydown", togglePalette);
+  }, []);
+
+  const commands = useMemo<CommandItem[]>(() => {
+    const goTo: CommandItem[] = [
+      { id: "view-plugins", group: "Go to", label: "Plugins", action: () => setView({ kind: "plugins" }) },
+      { id: "view-daily-summary", group: "Go to", label: "Daily Summary", action: () => setView({ kind: "daily-summary" }) },
+      { id: "view-batch", group: "Go to", label: "Batch refresh", action: () => void openBatchRefresh() },
+      { id: "view-logs", group: "Go to", label: "Logs", action: () => setView({ kind: "logs" }) },
+      { id: "view-settings", group: "Go to", label: "Settings", action: () => setView({ kind: "settings" }) },
+    ];
+    const workspaces: CommandItem[] = (runtime?.plugins ?? []).filter(available).map((plugin) => ({
+      id: `plugin-${plugin.id}`,
+      group: "Workspaces",
+      label: plugin.name,
+      hint: plugin.id,
+      action: () => void selectPlugin(plugin),
+    }));
+    const actions: CommandItem[] = [
+      { id: "action-install", group: "Actions", label: "Install plugin", action: () => void install() },
+      { id: "theme-system", group: "Actions", label: "Theme: System", action: () => void changeTheme("system") },
+      { id: "theme-light", group: "Actions", label: "Theme: Light", action: () => void changeTheme("light") },
+      { id: "theme-dark", group: "Actions", label: "Theme: Dark", action: () => void changeTheme("dark") },
+    ];
+    if (runtime?.plugins.some((plugin) => plugin.browserDependent)) {
+      actions.push({ id: "action-bridge-check", group: "Actions", label: "Check browser connection", action: () => void checkBridge() });
+    }
+    return [...goTo, ...workspaces, ...actions];
+  }, [runtime, actualTheme]);
+
   return (
     <div className="app-shell">
-      <aside className="sidebar" aria-label="Infolens navigation">
-        <header className="brand"><span className="brand-mark" aria-hidden="true">IL</span><span>Infolens</span></header>
-        <nav className="plugin-nav" aria-label="Plugins">
-          <div className="nav-caption">Sources</div>
-          {runtime?.plugins.map((plugin) => (
-            <button className={`nav-item ${view.kind === "plugin" && plugin.id === view.id ? "is-selected" : ""}`} key={plugin.id} onClick={() => selectPlugin(plugin)} type="button">
-              <span className={`source-icon source-icon--${plugin.id}`} aria-hidden="true">{sourceInitial(plugin)}</span>
-              <span className="nav-label">{plugin.name}</span>
-              {plugin.badge ? <span className="nav-badge">{plugin.badge}</span> : <span />}
-              <Lifecycle state={plugin.state} />
-            </button>
-          ))}
-        </nav>
-        <nav className="utility-nav" aria-label="Application">
-           <button className={`nav-item utility ${view.kind === "plugins" ? "is-selected" : ""}`} onClick={() => setView({ kind: "plugins" })} type="button"><span className="utility-icon"><Plug size={17} /></span><span className="nav-label">Plugins</span></button>
-           <button className={`nav-item utility ${view.kind === "daily-summary" ? "is-selected" : ""}`} onClick={() => setView({ kind: "daily-summary" })} type="button"><span className="utility-icon"><FileText size={17} /></span><span className="nav-label">Daily Summary</span></button>
-           <button className={`nav-item utility ${view.kind === "batch" ? "is-selected" : ""}`} onClick={openBatchRefresh} type="button"><span className="utility-icon"><RefreshCw size={17} /></span><span className="nav-label">Batch refresh</span>{runtime?.activeBatch && <span className="nav-badge">{runtime.activeBatch.counts.remaining}</span>}</button>
-           <button className={`nav-item utility ${view.kind === "logs" ? "is-selected" : ""}`} onClick={() => setView({ kind: "logs" })} type="button"><span className="utility-icon"><ScrollText size={17} /></span><span className="nav-label">Logs</span></button>
-          <button className={`nav-item utility ${view.kind === "settings" ? "is-selected" : ""}`} onClick={() => setView({ kind: "settings" })} type="button"><span className="utility-icon"><Settings size={17} /></span><span className="nav-label">Settings</span></button>
-        </nav>
-      </aside>
+      <InstrumentRail runtime={runtime} view={view} onSelectPlugin={(plugin) => void selectPlugin(plugin)} onOpenView={setView} onOpenBatch={() => void openBatchRefresh()} onOpenPalette={() => setPaletteOpen(true)} />
 
       <main className="main-area">
         {runtimeRestarting && <div className="restart-bar" role="status"><LoaderCircle className="spinner" size={15} /> Restarting plugin services...</div>}
@@ -1039,6 +1012,7 @@ export function App() {
 
       {removeKey && runtime && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="remove-title"><TriangleAlert className="dialog-symbol danger" size={26} /><h2 id="remove-title">Remove plugin?</h2><p>The plugin package, retained content, settings, and logs will be permanently deleted.</p><div className="dialog-actions"><button onClick={() => setRemoveKey(undefined)}>Cancel</button><button className="danger-button" onClick={() => mutate(async () => { if (window.infolens) await window.infolens.removePlugin(removeKey); else await runtimeRequest(runtime, `/runtime/plugins/${encodeURIComponent(removeKey)}/remove`, { method: "DELETE" }); setRemoveKey(undefined); setManagedKey(undefined); }, "Plugin removed")}>Remove plugin</button></div></div></div>}
       {toast && <div className="toast" role="status"><span>{toast.message}</span>{toast.batchId && <button type="button" onClick={() => { setBatchId(toast.batchId); setView({ kind: "batch" }); setToast(undefined); }}><ExternalLink size={14} />{toast.actionLabel ?? "View results"}</button>}</div>}
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
     </div>
   );
 }
