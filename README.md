@@ -8,6 +8,9 @@ and reading workspace.
 The project is in active development. APIs, package contracts, and user
 interfaces may change between revisions.
 
+Current deployment work and open product decisions are tracked in the
+[project roadmap](ROADMAP.md).
+
 ## What It Includes
 
 The repository ships four bundled plugins:

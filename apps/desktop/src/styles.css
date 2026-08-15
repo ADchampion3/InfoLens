@@ -69,18 +69,19 @@ kbd { padding: 2px 5px; border: 1px solid var(--color-rule-2); border-bottom-wid
 /* ── Pages ─────────────────────────────────────────────────────────── */
 
 .host-page { height: 100%; overflow: auto; }
-.page-header { display: flex; align-items: center; justify-content: space-between; min-height: 80px; padding: 16px 28px; border-bottom: 1px solid var(--color-rule); background: var(--color-surface); }
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 80px; padding: 16px 28px; border-bottom: 1px solid var(--color-rule); background: var(--color-surface); }
 .page-header h1 { margin: 0; font-family: var(--font-display); font-size: 20px; line-height: 28px; letter-spacing: -0.01em; }
 .page-header p { margin: 2px 0 0; color: var(--color-muted); font-size: 12px; }
+.page-header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
-.primary-button, .danger-button, .detail-actions button, .dialog-actions > button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 0 13px; border: 1px solid var(--color-rule-2); border-radius: var(--radius-ctl); background: var(--color-surface); color: var(--color-ink); font-size: 13px; font-weight: 600; cursor: pointer; transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
-.detail-actions button:hover, .dialog-actions > button:hover { border-color: var(--color-faint); background: var(--color-sink); }
+.primary-button, .danger-button, .detail-actions button, .dialog-actions > button, .page-header-actions > button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 0 13px; border: 1px solid var(--color-rule-2); border-radius: var(--radius-ctl); background: var(--color-surface); color: var(--color-ink); font-size: 13px; font-weight: 600; cursor: pointer; transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+.detail-actions button:hover, .dialog-actions > button:hover, .page-header-actions > button:not(.primary-button):hover { border-color: var(--color-faint); background: var(--color-sink); }
 .primary-button { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); }
 .primary-button:hover { border-color: var(--color-accent-hover); background: var(--color-accent-hover); }
 .primary-button:active { background: var(--color-accent-hover); }
 .danger-button { border-color: color-mix(in srgb, var(--color-bad) 50%, var(--color-rule)) !important; color: var(--color-bad); background: var(--color-surface); }
 .danger-button:hover { border-color: var(--color-bad) !important; background: var(--color-bad-soft); }
-.primary-button:disabled, .danger-button:disabled, .detail-actions button:disabled, .dialog-actions > button:disabled { cursor: not-allowed; opacity: 0.5; }
+.primary-button:disabled, .danger-button:disabled, .detail-actions button:disabled, .dialog-actions > button:disabled, .page-header-actions > button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 /* ── Plugins ───────────────────────────────────────────────────────── */
 
@@ -456,6 +457,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 
 @media (max-width: 900px) {
+  .page-header { align-items: flex-start; flex-direction: column; }
+  .page-header-actions { width: 100%; justify-content: flex-start; }
   .batch-result-layout, .batch-selection-layout { grid-template-columns: 1fr; }
   .batch-history { border-top: 1px solid var(--color-rule); border-left: 0; max-height: 210px; }
   .batch-toolbar, .batch-submit-bar { align-items: flex-start; flex-direction: column; }

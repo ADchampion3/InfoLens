@@ -211,3 +211,43 @@ test("Market Runtime rejects digest, manifest, and Bundled identity conflicts wi
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
+
+test("local ZIP imports use the shared archive boundary without Market provenance", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-local-archive-runtime-"));
+  const archive = await createArtifact(temporaryRoot, "local-reader");
+  let running;
+  try {
+    running = await startRuntime(temporaryRoot);
+    const origin = running.info.origin;
+    const imported = await request(origin, "/runtime/plugins/install-archive", {
+      method: "POST",
+      headers: { "x-infolens-operation-id": "local-import-1" },
+      body: JSON.stringify({ archivePath: archive.archivePath }),
+    });
+    assert.equal(imported.response.status, 201, JSON.stringify(imported.body));
+    assert.equal(imported.body.pluginId, "local-reader");
+
+    const info = await request(origin, "/runtime/info");
+    const installed = info.body.plugins.find(({ id }) => id === "local-reader");
+    assert.equal(installed.origin, "local");
+    assert.equal(installed.provenance.releaseStatus, "unknown");
+    assert.equal(installed.provenance.observedSha256, archive.release.artifact.sha256);
+    assert.equal(installed.provenance.expectedSha256, undefined);
+    assert.equal(installed.provenance.publisher, undefined);
+
+    const duplicate = await request(origin, "/runtime/plugins/install-archive", {
+      method: "POST",
+      body: JSON.stringify({ archivePath: archive.archivePath }),
+    });
+    assert.equal(duplicate.response.status, 409);
+    assert.equal(duplicate.body.code, "DUPLICATE_PLUGIN_ID");
+
+    await access(path.join(temporaryRoot, "plugins", "local-reader", "manifest.json"));
+    const removal = await request(origin, "/runtime/plugins/local-reader/remove", { method: "DELETE" });
+    assert.equal(removal.response.status, 200);
+    await assert.rejects(access(path.join(temporaryRoot, "plugins", "local-reader")));
+  } finally {
+    if (running) await stopRuntime(running.child);
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});

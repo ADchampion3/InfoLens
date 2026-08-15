@@ -306,6 +306,7 @@ interface Window {
     copyFilteredLogs(filters?: Partial<LogFilters>): Promise<{ count: number }>;
     exportFilteredLogs(filters?: Partial<LogFilters>): Promise<{ canceled: boolean; count: number }>;
     selectPluginFolder(): Promise<string | null>;
+    selectPluginArchive(): Promise<string | null>;
     copyText(value: string): Promise<void>;
     downloadText(value: { filename: string; text: string }): Promise<{ canceled: boolean; filename?: string }>;
     removePlugin(id: string): Promise<void>;

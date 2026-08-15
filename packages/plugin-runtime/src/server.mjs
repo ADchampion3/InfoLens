@@ -918,6 +918,7 @@ async function commitPluginCandidate(stageRoot, validated, { origin, release, ex
   let activated;
   let committed = false;
   try {
+    await mkdir(pluginsRoot, { recursive: true });
     await rename(stageRoot, destination);
     committed = true;
     const relocated = {
@@ -959,7 +960,13 @@ async function commitPluginCandidate(stageRoot, validated, { origin, release, ex
             installedAt: new Date().toISOString(),
             ...(operationId ? { operationId } : {}),
           }
-          : { origin: "local", version: validated.manifest.version, releaseStatus: "unknown", installedAt: new Date().toISOString() },
+        : {
+          origin: "local",
+          version: validated.manifest.version,
+          releaseStatus: "unknown",
+          ...(observedSha256 ? { observedSha256 } : {}),
+          installedAt: new Date().toISOString(),
+        },
       },
     }));
     activated = await activatePlugin(relocated, destination);
@@ -1033,26 +1040,36 @@ async function installPlugin(sourcePath) {
   }
 }
 
-async function installMarketPlugin({ archivePath, expectedSha256, observedSha256, release, operationId, signal } = {}) {
-  if (typeof archivePath !== "string" || !path.isAbsolute(archivePath)) throw new ContractError("INVALID_MARKET_ARCHIVE", "Market installation requires an absolute temporary archive path");
+async function installArchive({ archivePath, expectedSha256, observedSha256, release, origin = "market", operationId, signal } = {}) {
+  if (origin !== "market" && origin !== "local") throw new ContractError("INVALID_INSTALL_ORIGIN", "Plugin archive installation has an unsupported origin");
+  if (typeof archivePath !== "string" || !path.isAbsolute(archivePath)) throw new ContractError("INVALID_PLUGIN_ARCHIVE", "Plugin archive installation requires an absolute archive path");
   const archive = path.resolve(archivePath);
   const managedRelation = path.relative(pluginsRoot, archive);
-  if (!managedRelation.startsWith("..") && !path.isAbsolute(managedRelation)) throw new ContractError("INVALID_MARKET_ARCHIVE", "Market archive must remain outside the managed Plugin Directory");
-  const releaseArtifact = marketReleaseArtifact(release);
-  const expected = String(expectedSha256 ?? releaseArtifact.sha256 ?? "").toLowerCase();
-  if (releaseArtifact.sha256 && String(releaseArtifact.sha256).toLowerCase() !== expected) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market release digest does not match the expected archive digest");
+  if (!managedRelation.startsWith("..") && !path.isAbsolute(managedRelation)) throw new ContractError("INVALID_PLUGIN_ARCHIVE", "Plugin archive must remain outside the managed Plugin Directory");
+  const isMarket = origin === "market";
+  const releaseArtifact = isMarket ? marketReleaseArtifact(release) : undefined;
+  const expected = isMarket ? String(expectedSha256 ?? releaseArtifact.sha256 ?? "").toLowerCase() : undefined;
+  if (isMarket && releaseArtifact.sha256 && String(releaseArtifact.sha256).toLowerCase() !== expected) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market release digest does not match the expected archive digest");
   const observed = await sha256File(archive);
-  if (!/^[0-9a-f]{64}$/u.test(expected) || observed !== expected) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market archive SHA-256 does not match the selected Registry release");
-  if (observedSha256 && observedSha256 !== observed) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market archive SHA-256 differs from the Host observation");
-  if (signal?.aborted) throw new ContractError("MARKET_INSTALL_CANCELLED", "Market installation was cancelled before extraction");
-  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-market-runtime-"));
+  if (isMarket && (!/^[0-9a-f]{64}$/u.test(expected) || observed !== expected)) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market archive SHA-256 does not match the selected Registry release");
+  if (isMarket && observedSha256 && observedSha256 !== observed) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market archive SHA-256 differs from the Host observation");
+  if (signal?.aborted) throw new ContractError(isMarket ? "MARKET_INSTALL_CANCELLED" : "PLUGIN_IMPORT_CANCELLED", "Plugin archive installation was cancelled before extraction");
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), isMarket ? "infolens-market-runtime-" : "infolens-plugin-import-"));
   const stageRoot = path.join(temporaryRoot, "package");
   try {
     await extractZip(archive, stageRoot);
-    return await validateAndCommitCandidate(stageRoot, { origin: "market", release, expectedSha256: expected, observedSha256: observed, operationId, signal });
+    return await validateAndCommitCandidate(stageRoot, { origin, release, expectedSha256: expected, observedSha256: observed, operationId, signal });
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+async function installMarketPlugin(options = {}) {
+  return installArchive({ ...options, origin: "market" });
+}
+
+async function installLocalArchive(archivePath, options = {}) {
+  return installArchive({ ...options, archivePath, origin: "local" });
 }
 
 async function removePlugin(identifier) {
@@ -1297,6 +1314,25 @@ const server = createServer(async (request, response) => {
       const failure = errorDetails(error);
       const entry = await runtimeLogger.error("plugin-install-failed", { ...failure, operationId });
       json(response, failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : 400, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/plugins/install-archive" && request.method === "POST") {
+    const operationId = request.headers["x-infolens-operation-id"] || randomUUID();
+    await runtimeLogger.info("plugin-import-started", { operationId });
+    const requestContext = requestAbortContext(request, response);
+    try {
+      const body = await readJsonBody(request);
+      const id = await installLocalArchive(body.archivePath, { operationId, signal: requestContext.signal });
+      const entry = await runtimeLogger.info("plugin-import-completed", { operationId, pluginId: id });
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, 201, { ok: true, pluginId: id, logId: entry.id, operationId });
+    } catch (error) {
+      const failure = errorDetails(error);
+      const entry = await runtimeLogger.error("plugin-import-failed", { ...failure, operationId });
+      const status = failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : String(failure.code).startsWith("ARCHIVE_") ? 422 : 400;
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, status, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+    } finally {
+      requestContext.cleanup();
     }
     return;
   }

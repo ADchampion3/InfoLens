@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("infolens", {
   copyFilteredLogs: (filters) => ipcRenderer.invoke("logs:copy-filtered", filters),
   exportFilteredLogs: (filters) => ipcRenderer.invoke("logs:export-filtered", filters),
   selectPluginFolder: () => ipcRenderer.invoke("plugin:select-folder"),
+  selectPluginArchive: () => ipcRenderer.invoke("plugin:select-archive"),
   copyText: (value) => ipcRenderer.invoke("clipboard:write-text", value),
   downloadText: (value) => ipcRenderer.invoke("daily-summary:download", value),
   removePlugin: (id) => ipcRenderer.invoke("plugin:remove", id),

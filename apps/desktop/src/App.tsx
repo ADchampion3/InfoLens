@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FolderPlus, ListChecks,
+  AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FileArchive, FolderPlus, ListChecks,
   LoaderCircle, RefreshCw, RotateCcw, ScrollText, Trash2, TriangleAlert,
 } from "lucide-react";
 import {
@@ -886,7 +886,18 @@ export function App() {
       const result = await runtimeRequest<{ pluginId: string }>(runtime, "/runtime/plugins/install", { method: "POST", body: JSON.stringify({ sourcePath }) });
       setManagedKey(result.pluginId);
       setView({ kind: "plugins" });
-    }, "Plugin installed and enabled");
+    }, "Plugin folder installed and enabled");
+  };
+
+  const importArchive = async () => {
+    if (!runtime) return;
+    const archivePath = window.infolens ? await window.infolens.selectPluginArchive() : window.prompt("Plugin ZIP path");
+    if (!archivePath) return;
+    await mutate(async () => {
+      const result = await runtimeRequest<{ pluginId: string }>(runtime, "/runtime/plugins/install-archive", { method: "POST", body: JSON.stringify({ archivePath }) });
+      setManagedKey(result.pluginId);
+      setView({ kind: "plugins" });
+    }, "Plugin ZIP imported and enabled");
   };
 
   const refreshMarket = async () => {
@@ -1003,7 +1014,8 @@ export function App() {
       action: () => void selectPlugin(plugin),
     }));
     const actions: CommandItem[] = [
-      { id: "action-install", group: "Actions", label: "Install plugin", action: () => void install() },
+      { id: "action-install-folder", group: "Actions", label: "Install local plugin folder", action: () => void install() },
+      { id: "action-import-archive", group: "Actions", label: "Import plugin ZIP", action: () => void importArchive() },
       { id: "theme-system", group: "Actions", label: "Theme: System", action: () => void changeTheme("system") },
       { id: "theme-light", group: "Actions", label: "Theme: Light", action: () => void changeTheme("light") },
       { id: "theme-dark", group: "Actions", label: "Theme: Dark", action: () => void changeTheme("dark") },
@@ -1033,7 +1045,7 @@ export function App() {
         {status === "ready" && !runtimeRestarting && view.kind === "daily-summary" && runtime && <DailySummaryView runtime={runtime} onOpenBatch={openBatchRefresh} onNotice={showNotice} selectedPluginIds={dailySummarySelection} onSelectionChange={setDailySummarySelection} />}
         {status === "ready" && view.kind === "plugins" && runtime && (
           <section className="host-page plugin-manager">
-            <header className="page-header"><div><h1>Plugins</h1><p>Installed packages and local diagnostics</p></div><button className="primary-button" onClick={install}><FolderPlus size={17} />Install plugin</button></header>
+            <header className="page-header"><div><h1>Plugins</h1><p>Installed packages and local diagnostics</p></div><div className="page-header-actions"><button type="button" onClick={install}><FolderPlus size={17} />Install folder</button><button type="button" className="primary-button" onClick={importArchive}><FileArchive size={17} />Import ZIP</button></div></header>
             <div className="manager-layout">
               <div className="package-list" role="listbox" aria-label="Installed plugins">
                 {runtime.plugins.map((plugin) => <button key={plugin.id} className={managedKey === plugin.id ? "package-row selected" : "package-row"} onClick={() => setManagedKey(plugin.id)}><span className={`source-icon source-icon--${plugin.id}`}>{sourceInitial(plugin)}</span><span><strong>{plugin.name}</strong><small>{plugin.version}</small></span><Lifecycle state={plugin.state} /></button>)}

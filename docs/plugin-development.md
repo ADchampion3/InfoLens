@@ -606,10 +606,14 @@ cleaned up and does not publish a partial artifact.
 
 ## Install, Replace, and Release Checklist
 
-The current Host installs a local package directory. In the desktop app, choose
-the directory produced by <code>pack</code>; the Host validates it, copies it
-to the managed plugin directory, creates its Adapter Scope, and enables it.
-Installation does not follow the original source directory after copying.
+The current Host supports both local package directories and local ZIP
+archives. In the desktop app, choose the directory produced by <code>pack</code>
+or use <code>Import ZIP</code> for a deterministic archive. The Host validates
+the selected package, copies or safely extracts it into the managed plugin
+directory, creates its Adapter Scope, and enables it. Archive imports reuse the
+Market archive safety boundary but remain <code>local</code> provenance and do
+not imply Registry approval. Installation does not follow the original source
+directory after copying.
 
 The package is trusted code, not a security sandbox. An existing plugin ID must
 be removed before another package with the same ID is installed. Removal stops

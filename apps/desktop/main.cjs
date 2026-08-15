@@ -414,6 +414,17 @@ ipcMain.handle("plugin:select-folder", async () => {
   const result = await dialog.showOpenDialog(mainWindow, { title: "Install plugin", properties: ["openDirectory"] });
   return result.canceled ? null : result.filePaths[0];
 });
+ipcMain.handle("plugin:select-archive", async () => {
+  if (process.env.INFOLENS_TEST_CONTROL === "1" && process.env.INFOLENS_TEST_IMPORT_ARCHIVE_PATH) {
+    return path.resolve(process.env.INFOLENS_TEST_IMPORT_ARCHIVE_PATH);
+  }
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Import plugin ZIP",
+    properties: ["openFile"],
+    filters: [{ name: "Plugin ZIP archives", extensions: ["zip"] }],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
 ipcMain.handle("clipboard:write-text", (_event, value) => { clipboard.writeText(String(value)); });
 ipcMain.handle("daily-summary:download", async (_event, value = {}) => {
   const filename = String(value.filename ?? "");
