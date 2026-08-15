@@ -18,6 +18,7 @@ import { InstrumentRail, Lifecycle, sourceInitial } from "./components/Instrumen
 import { CommandPalette } from "./components/CommandPalette";
 import { OverviewView } from "./components/OverviewView";
 import { BridgePanel } from "./components/BridgePanel";
+import { MarketView } from "./components/MarketView";
 import type { CommandItem } from "./components/CommandPalette";
 import { readJsonResponse, runtimeRequest } from "./runtime-api";
 import { useTheme } from "./useTheme";
@@ -724,6 +725,10 @@ export function App() {
   const [logFilters, setLogFilters] = useState<LogFilters>(INITIAL_LOG_FILTERS);
   const [focusedLogId, setFocusedLogId] = useState<string>();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [marketCatalog, setMarketCatalog] = useState<MarketCatalog>();
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketRefreshing, setMarketRefreshing] = useState(false);
+  const [marketOperation, setMarketOperation] = useState<MarketOperation>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const observedBatchIds = useRef(new Set<string>());
   const notifiedBatchIds = useRef(new Set<string>());
@@ -808,6 +813,20 @@ export function App() {
     }
   }), []);
 
+  useEffect(() => window.infolens?.onMarketProgress((operation) => setMarketOperation(operation)), []);
+
+  useEffect(() => {
+    if (view.kind !== "market" || !window.infolens) return;
+    let active = true;
+    setMarketLoading(true);
+    window.infolens.getMarketCatalog().then((catalog) => {
+      if (active) setMarketCatalog(catalog);
+    }).catch((error) => {
+      if (active) showNotice(error instanceof Error ? error.message : "Market catalog is unavailable.");
+    }).finally(() => { if (active) setMarketLoading(false); });
+    return () => { active = false; };
+  }, [view.kind]);
+
   const { theme, actualTheme, changeTheme } = useTheme(runtime, setRuntime, iframeRef, view);
 
   useEffect(() => {
@@ -868,6 +887,41 @@ export function App() {
       setManagedKey(result.pluginId);
       setView({ kind: "plugins" });
     }, "Plugin installed and enabled");
+  };
+
+  const refreshMarket = async () => {
+    if (!window.infolens) return;
+    setMarketRefreshing(true);
+    try { setMarketCatalog(await window.infolens.refreshMarketCatalog()); showNotice("Market catalog refreshed"); }
+    catch (error) {
+      await window.infolens.getMarketCatalog().then(setMarketCatalog).catch(() => {});
+      showNotice(error instanceof Error ? error.message : "Market refresh failed.");
+    }
+    finally { setMarketRefreshing(false); }
+  };
+
+  const installMarket = async (release: MarketRelease) => {
+    if (!window.infolens) return;
+    try {
+      const result = await window.infolens.installMarketPlugin({ pluginId: release.pluginId, version: release.version });
+      setMarketOperation(await window.infolens.getMarketOperation(result.operationId));
+      await refreshInfo();
+      showNotice(`${release.name} installed and enabled`);
+    } catch (error) { showNotice(error instanceof Error ? error.message : "Market installation failed."); }
+  };
+
+  const cancelMarket = () => {
+    if (marketOperation && window.infolens) void window.infolens.cancelMarketInstall(marketOperation.operationId);
+  };
+
+  const retryMarket = async () => {
+    if (!marketOperation || !window.infolens) return;
+    try {
+      const result = await window.infolens.retryMarketInstall(marketOperation.operationId);
+      setMarketOperation(await window.infolens.getMarketOperation(result.operationId));
+      await refreshInfo();
+      showNotice(`${marketOperation.pluginId} installed and enabled`);
+    } catch (error) { showNotice(error instanceof Error ? error.message : "Market retry failed."); }
   };
 
   const checkBridge = async () => {
@@ -934,6 +988,7 @@ export function App() {
   const commands = useMemo<CommandItem[]>(() => {
     const goTo: CommandItem[] = [
       { id: "view-overview", group: "Go to", label: "Overview", action: () => setView({ kind: "overview" }) },
+      { id: "view-market", group: "Go to", label: "Plugin Market", action: () => setView({ kind: "market" }) },
       { id: "view-plugins", group: "Go to", label: "Plugins", action: () => setView({ kind: "plugins" }) },
       { id: "view-daily-summary", group: "Go to", label: "Daily Summary", action: () => setView({ kind: "daily-summary" }) },
       { id: "view-batch", group: "Go to", label: "Batch refresh", action: () => void openBatchRefresh() },
@@ -973,6 +1028,7 @@ export function App() {
         )}
         {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? "Plugin"} workspace`} allow="clipboard-write" />}
         {status === "ready" && view.kind === "overview" && runtime && <OverviewView runtime={runtime} onOpenPlugin={(plugin) => void selectPlugin(plugin)} onOpenBatch={() => void openBatchRefresh()} onOpenDailySummary={() => setView({ kind: "daily-summary" })} onOpenSettings={() => setView({ kind: "settings" })} />}
+        {status === "ready" && view.kind === "market" && <MarketView catalog={marketCatalog} loading={marketLoading} refreshing={marketRefreshing} operation={marketOperation} onRefresh={() => void refreshMarket()} onInstall={installMarket} onCancel={cancelMarket} onRetry={() => void retryMarket()} />}
         {status === "ready" && view.kind === "batch" && runtime && <BatchRefreshView runtime={runtime} initialBatchId={batchId} onBatchIdChange={setBatchId} onBatchStarted={observeBatch} onOpenLogs={openBatchLogs} />}
         {status === "ready" && !runtimeRestarting && view.kind === "daily-summary" && runtime && <DailySummaryView runtime={runtime} onOpenBatch={openBatchRefresh} onNotice={showNotice} selectedPluginIds={dailySummarySelection} onSelectionChange={setDailySummarySelection} />}
         {status === "ready" && view.kind === "plugins" && runtime && (
@@ -984,6 +1040,7 @@ export function App() {
                 {runtime.rejectedPlugins.map((plugin) => <button key={plugin.package} className={managedKey === plugin.package ? "package-row selected" : "package-row"} onClick={() => setManagedKey(plugin.package)}><span className="source-icon"><TriangleAlert size={15} /></span><span><strong>{plugin.name ?? plugin.package}</strong><small>Incompatible</small></span><AlertCircle className="danger" size={15} /></button>)}
               </div>
               <div className="package-detail">
+                {managed?.provenance && <div className="package-provenance"><strong>Origin: {managed.origin ?? managed.provenance.origin}</strong>{managed.releaseStatus && <span>Release status: {managed.releaseStatus}</span>}{managed.provenance.publisher && <span>Publisher: {managed.provenance.publisher}</span>}{managed.provenance.expectedSha256 && <span className="path-value">SHA-256: {managed.provenance.expectedSha256}</span>}</div>}
                 {managed && <><div className="detail-title"><span><h2>{managed.name}</h2><p>{managed.id} · {managed.version}</p></span><label className="toggle"><input type="checkbox" checked={managed.enabled} onChange={(event) => mutate(() => runtimeRequest(runtime, `/runtime/plugins/${managed.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: event.target.checked }) }), event.target.checked ? `${managed.name} enabled` : `${managed.name} disabled`)} /><span />Enabled</label></div><dl><dt>State</dt><dd>{managed.state}</dd><dt>Package</dt><dd className="path-value">{managed.packagePath}</dd><dt>Last successful refresh</dt><dd>{managed.statusSnapshot?.lastSuccessfulRefreshAt ?? "Not yet recorded"}</dd>{managed.statusSnapshot?.failure && <><dt>Latest failure</dt><dd className="failure-summary"><span>{managed.statusSnapshot.failure.code}: {managed.statusSnapshot.failure.message}</span><button type="button" onClick={() => openFailureLogs(managed.id, managed.statusSnapshot!.failure!)}>View matching logs</button></dd></>}</dl><div className="detail-actions"><button onClick={() => mutate(async () => { const value = await runtimeRequest<{ diagnostics: string }>(runtime, `/runtime/plugins/${managed.id}/diagnostics`); if (window.infolens) await window.infolens.copyText(value.diagnostics); else await navigator.clipboard.writeText(value.diagnostics); }, "Diagnostics copied")}><Copy size={16} />Copy diagnostics</button><button className="danger-button" onClick={() => setRemoveKey(managed.id)}><Trash2 size={16} />Remove plugin</button></div></>}
                 {rejected && <><div className="detail-title"><span><h2>{rejected.name ?? rejected.package}</h2><p>{rejected.version ?? "Invalid package"}</p></span><span className="incompatible">Incompatible</span></div><div className="failure-panel"><strong>{rejected.code}</strong><p>{rejected.message}</p></div><dl><dt>Package</dt><dd className="path-value">{rejected.packagePath}</dd></dl><div className="detail-actions"><button className="danger-button" onClick={() => setRemoveKey(rejected.package)}><Trash2 size={16} />Remove package</button></div></>}
               </div>
@@ -1005,7 +1062,7 @@ export function App() {
         )}
       </main>
 
-      {removeKey && runtime && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="remove-title"><TriangleAlert className="dialog-symbol danger" size={26} /><h2 id="remove-title">Remove plugin?</h2><p>The plugin package, retained content, settings, and logs will be permanently deleted.</p><div className="dialog-actions"><button onClick={() => setRemoveKey(undefined)}>Cancel</button><button className="danger-button" onClick={() => mutate(async () => { if (window.infolens) await window.infolens.removePlugin(removeKey); else await runtimeRequest(runtime, `/runtime/plugins/${encodeURIComponent(removeKey)}/remove`, { method: "DELETE" }); setRemoveKey(undefined); setManagedKey(undefined); }, "Plugin removed")}>Remove plugin</button></div></div></div>}
+      {removeKey && runtime && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="remove-title"><TriangleAlert className="dialog-symbol danger" size={26} /><h2 id="remove-title">Remove plugin?</h2><p>The package, Plugin-owned data, Adapter Scope, Host State entries, and retained logs will be permanently deleted.</p><div className="dialog-actions"><button onClick={() => setRemoveKey(undefined)}>Cancel</button><button className="danger-button" onClick={() => mutate(async () => { if (window.infolens) await window.infolens.removePlugin(removeKey); else await runtimeRequest(runtime, `/runtime/plugins/${encodeURIComponent(removeKey)}/remove`, { method: "DELETE" }); setRemoveKey(undefined); setManagedKey(undefined); }, "Plugin removed")}>Remove plugin</button></div></div></div>}
       {toast && <div className="toast" role="status"><span>{toast.message}</span>{toast.batchId && <button type="button" onClick={() => { setBatchId(toast.batchId); setView({ kind: "batch" }); setToast(undefined); }}><ExternalLink size={14} />{toast.actionLabel ?? "View results"}</button>}</div>}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
     </div>

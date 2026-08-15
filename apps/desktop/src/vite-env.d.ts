@@ -14,6 +14,33 @@ interface HostState {
   lastSelection: string | null;
   theme: ThemePreference;
   statusSnapshots: Record<string, StatusSnapshot>;
+  pluginInstallations: Record<string, PluginInstallation>;
+}
+
+interface PluginInstallation {
+  origin: "market" | "local" | "bundled";
+  version?: string;
+  name?: string;
+  description?: string;
+  registryUrl?: string;
+  indexUrl?: string;
+  artifactUrl?: string;
+  artifactSize?: number;
+  publisher?: string;
+  license?: string;
+  categories?: string[];
+  changelog?: string;
+  contractVersion?: string;
+  minHostVersion?: string;
+  platforms?: string[];
+  architectures?: string[];
+  publishedAt?: string;
+  expectedSha256?: string;
+  observedSha256?: string;
+  releaseStatus?: "current" | "retracted" | "incompatible" | "unknown";
+  retractionReason?: string;
+  installedAt?: string;
+  operationId?: string;
 }
 
 interface RuntimePlugin {
@@ -32,6 +59,73 @@ interface RuntimePlugin {
   apiBaseUrl: string;
   statusSnapshot?: StatusSnapshot;
   failure?: { code: string; message: string; logId?: string; operationId?: string; batchId?: string; timestamp?: string };
+  origin?: "market" | "local" | "bundled";
+  releaseStatus?: PluginInstallation["releaseStatus"];
+  provenance?: PluginInstallation;
+}
+
+interface MarketCompatibility {
+  compatible: boolean;
+  reasons: Array<{ code: string; message: string }>;
+}
+
+interface MarketRelease {
+  pluginId: string;
+  name: string;
+  description: string;
+  icon?: string;
+  publisher: string;
+  license: string;
+  categories: string[];
+  version: string;
+  changelog: string;
+  contractVersion: string;
+  minHostVersion: string;
+  platforms: string[];
+  architectures: string[];
+  artifact: { url: string; size: number; sha256: string };
+  publishedAt: string;
+  indexUrl?: string;
+  retraction?: { reason: string; at?: string };
+  compatibility: MarketCompatibility;
+  installable: boolean;
+}
+
+type MarketIndexRelease = Omit<MarketRelease, "compatibility" | "installable">;
+
+interface MarketPlugin {
+  pluginId: string;
+  name: string;
+  description: string;
+  icon?: string;
+  publisher: string;
+  license: string;
+  categories: string[];
+  releases: MarketRelease[];
+  latestCompatible?: string;
+}
+
+interface MarketCatalog {
+  index?: { schemaVersion: number; generatedAt?: string; registry?: { name?: string; source?: string }; releases: MarketIndexRelease[] };
+  cachedAt?: string;
+  cacheAgeMs?: number;
+  offline: boolean;
+  connected: boolean;
+  releases: MarketRelease[];
+  plugins: MarketPlugin[];
+}
+
+interface MarketOperation {
+  operationId: string;
+  pluginId: string;
+  version: string;
+  phase: "download" | "verification" | "extraction" | "package-validation" | "activation" | "complete" | "cancelled" | "failed";
+  state: "running" | "succeeded" | "cancelled" | "failed";
+  progress?: { received: number; total?: number };
+  observedSha256?: string;
+  startedAt: string;
+  completedAt?: string;
+  error?: { code: string; message: string };
 }
 
 type BrowserStatusOverall = "connected" | "degraded" | "disconnected" | "unknown";
@@ -201,6 +295,12 @@ interface LogQueryRequest {
 interface Window {
   infolens?: {
     getRuntimeInfo(): Promise<RuntimeInfo | undefined>;
+    getMarketCatalog(query?: string): Promise<MarketCatalog>;
+    refreshMarketCatalog(): Promise<MarketCatalog>;
+    installMarketPlugin(request: { pluginId: string; version: string }): Promise<{ operationId: string; result?: unknown }>;
+    cancelMarketInstall(operationId: string): Promise<boolean>;
+    getMarketOperation(operationId: string): Promise<MarketOperation | undefined>;
+    retryMarketInstall(operationId: string): Promise<{ operationId: string; result?: unknown }>;
     queryLogs(request?: LogQueryRequest): Promise<LogPage>;
     copyLogEntry(id: string): Promise<{ count: number }>;
     copyFilteredLogs(filters?: Partial<LogFilters>): Promise<{ count: number }>;
@@ -214,5 +314,6 @@ interface Window {
     testWriteLog(message: string): Promise<LogEntry>;
     testLogQueryCount(): Promise<number>;
     onRuntimeStatus(listener: (event: RuntimeStatusEvent) => void): () => void;
+    onMarketProgress(listener: (operation: MarketOperation) => void): () => void;
   };
 }

@@ -25,6 +25,7 @@
     "test:browser-collection": "node --test tests/browser-collection.test.mjs",
     "test:plugin-task-scheduling": "node --test tests/plugin-task-scheduling.test.mjs",
     "test:plugin-lifecycle": "node --test tests/plugin-lifecycle.test.mjs",
+    "test:plugin-market": "node --test tests/plugin-market.test.mjs tests/plugin-market-runtime.test.mjs",
     "test:release-candidate": "npm run package:release && node --test tests/release-candidate.test.mjs",
     "test:release-evidence": "node --test tests/release-evidence.test.mjs",
     "verify:real-source": "node scripts/verify-real-source.mjs",

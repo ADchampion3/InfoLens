@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@infolens/bundled-opencli": "1.8.6",
+    "@infolens/plugin-market": "0.2.0",
     "@infolens/release-metadata": "0.2.0",
     "semver": "^7.6.3"
   },

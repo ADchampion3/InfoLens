@@ -31,6 +31,7 @@ Commands:
   preview <path>              Run an isolated Runtime and serve the Workspace
   adapters list <path>        List bundled and Provided OpenCLI Adapters
   pack <path>                 Validate and publish a staged Plugin package
+  publish <path>              Pack and publish an immutable Market release
   help                        Show this help
 
 Options:
@@ -38,6 +39,16 @@ Options:
   --target-host-version <v>  Override only the Minimum Host Version comparison
   --timeout <milliseconds>   Set the doctor phase timeout (default: 10000)
   --out <path>                Output package path for pack
+  --registry-root <path>      Local static Registry directory for publish
+  --publisher <name>          Publisher name for publish metadata
+  --approved-by <name>        Maintainer approval name for publish metadata
+  --license <name>            License identifier for publish metadata
+  --category <name>           Category for publish metadata
+  --description <text>        Description for publish metadata
+  --changelog <text>          Changelog for publish metadata
+  --platform <name>           Target platform for publish metadata
+  --arch <name>               Target architecture for publish metadata
+  --index-url <url>           Official Registry index URL for publish metadata
 
 Path defaults:
   Omitted plugin paths default to the current directory
@@ -55,6 +66,7 @@ Examples:
   infolens-plugin init .\\my-plugin --check --format text
   infolens-plugin doctor . --format text
   infolens-plugin pack . --out ..\\my-plugin.infolens-plugin
+  infolens-plugin publish . --registry-root .\\market-registry --approved-by "Infolens Maintainer"
 
 Operational commands return stable JSON by default. Use --format text for a
 compact summary with failed check IDs, codes, phases, and next actions.
@@ -240,14 +252,15 @@ async function readManifest(packageRoot) {
 }
 
 async function loadDependencies() {
-  const [release, contract, opencli, scope, workspace] = await Promise.all([
+  const [release, contract, opencli, scope, workspace, market] = await Promise.all([
     import("@infolens/release-metadata"),
     import("@infolens/plugin-runtime/contract"),
     import("@infolens/plugin-runtime/opencli-adapter"),
     import("@infolens/plugin-runtime/adapter-scope"),
     import("@infolens/plugin-runtime/workspace-diagnostics"),
+    import("@infolens/plugin-market"),
   ]);
-  return { release, contract, opencli, scope, workspace };
+  return { release, contract, opencli, scope, workspace, market };
 }
 
 async function resolveContext(deps, targetOption) {
@@ -898,10 +911,63 @@ async function runPack(packageRoot, deps, context, output, timeoutMs) {
   }
 }
 
+async function runPublish(packageRoot, deps, context, options, timeoutMs) {
+  const manifest = await readManifest(packageRoot);
+  const result = baseResult("publish", context.environment, manifest, packageRoot);
+  addEnvironmentChecks(result);
+  if (context.bootstrapError) return { result: setFailure(result, context.bootstrapError, { id: "environment.bootstrap" }) };
+  if (context.targetError) return { result: setFailure(result, context.targetError, { phase: "arguments", checkId: "environment.target-host", id: "environment.target-host" }) };
+  if (!manifest?.id || !manifest.version) return { result: setFailure(result, codedError("INVALID_PACKAGE", "publish requires a readable Plugin manifest", "publish", "plugin.manifest"), { phase: "publish", checkId: "plugin.manifest", id: "plugin.manifest" }) };
+  const registryRoot = path.resolve(options.registry_root ?? path.join(process.cwd(), "market-registry"));
+  const stagingParent = await mkdtemp(path.join(os.tmpdir(), "infolens-market-publish-"));
+  const stagedPackage = path.join(stagingParent, `${manifest.id}.infolens-plugin`);
+  try {
+    const packed = await runPack(packageRoot, deps, context, stagedPackage, timeoutMs);
+    result.checks = packed.result.checks;
+    for (const key of ["plugin", "registrations", "health", "cleanup", "workspace", "integrity"]) if (packed.result[key] !== undefined) result[key] = packed.result[key];
+    if (!packed.result.ok) {
+      result.error = packed.result.error;
+      return { result };
+    }
+    const publisher = options.publisher ?? "Infolens Maintainer";
+    const release = await deps.market.publishMarketRelease({
+      packageRoot: stagedPackage,
+      registryRoot,
+      manifest: packed.result.plugin ? { ...manifest, ...packed.result.plugin } : manifest,
+      indexUrl: options.index_url,
+      metadata: {
+        description: options.description ?? manifest.description ?? `${manifest.name} Plugin`,
+        publisher,
+        approval: {
+          approvedBy: options.approved_by,
+          approvedAt: new Date().toISOString(),
+          publisher,
+        },
+        license: options.license ?? "UNLICENSED",
+        categories: [options.category ?? "General"],
+        changelog: options.changelog ?? "Initial stable release",
+        platforms: [options.platform ?? (process.platform === "win32" ? "windows" : process.platform)],
+        architectures: [options.arch ?? (process.arch === "x64" ? "x64" : process.arch)],
+      },
+    });
+    result.release = release.release;
+    result.artifact = { path: release.artifactPath, size: release.release.artifact.size, sha256: release.release.artifact.sha256 };
+    result.registryRoot = registryRoot;
+    result.ok = true;
+    addCheck(result, "market.archive", "info", "passed", { phase: "publication", details: { size: release.release.artifact.size, sha256: release.release.artifact.sha256 } });
+    addCheck(result, "market.registry", "info", "passed", { phase: "publication", details: { registryRoot } });
+    return { result };
+  } catch (error) {
+    return { result: setFailure(result, error, { phase: error.phase ?? "publish", checkId: error.checkId ?? "market.registry", id: error.checkId ?? "market.registry" }) };
+  } finally {
+    await rm(stagingParent, { recursive: true, force: true });
+  }
+}
+
 function parseOptions(argv) {
   const options = {};
   const positional = [];
-  const valueOptions = new Set(["target-host-version", "timeout", "out", "format", "id", "name"]);
+  const valueOptions = new Set(["target-host-version", "timeout", "out", "format", "id", "name", "registry-root", "publisher", "approved-by", "license", "category", "description", "changelog", "platform", "arch", "index-url"]);
   const flagOptions = new Set(["check"]);
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -972,12 +1038,13 @@ async function main(argv) {
     else if (command === "validate") outcome = await runValidate(packageRoot, deps, context);
     else if (command === "doctor") outcome = await runDoctor(packageRoot, deps, context, timeoutMs);
     else if (command === "pack") outcome = await runPack(packageRoot, deps, context, path.resolve(options.out ?? path.join(path.dirname(packageRoot), `${path.basename(packageRoot)}.infolens-plugin`)), timeoutMs);
+    else if (command === "publish") outcome = await runPublish(packageRoot, deps, context, options, timeoutMs);
     else if (command === "dev") outcome = await runDev(packageRoot, deps, context);
     else if (command === "preview") outcome = await runPreview(packageRoot, deps, context, timeoutMs);
     else if (command === "adapters" && positional[0] === "list") outcome = await runListAdapters(packageRoot, deps, context);
     else {
       const result = baseResult(command ?? "unknown", context.environment);
-      outcome = { result: setFailure(result, codedError("INVALID_ARGUMENTS", "Usage: infolens-plugin <init|validate|doctor|dev|preview|pack|adapters list> [plugin-path]", "arguments"), { phase: "arguments", id: "arguments" }) };
+      outcome = { result: setFailure(result, codedError("INVALID_ARGUMENTS", "Usage: infolens-plugin <init|validate|doctor|dev|preview|pack|publish|adapters list> [plugin-path]", "arguments"), { phase: "arguments", id: "arguments" }) };
     }
   } catch (error) {
     const result = baseResult(command ?? "unknown", context.environment, await readManifest(packageRoot), packageRoot);

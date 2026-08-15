@@ -19,6 +19,7 @@ import { refreshInputKey, sanitizeRefreshOptions } from "./refresh-options.mjs";
 import { BatchManager, BATCH_TERMINAL_STATES } from "./batch-manager.mjs";
 import { garbageCollectAdapterStore, preparePluginAdapterScope, removePluginAdapterScope } from "./adapter-scope.mjs";
 import { aggregateDailySummary } from "./daily-summary.mjs";
+import { extractZip, sha256File } from "@infolens/plugin-market/archive";
 
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
   ? path.resolve(process.env.INFOLENS_PROJECT_ROOT)
@@ -45,6 +46,11 @@ const batchStatePath = process.env.INFOLENS_BATCH_STATE_PATH ? path.resolve(proc
 const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID;
 const dailySummaryTimeZone = process.env.INFOLENS_DAILY_SUMMARY_TIME_ZONE || undefined;
 const dailySummaryNow = process.env.INFOLENS_DAILY_SUMMARY_NOW || undefined;
+let bundledPluginIds = new Set();
+try {
+  const value = JSON.parse(process.env.INFOLENS_BUNDLED_PLUGIN_IDS ?? "[]");
+  if (Array.isArray(value)) bundledPluginIds = new Set(value.filter((id) => typeof id === "string"));
+} catch {}
 const openCliRuntime = await resolveBundledOpenCli({ fallbackRoot: path.join(projectRoot, "resources", "opencli") });
 const openCliAdapter = createOpenCliAdapter(openCliRuntime);
 const validationRuntime = {
@@ -91,6 +97,49 @@ function errorDetails(error) {
     code: typeof error?.code === "string" ? error.code : error instanceof ContractError ? error.code : "PLUGIN_ERROR",
     message: shortRefreshMessage(error instanceof Error ? error.message : String(error), "Plugin operation failed"),
   };
+}
+
+function installationRecord(id) {
+  return hostState.snapshot().pluginInstallations?.[id];
+}
+
+async function recordInstallation(id, record) {
+  await hostState.update((state) => ({
+    ...state,
+    pluginInstallations: { ...(state.pluginInstallations ?? {}), [id]: record },
+  }));
+}
+
+function defaultInstallationRecord(id, version) {
+  return {
+    origin: bundledPluginIds.has(id) ? "bundled" : "local",
+    version,
+    releaseStatus: "unknown",
+    installedAt: new Date().toISOString(),
+  };
+}
+
+async function reconcileMarketProvenance(releases = []) {
+  const byRelease = new Map(
+    (Array.isArray(releases) ? releases : [])
+      .filter((release) => typeof release?.pluginId === "string" && typeof release?.version === "string")
+      .map((release) => [`${release.pluginId}@${release.version}`, release]),
+  );
+  return hostState.update((state) => {
+    const pluginInstallations = { ...(state.pluginInstallations ?? {}) };
+    for (const [id, record] of Object.entries(pluginInstallations)) {
+      if (record.origin !== "market") continue;
+      const release = byRelease.get(`${id}@${record.version}`);
+      if (!release) {
+        pluginInstallations[id] = { ...record, releaseStatus: "unknown", retractionReason: undefined };
+      } else if (release.retraction) {
+        pluginInstallations[id] = { ...record, releaseStatus: "retracted", retractionReason: release.retraction.reason };
+      } else {
+        pluginInstallations[id] = { ...record, releaseStatus: "current", retractionReason: undefined };
+      }
+    }
+    return { ...state, pluginInstallations };
+  });
 }
 
 function emitStatus(type, pluginId, details = {}) {
@@ -539,6 +588,7 @@ async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticM
     setPluginStatus(plugin, "failed", { failure: correlatedFailure });
     emitStatus("activation-failed", manifest.id, correlatedFailure);
   }
+  return plugin;
 }
 
 function manifestDetails(manifest = {}) {
@@ -585,6 +635,7 @@ async function discoverPlugins() {
       compatiblePlugins.push(descriptor);
       const id = validated.manifest.id;
       const current = hostState.snapshot();
+      if (!current.pluginInstallations?.[id]) await recordInstallation(id, defaultInstallationRecord(id, validated.manifest.version));
       if (!current.statusSnapshots[id]) {
         await hostState.update((state) => ({ ...state, enabledPluginIds: [...state.enabledPluginIds, id] }));
       }
@@ -602,6 +653,7 @@ async function discoverPlugins() {
 function publicPlugin(plugin, origin) {
   const id = plugin.manifest.id;
   const statusSnapshot = hostState.snapshot().statusSnapshots[id];
+  const provenance = installationRecord(id);
   const browserDependent = isBrowserDependentManifest(plugin.manifest);
   const dependencyState = getDependencyState(plugin, browserDependent);
   return {
@@ -616,6 +668,7 @@ function publicPlugin(plugin, origin) {
     apiBaseUrl: `${origin}/plugins/${id}/api/`,
     packagePath: plugin.packageRoot,
     enabled: true,
+    ...(provenance ? { origin: provenance.origin, releaseStatus: provenance.releaseStatus, provenance } : {}),
     browserDependent,
     ...(browserDependent ? { dependencyState, dependencyWarning: dependencyState !== "connected" } : { dependencyState: "not-required" }),
     statusSnapshot,
@@ -652,10 +705,12 @@ function publicCompatiblePlugin(descriptor, origin) {
   const active = findPlugin(id);
   if (active) return publicPlugin(active, origin);
   const manifest = descriptor.validated.manifest;
+  const provenance = installationRecord(id);
   const browserDependent = isBrowserDependentManifest(manifest);
   return {
     id, name: manifest.name, version: manifest.version, icon: manifest.icon,
     state: "disabled", enabled: false, packagePath: descriptor.packageRoot,
+    ...(provenance ? { origin: provenance.origin, releaseStatus: provenance.releaseStatus, provenance } : {}),
     browserDependent,
     ...(browserDependent ? { dependencyState: "unknown", dependencyWarning: true } : { dependencyState: "not-required" }),
     workspaceUrl: `${origin}/plugins/${id}/workspace/`, apiBaseUrl: `${origin}/plugins/${id}/api/`,
@@ -813,47 +868,190 @@ async function setPluginEnabled(id, enabled) {
   }));
 }
 
-async function installPlugin(sourcePath) {
-  if (typeof sourcePath !== "string" || !path.isAbsolute(sourcePath)) {
-    throw new ContractError("INVALID_INSTALL_PATH", "Select an absolute local plugin folder");
-  }
-  const sourceRoot = path.resolve(sourcePath);
-  let candidateManifest;
-  try { candidateManifest = JSON.parse(await readFile(path.join(sourceRoot, "manifest.json"), "utf8")); } catch {}
-  const candidateId = candidateManifest?.id;
-  if (typeof candidateId === "string" && (compatiblePlugins.some((plugin) => plugin.validated.manifest.id === candidateId) || rejectedPlugins.some((plugin) => plugin.id === candidateId))) {
-    throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${candidateId}' is already installed; remove the installed plugin first`);
-  }
-  if (typeof candidateId === "string" && /^[a-z0-9][a-z0-9-]*$/.test(candidateId)) {
-    try { await readFile(path.join(pluginsRoot, candidateId, "manifest.json")); throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${candidateId}' is already installed; remove the installed plugin first`); }
-    catch (error) { if (error instanceof ContractError || error.code !== "ENOENT") throw error; }
-  }
-  const preflightRegistryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-adapter-preflight-"));
-  let validated;
-  try { validated = await validatePluginPackage(sourceRoot, validationRuntime, adapterScopeOptions(preflightRegistryRoot)); }
-  finally { await rm(preflightRegistryRoot, { recursive: true, force: true }); }
-  const id = validated.manifest.id;
+function assertInstallableId(id, { market = false } = {}) {
+  if (market && bundledPluginIds.has(id)) throw new ContractError("MARKET_BUNDLED_CONFLICT", `Market plugin '${id}' conflicts with a Bundled Plugin; remove or replace the bundled package through a Host release`);
   if (compatiblePlugins.some((plugin) => plugin.validated.manifest.id === id) || rejectedPlugins.some((plugin) => plugin.id === id) || installingPluginIds.has(id)) {
     throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${id}' is already installed; remove the installed plugin first`);
   }
+}
+
+function marketReleaseArtifact(release) {
+  const artifact = release?.artifact && typeof release.artifact === "object" && !Array.isArray(release.artifact) ? release.artifact : {};
+  return {
+    pluginId: release?.pluginId,
+    version: release?.version,
+    contractVersion: String(release?.contractVersion ?? ""),
+    minHostVersion: release?.minHostVersion,
+    platforms: release?.platforms ?? [],
+    architectures: release?.architectures ?? [],
+    retraction: release?.retraction,
+    sha256: artifact.sha256,
+  };
+}
+
+function releasePlatformMatches(platforms) {
+  const aliases = new Set(platforms.map((value) => value === "windows" ? "win32" : value === "macos" ? "darwin" : value));
+  return aliases.has(process.platform);
+}
+
+function releaseArchitectureMatches(architectures) {
+  return architectures.includes(process.arch) || (process.arch === "x64" && architectures.includes("amd64"));
+}
+
+function assertMarketReleaseManifest(manifest, release) {
+  const expected = marketReleaseArtifact(release);
+  if (expected.pluginId !== manifest.id) throw new ContractError("MARKET_MANIFEST_MISMATCH", "Downloaded package ID does not match the selected Market release");
+  if (expected.version !== manifest.version) throw new ContractError("MARKET_MANIFEST_MISMATCH", "Downloaded package version does not match the selected Market release");
+  if (expected.contractVersion !== String(manifest.contractVersion)) throw new ContractError("MARKET_MANIFEST_MISMATCH", "Downloaded package Contract Version does not match the selected Market release");
+  if (expected.minHostVersion !== manifest.minHostVersion) throw new ContractError("MARKET_MANIFEST_MISMATCH", "Downloaded package Minimum Host Version does not match the selected Market release");
+  if (!releasePlatformMatches(expected.platforms)) throw new ContractError("UNSUPPORTED_PLATFORM", `Market release does not support platform '${process.platform}'`);
+  if (!releaseArchitectureMatches(expected.architectures)) throw new ContractError("UNSUPPORTED_ARCHITECTURE", `Market release does not support architecture '${process.arch}'`);
+  if (expected.retraction) throw new ContractError("MARKET_RELEASE_RETRACTED", "The selected Market release has been retracted");
+}
+
+async function commitPluginCandidate(stageRoot, validated, { origin, release, expectedSha256, observedSha256, operationId } = {}) {
+  const id = validated.manifest.id;
+  assertInstallableId(id, { market: origin === "market" });
   installingPluginIds.add(id);
   const destination = path.join(pluginsRoot, id);
-  const temporary = path.join(pluginsRoot, `.install-${id}-${Date.now()}`);
+  let descriptor;
+  let activated;
+  let committed = false;
   try {
-    await cp(sourceRoot, temporary, { recursive: true, errorOnExist: true });
-    const copied = await validatePluginPackage(temporary, validationRuntime, contractOptions);
-    await rename(temporary, destination);
-    const descriptor = { validated: { ...copied, backendPath: path.join(destination, path.relative(temporary, copied.backendPath)), workspaceEntry: path.join(destination, path.relative(temporary, copied.workspaceEntry)), workspaceRoot: path.join(destination, path.relative(temporary, copied.workspaceRoot)) }, packageRoot: destination };
+    await rename(stageRoot, destination);
+    committed = true;
+    const relocated = {
+      ...validated,
+      backendPath: path.join(destination, path.relative(stageRoot, validated.backendPath)),
+      workspaceEntry: path.join(destination, path.relative(stageRoot, validated.workspaceEntry)),
+      workspaceRoot: path.join(destination, path.relative(stageRoot, validated.workspaceRoot)),
+    };
+    descriptor = { validated: relocated, packageRoot: destination };
     compatiblePlugins.push(descriptor);
-    await hostState.update((state) => ({ ...state, enabledPluginIds: [...state.enabledPluginIds, id] }));
-    await activatePlugin(descriptor.validated, destination);
+    await hostState.update((state) => ({
+      ...state,
+      enabledPluginIds: [...state.enabledPluginIds, id],
+      pluginInstallations: {
+        ...(state.pluginInstallations ?? {}),
+        [id]: origin === "market"
+          ? {
+            origin: "market",
+            version: validated.manifest.version,
+            name: release.name,
+            description: release.description,
+            registryUrl: release.registryUrl,
+            indexUrl: release.indexUrl,
+            artifactUrl: release.artifact?.url,
+            artifactSize: release.artifact?.size,
+            publisher: release.publisher,
+            license: release.license,
+            categories: release.categories,
+            changelog: release.changelog,
+            contractVersion: String(release.contractVersion ?? validated.manifest.contractVersion),
+            minHostVersion: release.minHostVersion ?? validated.manifest.minHostVersion,
+            platforms: release.platforms,
+            architectures: release.architectures,
+            publishedAt: release.publishedAt,
+            expectedSha256,
+            observedSha256,
+            releaseStatus: release.retraction ? "retracted" : "current",
+            ...(release.retraction?.reason ? { retractionReason: release.retraction.reason } : {}),
+            installedAt: new Date().toISOString(),
+            ...(operationId ? { operationId } : {}),
+          }
+          : { origin: "local", version: validated.manifest.version, releaseStatus: "unknown", installedAt: new Date().toISOString() },
+      },
+    }));
+    activated = await activatePlugin(relocated, destination);
+    if (activated?.status.state === "failed") {
+      const failure = activated.status.failure;
+      throw new ContractError(failure?.code ?? "PLUGIN_ACTIVATION_FAILED", failure?.message ?? `Plugin '${id}' failed during activation`);
+    }
     return id;
   } catch (error) {
-    await rm(temporary, { recursive: true, force: true });
+    if (descriptor) {
+      const index = compatiblePlugins.indexOf(descriptor);
+      if (index >= 0) compatiblePlugins.splice(index, 1);
+    }
+    if (activated) {
+      await activated.taskManager.stop().catch(() => {});
+      activated.routes.clear();
+      const activeIndex = activePlugins.indexOf(activated);
+      if (activeIndex >= 0) activePlugins.splice(activeIndex, 1);
+      await activated.logger.flush().catch(() => {});
+    }
+    if (committed) await rm(destination, { recursive: true, force: true });
+    await rm(path.join(dataRoot, id), { recursive: true, force: true });
     await removePluginAdapterScope(adapterRegistryRoot, id);
+    await hostState.update((state) => {
+      const statusSnapshots = { ...state.statusSnapshots };
+      delete statusSnapshots[id];
+      const pluginInstallations = { ...(state.pluginInstallations ?? {}) };
+      delete pluginInstallations[id];
+      return { ...state, enabledPluginIds: state.enabledPluginIds.filter((pluginId) => pluginId !== id), statusSnapshots, pluginInstallations };
+    });
     throw error;
   } finally {
     installingPluginIds.delete(id);
+  }
+}
+
+async function validateAndCommitCandidate(stageRoot, { origin, release, expectedSha256, observedSha256, operationId, signal } = {}) {
+  const preflightRegistryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-adapter-preflight-"));
+  let validated;
+  try {
+    validated = await validatePluginPackage(stageRoot, validationRuntime, adapterScopeOptions(preflightRegistryRoot));
+  } finally {
+    await rm(preflightRegistryRoot, { recursive: true, force: true });
+  }
+  try {
+    assertInstallableId(validated.manifest.id, { market: origin === "market" });
+    if (origin === "market") assertMarketReleaseManifest(validated.manifest, release);
+    if (signal?.aborted) throw new ContractError("MARKET_INSTALL_CANCELLED", "Market installation was cancelled before commit");
+    const copied = await validatePluginPackage(stageRoot, validationRuntime, contractOptions);
+    return await commitPluginCandidate(stageRoot, copied, { origin, release, expectedSha256, observedSha256, operationId });
+  } catch (error) {
+    if (validated?.manifest?.id) await removePluginAdapterScope(adapterRegistryRoot, validated.manifest.id).catch(() => {});
+    throw error;
+  }
+}
+
+async function installPlugin(sourcePath) {
+  if (typeof sourcePath !== "string" || !path.isAbsolute(sourcePath)) throw new ContractError("INVALID_INSTALL_PATH", "Select an absolute local plugin folder");
+  const sourceRoot = path.resolve(sourcePath);
+  let candidateManifest;
+  try { candidateManifest = JSON.parse(await readFile(path.join(sourceRoot, "manifest.json"), "utf8")); } catch {}
+  if (typeof candidateManifest?.id === "string") assertInstallableId(candidateManifest.id);
+  const idHint = typeof candidateManifest?.id === "string" ? candidateManifest.id : "candidate";
+  const temporary = path.join(pluginsRoot, `.install-${idHint}-${Date.now()}-${randomUUID()}`);
+  try {
+    await cp(sourceRoot, temporary, { recursive: true, errorOnExist: true });
+    return await validateAndCommitCandidate(temporary, { origin: "local" });
+  } catch (error) {
+    await rm(temporary, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function installMarketPlugin({ archivePath, expectedSha256, observedSha256, release, operationId, signal } = {}) {
+  if (typeof archivePath !== "string" || !path.isAbsolute(archivePath)) throw new ContractError("INVALID_MARKET_ARCHIVE", "Market installation requires an absolute temporary archive path");
+  const archive = path.resolve(archivePath);
+  const managedRelation = path.relative(pluginsRoot, archive);
+  if (!managedRelation.startsWith("..") && !path.isAbsolute(managedRelation)) throw new ContractError("INVALID_MARKET_ARCHIVE", "Market archive must remain outside the managed Plugin Directory");
+  const releaseArtifact = marketReleaseArtifact(release);
+  const expected = String(expectedSha256 ?? releaseArtifact.sha256 ?? "").toLowerCase();
+  if (releaseArtifact.sha256 && String(releaseArtifact.sha256).toLowerCase() !== expected) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market release digest does not match the expected archive digest");
+  const observed = await sha256File(archive);
+  if (!/^[0-9a-f]{64}$/u.test(expected) || observed !== expected) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market archive SHA-256 does not match the selected Registry release");
+  if (observedSha256 && observedSha256 !== observed) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market archive SHA-256 differs from the Host observation");
+  if (signal?.aborted) throw new ContractError("MARKET_INSTALL_CANCELLED", "Market installation was cancelled before extraction");
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-market-runtime-"));
+  const stageRoot = path.join(temporaryRoot, "package");
+  try {
+    await extractZip(archive, stageRoot);
+    return await validateAndCommitCandidate(stageRoot, { origin: "market", release, expectedSha256: expected, observedSha256: observed, operationId, signal });
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 
@@ -882,11 +1080,14 @@ async function removePlugin(identifier) {
   await hostState.update((state) => {
     const statusSnapshots = { ...state.statusSnapshots };
     delete statusSnapshots[id];
+    const pluginInstallations = { ...(state.pluginInstallations ?? {}) };
+    delete pluginInstallations[id];
     return {
       ...state,
       enabledPluginIds: state.enabledPluginIds.filter((pluginId) => pluginId !== id),
       lastSelection: state.lastSelection === id ? null : state.lastSelection,
       statusSnapshots,
+      pluginInstallations,
     };
   });
   emitStatus("removed", id);
@@ -902,6 +1103,7 @@ async function pluginDiagnostics(id) {
   }
   const report = {
     plugin: { id, name: descriptor.validated.manifest.name, version: descriptor.validated.manifest.version },
+    ...(installationRecord(id) ? { provenance: installationRecord(id) } : {}),
     status: hostState.snapshot().statusSnapshots[id] ?? { state: "disabled" },
     logs: logs.split(/\r?\n/).filter(Boolean).slice(-100).map((line) => redactSensitiveText(line)),
   };
@@ -1059,6 +1261,17 @@ const server = createServer(async (request, response) => {
     } catch (error) { json(response, 400, { error: errorDetails(error).message }); }
     return;
   }
+  if (url.pathname === "/runtime/plugins/reconcile-market" && request.method === "POST") {
+    try {
+      const body = await readJsonBody(request);
+      const next = await reconcileMarketProvenance(body.releases);
+      json(response, 200, next);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, 400, { error: failure.message, code: failure.code });
+    }
+    return;
+  }
   if (url.pathname === "/runtime/browser-status" && request.method === "GET") {
     json(response, 200, browserBridge.getStatus());
     return;
@@ -1084,6 +1297,25 @@ const server = createServer(async (request, response) => {
       const failure = errorDetails(error);
       const entry = await runtimeLogger.error("plugin-install-failed", { ...failure, operationId });
       json(response, failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : 400, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/plugins/install-market" && request.method === "POST") {
+    const operationId = request.headers["x-infolens-operation-id"] || randomUUID();
+    await runtimeLogger.info("market-install-started", { operationId });
+    const requestContext = requestAbortContext(request, response);
+    try {
+      const body = await readJsonBody(request);
+      const id = await installMarketPlugin({ ...body, operationId, signal: requestContext.signal });
+      const entry = await runtimeLogger.info("market-install-completed", { operationId, pluginId: id });
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, 201, { ok: true, pluginId: id, logId: entry.id, operationId });
+    } catch (error) {
+      const failure = errorDetails(error);
+      const entry = await runtimeLogger.error("market-install-failed", { ...failure, operationId });
+      const status = ["DUPLICATE_PLUGIN_ID", "MARKET_BUNDLED_CONFLICT"].includes(failure.code) ? 409 : ["MARKET_DIGEST_MISMATCH", "ARCHIVE_INVALID", "ARCHIVE_PATH_TRAVERSAL", "ARCHIVE_SYMLINK", "ARCHIVE_DUPLICATE_ENTRY"].includes(failure.code) ? 422 : 400;
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, status, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+    } finally {
+      requestContext.cleanup();
     }
     return;
   }

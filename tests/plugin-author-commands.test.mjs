@@ -81,6 +81,7 @@ async function copyPackageBoundary(projectRoot) {
   const entries = [
     ["packages/plugin-sdk", "node_modules/@infolens/plugin-sdk"],
     ["packages/plugin-runtime", "node_modules/@infolens/plugin-runtime"],
+    ["packages/plugin-market", "node_modules/@infolens/plugin-market"],
     ["packages/release-metadata", "node_modules/@infolens/release-metadata"],
     ["packages/plugin-workspace", "node_modules/@infolens/plugin-workspace"],
     ["resources/opencli", "node_modules/@infolens/bundled-opencli"],

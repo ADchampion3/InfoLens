@@ -1,4 +1,4 @@
-import { AlertCircle, CircleOff, FileText, LayoutDashboard, LoaderCircle, Plug, RefreshCw, ScrollText, Search, Settings } from "lucide-react";
+import { AlertCircle, CircleOff, FileText, LayoutDashboard, LoaderCircle, Plug, RefreshCw, ScrollText, Search, Settings, Store } from "lucide-react";
 import type { HostView } from "../host-view";
 
 export function sourceInitial(plugin: RuntimePlugin) {
@@ -44,6 +44,7 @@ export function InstrumentRail({ runtime, view, onSelectPlugin, onOpenView, onOp
         ))}
       </nav>
       <nav className="utility-nav" aria-label="Application">
+        <button className={`nav-item utility ${view.kind === "market" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "market" })} type="button"><span className="utility-icon"><Store size={17} /></span><span className="nav-label">Plugin Market</span></button>
         <button className={`nav-item utility ${view.kind === "plugins" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "plugins" })} type="button"><span className="utility-icon"><Plug size={17} /></span><span className="nav-label">Plugins</span></button>
         <button className={`nav-item utility ${view.kind === "daily-summary" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "daily-summary" })} type="button"><span className="utility-icon"><FileText size={17} /></span><span className="nav-label">Daily Summary</span></button>
         <button className={`nav-item utility ${view.kind === "batch" ? "is-selected" : ""}`} onClick={onOpenBatch} type="button"><span className="utility-icon"><RefreshCw size={17} /></span><span className="nav-label">Batch refresh</span>{runtime?.activeBatch && <span className="nav-badge">{runtime.activeBatch.counts.remaining}</span>}</button>

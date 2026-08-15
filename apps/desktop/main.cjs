@@ -21,6 +21,7 @@ let suppressRestart = false;
 let logService;
 let serializeLogEntries;
 let logQueryCount = 0;
+let marketService;
 const applicationSessionId = randomUUID();
 
 function trustedWorkspacePermission(webContents, requestingUrl) {
@@ -56,7 +57,9 @@ function managedPaths() {
   const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(profileRoot, "host-state.json"));
   const hostLogsRoot = path.resolve(process.env.INFOLENS_HOST_LOG_ROOT ?? path.join(profileRoot, "logs"));
   const batchStatePath = path.join(dataRoot, "_runtime", `batches-${applicationSessionId}.json`);
-  return { pluginsRoot, dataRoot, hostStatePath, hostLogsRoot, batchStatePath };
+  const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? path.join(path.dirname(dataRoot), "opencli-adapters"));
+  const marketRoot = path.resolve(process.env.INFOLENS_MARKET_DATA_ROOT ?? path.join(profileRoot, "market"));
+  return { pluginsRoot, dataRoot, hostStatePath, hostLogsRoot, batchStatePath, adapterRegistryRoot, marketRoot, marketCachePath: path.join(marketRoot, "catalog.json"), marketTempRoot: path.join(marketRoot, "installations") };
 }
 
 async function initializeLogService() {
@@ -66,6 +69,45 @@ async function initializeLogService() {
   serializeLogEntries = logModule.serializeLogEntries;
   logService = createLogService({ root: managedPaths().hostLogsRoot, sessionId: randomUUID() });
   await logService.write({ level: "info", message: "Host Shell started" });
+}
+
+async function initializeMarketService() {
+  const modulePath = path.join(projectRoot, "packages", "plugin-market", "src", "service.mjs");
+  const releasePath = path.join(projectRoot, "packages", "release-metadata", "src", "index.mjs");
+  const [{ PluginMarketService }, release] = await Promise.all([import(pathToFileURL(modulePath).href), import(pathToFileURL(releasePath).href)]);
+  const paths = managedPaths();
+  const testRegistryUrl = process.env.INFOLENS_TEST_CONTROL === "1" ? process.env.INFOLENS_TEST_MARKET_REGISTRY_URL : undefined;
+  marketService = new PluginMarketService({
+    registryUrl: testRegistryUrl ?? undefined,
+    cachePath: paths.marketCachePath,
+    tempRoot: paths.marketTempRoot,
+    hostVersion: release.DEFAULT_TARGET_HOST_VERSION,
+    contractVersion: String(release.PLUGIN_CONTRACT_VERSION),
+    logger: (entry) => logService?.write({ level: entry.event?.endsWith("failed") ? "error" : "info", message: entry.event ?? "market-operation", ...entry }),
+    reconcileProvenance: async (index) => {
+      if (!runtimeInfo?.origin) return;
+      const response = await fetch(`${runtimeInfo.origin}/runtime/plugins/reconcile-market`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ releases: index.releases.map(({ pluginId, version, retraction }) => ({ pluginId, version, ...(retraction ? { retraction } : {}) })) }),
+      });
+      if (!response.ok) throw new Error("Plugin Runtime could not reconcile Market provenance");
+    },
+    runtimeClient: async ({ archivePath, expectedSha256, observedSha256, release: selectedRelease, operationId, signal }) => {
+      if (!runtimeInfo?.origin) throw Object.assign(new Error("Plugin services are unavailable"), { code: "MARKET_RUNTIME_UNAVAILABLE" });
+      const response = await fetch(`${runtimeInfo.origin}/runtime/plugins/install-market`, {
+        method: "POST",
+        signal,
+        headers: { "content-type": "application/json", "x-infolens-operation-id": operationId },
+        body: JSON.stringify({ archivePath, expectedSha256, observedSha256, release: selectedRelease }),
+      });
+      let body;
+      try { body = await response.json(); } catch { body = {}; }
+      if (!response.ok) throw Object.assign(new Error(body.error ?? "Market Plugin installation failed"), { code: body.code, body });
+      return body;
+    },
+  });
+  await marketService.initialize();
 }
 
 async function seedBundledPlugins() {
@@ -85,6 +127,7 @@ async function startRuntimeProcess() {
   let proxyRules = "DIRECT";
   try { proxyRules = await session.defaultSession.resolveProxy("https://github.com"); } catch {}
   const networkEnvironment = runtimeProxyEnvironment(process.env, proxyRules);
+  const bundledPluginIds = (await readdir(bundledPluginsRoot, { withFileTypes: true }).catch(() => [])).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   return new Promise((resolve, reject) => {
     const runtimeEntry = path.join(projectRoot, "packages", "plugin-runtime", "src", "server.mjs");
     const { pluginsRoot, dataRoot, hostStatePath, batchStatePath } = managedPaths();
@@ -100,12 +143,12 @@ async function startRuntimeProcess() {
         INFOLENS_HOST_STATE_PATH: hostStatePath,
         INFOLENS_BATCH_STATE_PATH: batchStatePath,
         INFOLENS_APPLICATION_SESSION_ID: applicationSessionId,
+        INFOLENS_BUNDLED_PLUGIN_IDS: JSON.stringify(bundledPluginIds),
         INFOLENS_RUNTIME_PORT: process.env.INFOLENS_RUNTIME_PORT ?? "0",
       },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
-
     const lines = readline.createInterface({ input: runtimeProcess.stdout });
     const timeout = setTimeout(() => reject(new Error("Plugin Runtime did not become ready")), 10000);
 
@@ -192,6 +235,7 @@ async function removeHostStatePlugin(filePath, id) {
   state.enabledPluginIds = (state.enabledPluginIds ?? []).filter((pluginId) => pluginId !== id);
   if (state.lastSelection === id) state.lastSelection = null;
   if (state.statusSnapshots) delete state.statusSnapshots[id];
+  if (state.pluginInstallations) delete state.pluginInstallations[id];
   await mkdir(path.dirname(filePath), { recursive: true });
   const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, "utf8");
@@ -212,19 +256,25 @@ async function removePlugin(id) {
   const failure = await response.json();
   if (failure.code !== "RUNTIME_RESTART_REQUIRED") throw new Error(failure.error ?? "Plugin removal failed");
 
-  const { pluginsRoot, dataRoot, hostStatePath } = managedPaths();
+  const { pluginsRoot, dataRoot, hostStatePath, adapterRegistryRoot } = managedPaths();
   const packagePath = path.resolve(record.packagePath);
   const dataPath = path.resolve(dataRoot, record.id ?? id);
   assertManagedPath(pluginsRoot, packagePath);
   assertManagedPath(dataRoot, dataPath);
   suppressRestart = true;
   publishRuntimeStatus("restarting");
-  await stopRuntime("RUNTIME_RESTARTED");
-  await rm(packagePath, { recursive: true, force: true });
-  await rm(dataPath, { recursive: true, force: true });
-  await removeHostStatePlugin(hostStatePath, record.id ?? id);
-  suppressRestart = false;
-  const info = await startRuntime();
+  let info;
+  try {
+    await stopRuntime("RUNTIME_RESTARTED");
+    await rm(packagePath, { recursive: true, force: true });
+    await rm(dataPath, { recursive: true, force: true });
+    const adapterScopeModule = await import(pathToFileURL(path.join(projectRoot, "packages", "plugin-runtime", "src", "adapter-scope.mjs")).href);
+    await adapterScopeModule.removePluginAdapterScope(adapterRegistryRoot, record.id ?? id);
+    await removeHostStatePlugin(hostStatePath, record.id ?? id);
+    info = await startRuntime();
+  } finally {
+    suppressRestart = false;
+  }
   publishRuntimeStatus("running", { info });
   await logService?.write({ level: "info", message: `Plugin removed id=${record.id ?? id}`, operationId });
 }
@@ -265,6 +315,32 @@ ipcMain.handle("runtime:get-info", async () => {
   } catch {
     return runtimeInfo;
   }
+});
+ipcMain.handle("market:get-catalog", async (_event, query = "") => {
+  if (!marketService) throw new Error("Plugin Market is unavailable");
+  return marketService.catalog(String(query ?? ""));
+});
+ipcMain.handle("market:refresh", async () => {
+  if (!marketService) throw new Error("Plugin Market is unavailable");
+  return marketService.refreshCatalog();
+});
+ipcMain.handle("market:install", async (_event, request = {}) => {
+  if (!marketService) throw new Error("Plugin Market is unavailable");
+  return marketService.install(String(request.pluginId ?? ""), String(request.version ?? ""), {
+    onProgress: (progress) => {
+      if (!mainWindow?.isDestroyed()) mainWindow.webContents.send("market:progress", progress);
+    },
+  });
+});
+ipcMain.handle("market:cancel", (_event, operationId) => marketService?.cancel(String(operationId)) ?? false);
+ipcMain.handle("market:get-operation", (_event, operationId) => marketService?.operation(String(operationId)));
+ipcMain.handle("market:retry", async (_event, operationId) => {
+  if (!marketService) throw new Error("Plugin Market is unavailable");
+  return marketService.retry(String(operationId), {
+    onProgress: (progress) => {
+      if (!mainWindow?.isDestroyed()) mainWindow.webContents.send("market:progress", progress);
+    },
+  });
 });
 async function retainedLogSources() {
   const { dataRoot } = managedPaths();
@@ -379,6 +455,7 @@ ipcMain.handle("test:log-query-count", () => {
 app.whenReady().then(async () => {
   installWorkspacePermissionHandlers();
   await initializeLogService();
+  await initializeMarketService();
   await seedBundledPlugins();
   const initialRuntime = startRuntime();
   createWindow();
