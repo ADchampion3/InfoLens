@@ -1,5 +1,7 @@
 # Plugin Development
 
+[English](plugin-development.md) | [简体中文](plugin-development.zh-CN.md)
+
 Plugin Contract Version 2 supports standard OpenCLI plugins under an Infolens plugin package:
 
 ```text

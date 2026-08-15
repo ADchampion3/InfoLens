@@ -1,5 +1,7 @@
 # Infolens
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Infolens is a local-first Electron host for source-oriented information
 plugins. It provides one desktop shell for following several sources while
 letting each plugin own its collection strategy, local data, refresh policy,
@@ -7,6 +9,16 @@ and reading workspace.
 
 The project is in active development. APIs, package contracts, and user
 interfaces may change between revisions.
+
+## Start Here
+
+- To run the application locally, follow [Quick Start](#quick-start).
+- To contribute to the Host Shell, Plugin Runtime, or bundled Plugins, read
+  [CONTRIBUTING.md](CONTRIBUTING.md).
+- To create a Plugin, read the [Plugin Development Guide](docs/plugin-development.md)
+  ([中文](docs/plugin-development.zh-CN.md)).
+- To understand the system boundaries, start with [ARCHITECTURE.md](ARCHITECTURE.md)
+  ([中文](ARCHITECTURE.zh-CN.md)).
 
 Current deployment work and open product decisions are tracked in the
 [project roadmap](ROADMAP.md).
@@ -63,6 +75,19 @@ The development command starts the Vite renderer, Electron host, and shared
 Plugin Runtime together. Development state is written under the ignored
 `.infolens-data` directory.
 
+## Repository Layout
+
+| Path | Responsibility |
+| --- | --- |
+| `apps/desktop/` | Electron Main Process and Host Shell |
+| `packages/plugin-runtime/` | Shared Plugin Runtime and Plugin API boundary |
+| `packages/plugin-sdk/` | Plugin SDK and Plugin author CLI |
+| `packages/plugin-workspace/` | Shared presentation-only Plugin Workspace UI |
+| `plugins/` | Bundled Plugin packages and their Workspace Bundles |
+| `resources/opencli/` | Pinned Bundled OpenCLI Runtime distribution |
+| `scripts/` | Development, release, and verification commands |
+| `tests/` | Node test-runner suites and fixtures |
+
 ## Common Commands
 
 | Command | Purpose |
@@ -72,8 +97,10 @@ Plugin Runtime together. Development state is written under the ignored
 | `npm run typecheck` | Type-check the desktop host and Plugin SDK |
 | `npm test` | Build the local package and run the repository test suite |
 | `npm run verify:release` | Check package and bundled OpenCLI version consistency |
+| `npm run package:release` | Build and assemble a release package locally |
+| `npm run verify:real-source` | Run Real Strategy Verification for configured live sources |
+| `npm run plugin -- init <path> --check --format text` | Scaffold and check a Plugin package |
 | `npm run plugin -- help` | Show Plugin author commands and options |
-| `npm run plugin -- init <path>` | Create a minimal Plugin scaffold |
 | `npm run plugin -- validate <path>` | Validate a plugin package |
 | `npm run plugin -- doctor <path>` | Run isolated plugin lifecycle and workspace checks |
 | `npm run plugin -- adapters list <path>` | Inspect bundled and provided OpenCLI adapters |
@@ -88,6 +115,10 @@ node --test tests/browser-bridge.test.mjs tests/opencli-adapter.test.mjs
 The repository's automated checks do not replace live-source verification for
 browser-backed plugins. A release-candidate check with Browser Bridge and the
 required site sessions is still needed for `COOKIE` and `INTERCEPT` sources.
+
+`npm run verify:real-source` is intentionally a developer-machine check. It
+needs the external source sessions and Browser Bridge setup described by the
+selected Plugin; it is not a replacement for the deterministic test suites.
 
 ## Browser Bridge
 
@@ -126,10 +157,18 @@ Electron Main Process
 
 The main architecture references are:
 
-- [Architecture baseline](ARCHITECTURE.md)
+- [Architecture baseline](ARCHITECTURE.md) ([中文](ARCHITECTURE.zh-CN.md))
 - [Plugin development guide](docs/plugin-development.md)
 - [Architecture decisions](docs/adr/)
 - [Browser Bridge session contract](docs/adr/0058-browser-bridge-session-ux.md)
+
+## Files To Commit
+
+The Plugin Workspace Bundles under `plugins/*/web/dist/` are shipped assets and
+are intentionally tracked. Regenerate them when a bundled Plugin Workspace
+changes. Do not commit `node_modules`, `.infolens-data`, `.infolens-dev`,
+`.infolens-live`, `.infolens-acceptance`, `release`, Chrome profiles, cookies,
+or exported logs.
 
 ## Plugin Development
 
@@ -170,17 +209,11 @@ directories, or `.infolens-data` to the repository.
 
 ## Contributing
 
-Before opening a change, run the checks relevant to the affected boundary:
-
-```powershell
-npm run typecheck
-npm run build
-npm test
-```
-
-Keep source-specific behavior in the owning plugin, preserve the Plugin
-Runtime process boundary, and update the relevant ADR when an architectural
-decision changes. See `AGENTS.md` for repository workflow conventions.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the first-run setup, boundary map,
+validation commands, Plugin author path, and pull request checklist. Keep
+source-specific behavior in the owning Plugin, preserve the Plugin Runtime
+process boundary, and update the relevant ADR when an architectural decision
+changes. `AGENTS.md` contains repository-local agent conventions.
 
 ## License
 

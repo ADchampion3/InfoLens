@@ -1,5 +1,7 @@
 # Infolens Architecture
 
+[English](ARCHITECTURE.md) | [简体中文](ARCHITECTURE.zh-CN.md)
+
 ## Status
 
 This is the current architecture baseline for the MVP. It records the trusted-plugin boundary, Electron host, package contract, workspace embedding, plugin persistence, shared Plugin Runtime, and local diagnostics policy.
