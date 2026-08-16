@@ -27,9 +27,10 @@ infolens-plugin dev .
 infolens-plugin preview . --format text
 infolens-plugin adapters list .
 infolens-plugin pack . --out ..\my-plugin.infolens-plugin
+infolens-plugin publish . --registry-root .\market-registry --approved-by "Infolens Maintainer"
 ```
 
-Inside the Infolens source workspace, use `npm run plugin -- <command> ...` before the SDK package has been installed as a dependency. An independent project resolves the installed `@infolens/plugin-sdk`, `@infolens/release-metadata`, and `@infolens/bundled-opencli` package boundaries; it does not need the Infolens repository tree.
+Inside the Infolens source workspace, use `npm run plugin -- <command> ...` before the SDK package has been installed as a dependency. An independent project installs `@infolens/plugin-sdk` and uses its published dependency boundaries; it does not need the Infolens repository tree or relative imports into it.
 
 `validate` is the fast package-contract gate. It checks the Manifest, required files, command mappings, and Provided OpenCLI Adapter Scope without importing or activating the Plugin Backend Module. `doctor` includes those checks, then imports and activates the real Backend in a temporary Plugin Runtime, records routes, tasks, and schedules, checks Plugin Health, runs cleanup, and walks the static Workspace Bundle graph. `pack` filters the exact package contents into a unique staging directory and runs the complete `doctor` gate against that staged directory before writing `adapter-integrity.json` and publishing it by atomic rename. An existing output path is rejected.
 
@@ -40,6 +41,30 @@ All author commands report the resolved Plugin Contract Version, target Host ver
 Doctor uses temporary Plugin, data, Host State, Managed Adapter Store, and Adapter Scope roots and loads only the target package. This is state and lifecycle isolation, not a Node or operating-system security sandbox: trusted Backend code remains ordinary Node code and can use filesystem, network, environment, or subprocess APIs. Doctor never starts Electron, opens a browser, executes Workspace JavaScript, invokes OpenCLI during activation, arms schedules, or runs tasks.
 
 `dev` uses the same environment resolution and creates `.infolens-dev/opencli-adapters` with a linked development Scope (junctions and hard links on Windows). `adapters list` reports the same Bundled OpenCLI inventory and Provided Adapter Scope used by the other commands. The `INFOLENS_BUNDLED_OPENCLI_ROOT` environment variable is available for controlled fixtures and its override path is reported in the result.
+
+## Workflow at a Glance
+
+Use this order for a new or changed Plugin:
+
+1. **Scaffold or inspect**: run `init` only in an empty directory; otherwise
+   read the existing manifest, Backend, Workspace entry, and tests.
+2. **Choose collection**: run `adapters list` and use a bundled command when it
+   exists. Create a Provided Adapter only when the bundled inventory cannot
+   supply the required read command.
+3. **Implement**: keep collection in a task, persist validated source data in
+   the Plugin Store, and keep the Workspace as built static assets.
+4. **Gate**: run `validate`, `adapters list`, `doctor`, and `pack` in that order.
+   Use `preview` only for a Runtime/API smoke loop; it is not a UI test.
+5. **Publish**: use `publish` only for a maintainer-approved Market release;
+   ordinary local development ends at the packed directory.
+
+For coding-agent work, use the local
+`.agents/skills/infolens-plugin-author/SKILL.md`. When the collection branch
+needs a new site command, load `.agents/skills/opencli-usage/SKILL.md` and then
+`.agents/skills/opencli-adapter-author/SKILL.md`; the latter owns site recon,
+field decoding, adapter coding, and live OpenCLI verification. Its private
+`~/.opencli/clis/` output must be copied into the Plugin's
+`opencli-adapters/` package path before Infolens validation.
 
 ## Scaffold a Plugin
 
@@ -475,6 +500,29 @@ bundled inventory. <code>pack</code> writes
 <code>adapter-integrity.json</code> with plugin identity and adapter hashes.
 Do not edit that file by hand; installation checks it again.
 
+### Coding-agent adapter workflow
+
+When a Plugin needs a command that is not in the bundled inventory, use the
+OpenCLI skills already available under `.agents/skills`:
+
+1. Read `opencli-usage` and inspect the current command surface instead of
+   assuming an inventory or command name.
+2. Read `opencli-adapter-author` and follow its strategy note, site recon,
+   endpoint discovery, field decoding, output design, and verify workflow.
+3. Treat `~/.opencli/clis/<site>/<command>.js` as a private recon/development
+   location. Copy the ready-to-run command into the Plugin's declared
+   `opencli-adapters/<adapter-directory>/` and add `opencli-plugin.json`.
+4. Declare the adapter and every registered command in `manifest.json`; the
+   mapping's `site`, `command`, `strategy`, and `access` must match the actual
+   OpenCLI registration.
+5. Run `adapters list`, `validate`, `doctor`, and `pack` after the adapter is
+   inside the package. `doctor` proves lifecycle and static Workspace behavior,
+   not live `COOKIE` or `INTERCEPT` source access.
+
+The OpenCLI adapter workflow may produce a live-source verification result, but
+the repository's author checks do not perform UI testing. Keep browser login
+state, traces, cookies, and raw response dumps outside the repository.
+
 ## Author Workflow
 
 Operational author commands print a JSON result by default and set a nonzero
@@ -605,6 +653,28 @@ The output must be outside the source package and must not already exist. It is
 a directory with an <code>.infolens-plugin</code> suffix, not a zip file.
 Warnings remain visible but do not prevent publication. Failed staging is
 cleaned up and does not publish a partial artifact.
+
+### publish
+
+`publish` is a maintainer-only Market operation. It runs the same staged
+`pack` gate, creates a deterministic ZIP, and updates a local static Registry
+root. Supply `--approved-by` with the declared publisher; the Registry rejects
+missing or mismatched approval records. A `pluginId/version` pair is immutable,
+so use a new Plugin version and a new Registry output when publishing again.
+
+```powershell
+infolens-plugin publish . `
+  --registry-root .\market-registry `
+  --publisher "Infolens Maintainer" `
+  --approved-by "Infolens Maintainer" `
+  --license MIT `
+  --category General `
+  --platform windows `
+  --arch x64
+```
+
+Local `pack` output is a directory for Host installation. `publish` produces
+the ZIP artifact used by the Market Registry; these are separate outputs.
 
 ## Install, Replace, and Release Checklist
 

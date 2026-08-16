@@ -1,0 +1,4 @@
+interface:
+  display_name: "Infolens Plugin Author"
+  short_description: "Develop and package Infolens plugins"
+  default_prompt: "Use $infolens-plugin-author to create or update an Infolens Plugin, including any Provided OpenCLI Adapter."

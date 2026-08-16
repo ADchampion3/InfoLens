@@ -17,6 +17,8 @@ interfaces may change between revisions.
   [CONTRIBUTING.md](CONTRIBUTING.md).
 - To create a Plugin, read the [Plugin Development Guide](docs/plugin-development.md)
   ([中文](docs/plugin-development.zh-CN.md)).
+- For coding-agent Plugin work, use the project-owned [Infolens Plugin Author
+  skill](.agents/skills/infolens-plugin-author/SKILL.md).
 - To understand the system boundaries, start with [ARCHITECTURE.md](ARCHITECTURE.md)
   ([中文](ARCHITECTURE.zh-CN.md)).
 
@@ -103,8 +105,10 @@ Plugin Runtime together. Development state is written under the ignored
 | `npm run plugin -- help` | Show Plugin author commands and options |
 | `npm run plugin -- validate <path>` | Validate a plugin package |
 | `npm run plugin -- doctor <path>` | Run isolated plugin lifecycle and workspace checks |
+| `npm run plugin -- preview <path>` | Preview a built workspace through an isolated Runtime |
 | `npm run plugin -- adapters list <path>` | Inspect bundled and provided OpenCLI adapters |
 | `npm run plugin -- pack <path> --out <directory>` | Create a validated plugin package |
+| `npm run plugin -- publish <path> --registry-root <directory> --approved-by <maintainer>` | Pack and publish an immutable Market release |
 
 For a focused test run, use Node's test runner directly:
 
@@ -168,7 +172,9 @@ The Plugin Workspace Bundles under `plugins/*/web/dist/` are shipped assets and
 are intentionally tracked. Regenerate them when a bundled Plugin Workspace
 changes. Do not commit `node_modules`, `.infolens-data`, `.infolens-dev`,
 `.infolens-live`, `.infolens-acceptance`, `release`, Chrome profiles, cookies,
-or exported logs.
+or exported logs. The project-owned skill under
+`.agents/skills/infolens-plugin-author/` is tracked; other local `.agents`
+skills remain external and ignored.
 
 ## Plugin Development
 
@@ -181,6 +187,15 @@ workspace. Every OpenCLI command must be declared in the manifest. Provided
 adapters are copied and verified during packaging; package scripts, network
 installation, and arbitrary dependency installation are not part of the
 adapter workflow.
+
+For coding-agent work, use the project-owned [Infolens Plugin Author
+skill](.agents/skills/infolens-plugin-author/SKILL.md). It covers the Contract
+Version 2 package boundary, Provided OpenCLI Adapters, author gates, preview,
+packing, and Market publication. When a new site command is required, load
+`.agents/skills/opencli-usage/SKILL.md` first and then
+`.agents/skills/opencli-adapter-author/SKILL.md`; copy the verified command from
+the private OpenCLI development location into the Plugin's
+`opencli-adapters/` directory before running Infolens validation.
 
 Start with the [plugin development guide](docs/plugin-development.md), then
 create and check a package from the repository root:

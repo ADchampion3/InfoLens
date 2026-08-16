@@ -31,12 +31,13 @@ infolens-plugin dev .
 infolens-plugin preview . --format text
 infolens-plugin adapters list .
 infolens-plugin pack . --out ..\my-plugin.infolens-plugin
+infolens-plugin publish . --registry-root .\market-registry --approved-by "Infolens Maintainer"
 ```
 
 在 Infolens 源码仓库中，SDK Package 尚未作为依赖安装前，使用
 `npm run plugin -- <command> ...`。独立项目使用已安装的
-`@infolens/plugin-sdk`、`@infolens/release-metadata` 和
-`@infolens/bundled-opencli` Package Boundary，不需要 Infolens 仓库目录。
+`@infolens/plugin-sdk` 及其发布的依赖边界，不需要 Infolens 仓库目录，也不应通过相对路径
+导入仓库内部模块。
 
 `validate` 是快速的 Package Contract Gate。它检查 Manifest、必要文件、Command
 Mapping 和 Provided OpenCLI Adapter Scope，但不会导入或激活 Plugin Backend Module。
@@ -71,6 +72,27 @@ Development Scope（Windows 上使用 Junction 和 Hard Link）。`adapters list
 其他命令使用的相同 Bundled OpenCLI Inventory 和 Provided Adapter Scope。
 `INFOLENS_BUNDLED_OPENCLI_ROOT` 环境变量可用于受控 Fixture，结果会报告该 Override
 路径。
+
+## Workflow at a Glance
+
+新建或修改 Plugin 时按以下顺序执行：
+
+1. **创建或检查**：只在空目录中运行 `init`；已有目录先读取 Manifest、Backend、
+   Workspace Entry 和测试。
+2. **选择采集方式**：先运行 `adapters list`。如果 Bundled Command 已经存在，直接
+   使用它；只有没有合适命令时才创建 Provided Adapter。
+3. **实现**：把采集放在 Task 中，将验证后的源数据保存到 Plugin Store，并保持
+   Workspace 为已构建的静态资源。
+4. **Gate**：按 `validate`、`adapters list`、`doctor`、`pack` 顺序执行。`preview`
+   只用于 Runtime/API Smoke Loop，不作为 UI Test。
+5. **发布**：只在 Maintainer 批准的 Market Release 中使用 `publish`；普通本地开发
+   在 Packed Directory 处结束。
+
+Coding-agent 使用 `.agents/skills/infolens-plugin-author/SKILL.md`。需要新建 Site
+Command 时，先加载 `.agents/skills/opencli-usage/SKILL.md`，再加载
+`.agents/skills/opencli-adapter-author/SKILL.md`；后者负责 Site Recon、Field Decoding、
+Adapter Coding 和实时 OpenCLI Verification。它在 `~/.opencli/clis/` 生成的临时 Adapter
+必须复制到 Plugin 的 `opencli-adapters/` Package Path 后再进行 Infolens Validation。
 
 ## 创建 Plugin 骨架
 
@@ -128,9 +150,9 @@ my-plugin/
 Frontend Dev Server、安装依赖或运行 Package Lifecycle Script。`pack` 会移除
 `node_modules`，因此 Backend 依赖必须由 Host SDK 提供，或已经打包进 Backend 输出。
 
-独立项目需要 `@infolens/plugin-sdk`、`@infolens/plugin-runtime`、
-`@infolens/release-metadata` 和 `@infolens/bundled-opencli` 这些 Package Boundary。
-它不需要 Infolens 仓库目录。在本仓库内，使用 `npm run plugin -- ...`。
+独立项目安装 `@infolens/plugin-sdk`，并使用它发布的依赖边界。它不需要 Infolens
+仓库目录，也不应通过相对路径导入仓库内部模块。在本仓库内，使用
+`npm run plugin -- ...`。
 
 ### Manifest
 
@@ -462,6 +484,25 @@ Command、Strategy/Access 不匹配以及与 Bundled Inventory 的 Collision。`
 包含 Plugin Identity 和 Adapter Hash 的 `adapter-integrity.json`。不要手动编辑该文件；
 安装时会再次检查。
 
+### Coding-agent Adapter Workflow
+
+当 Plugin 需要 Bundled Inventory 中不存在的 Command 时，使用 `.agents/skills` 中的
+OpenCLI skills：
+
+1. 读取 `opencli-usage`，检查当前实际 Command Surface，不要猜测 Inventory 或命令名。
+2. 读取 `opencli-adapter-author`，遵循它的 Strategy Note、Site Recon、Endpoint Discovery、
+   Field Decoding、Output Design 和 Verify 流程。
+3. 将 `~/.opencli/clis/<site>/<command>.js` 视为临时的私有 Recon/Development 位置；将
+   可运行的最终 Command 复制到 Plugin 声明的 `opencli-adapters/<adapter-directory>/`，并补齐
+   `opencli-plugin.json`。
+4. 在 `manifest.json` 中声明 Adapter 和每个实际注册的 Command，确保 `site`、`command`、
+   `strategy`、`access` 与 OpenCLI 实际 Registration 一致。
+5. Adapter 进入 Package 后运行 `adapters list`、`validate`、`doctor`、`pack`。`doctor` 证明
+   生命周期和静态 Workspace 行为，不证明实时 `COOKIE` 或 `INTERCEPT` 信息源可用。
+
+Repository Author Check 不执行 UI Testing。请将 Browser Login State、Trace、Cookie 和原始
+Response Dump 保留在仓库外部。
+
 ## 作者工作流
 
 Operational Author Command 默认输出 JSON，`ok` 为 false 时设置非零退出状态。
@@ -571,6 +612,28 @@ Plugin Directory；`pack` 永远不会调用它。
 输出必须在 Source Package 外部，且不能已经存在。它是带 `.infolens-plugin` 后缀的
 Directory，不是 Zip File。Warning 仍会显示，但不会阻止发布；Staging 失败后会被
 清理，不会发布不完整 Artifact。
+
+### publish
+
+`publish` 是仅供 Maintainer 使用的 Market 操作。它会运行同样的 Staged `pack` Gate，
+创建确定性的 ZIP，并更新本地静态 Registry 根目录。使用 `--approved-by` 提供与
+Publisher 一致的审批人；Registry 会拒绝缺失或不匹配的审批记录。一个
+`pluginId/version` 组合只能发布一次，重新发布时必须提高 Plugin Version，并使用新的
+Registry 输出目录。
+
+```powershell
+infolens-plugin publish . `
+  --registry-root .\market-registry `
+  --publisher "Infolens Maintainer" `
+  --approved-by "Infolens Maintainer" `
+  --license MIT `
+  --category General `
+  --platform windows `
+  --arch x64
+```
+
+本地 `pack` 输出是供 Host 安装的 Directory；`publish` 输出的是 Market Registry 使用
+的 ZIP Artifact，两者是不同的输出物。
 
 ## 安装、替换与发布清单
 

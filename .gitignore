@@ -10,6 +10,10 @@ coverage/
 .hallmark/
 .scratch/
 release/
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/infolens-plugin-author/
+!.agents/skills/infolens-plugin-author/**
 .claude/
 skills-lock.json
