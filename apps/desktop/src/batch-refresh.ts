@@ -1,3 +1,5 @@
+import type { Translate } from "./i18n";
+
 export interface BatchEligibility {
   eligible: boolean;
   reason?: string;
@@ -11,6 +13,10 @@ export interface BatchCompletionNotice {
 }
 
 const TERMINAL_BATCH_STATUSES = new Set(["succeeded", "partial", "failed", "skipped", "interrupted"]);
+
+function label(key: string, translate?: Translate, values?: Record<string, string | number>) {
+  return translate ? translate(key, values) : key.replace(/\{(\w+)\}/gu, (match, name: string) => values && name in values ? String(values[name]) : match);
+}
 
 function completionLabel(status: string) {
   return ({ succeeded: "completed", partial: "partially completed", failed: "failed", skipped: "skipped", interrupted: "interrupted" } as Record<string, string>)[status] ?? status;
@@ -59,14 +65,14 @@ export function isToday(value: string | undefined, now = new Date(), timeZone = 
   return Boolean(today && candidate && today === candidate);
 }
 
-export function targetEligibility(target: BatchTarget): BatchEligibility {
-  if (!target.enabled || target.state === "disabled") return { eligible: false, reason: "Disabled" };
-  if (target.state === "unavailable") return { eligible: false, reason: target.reason ?? "Unavailable" };
-  if (["queued", "refreshing"].includes(target.state)) return { eligible: false, reason: "Already refreshing" };
-  if (target.state === "starting") return { eligible: false, reason: "Starting" };
-  if (target.failure || target.state === "failed") return { eligible: true, warning: "Latest refresh failed; retry is available" };
-  if (target.dependencyWarning || target.dependencyState === "unknown") return { eligible: true, warning: "Browser dependency state is unknown" };
-  return target.eligible ? { eligible: true } : { eligible: false, reason: target.reason ?? "Unavailable" };
+export function targetEligibility(target: BatchTarget, translate?: Translate): BatchEligibility {
+  if (!target.enabled || target.state === "disabled") return { eligible: false, reason: label("Disabled", translate) };
+  if (target.state === "unavailable") return { eligible: false, reason: target.reason ?? label("Unavailable", translate) };
+  if (["queued", "refreshing"].includes(target.state)) return { eligible: false, reason: label("Already refreshing", translate) };
+  if (target.state === "starting") return { eligible: false, reason: label("Starting", translate) };
+  if (target.failure || target.state === "failed") return { eligible: true, warning: label("Latest refresh failed; retry is available", translate) };
+  if (target.dependencyWarning || target.dependencyState === "unknown") return { eligible: true, warning: label("Browser dependency state is unknown", translate) };
+  return target.eligible ? { eligible: true } : { eligible: false, reason: target.reason ?? label("Unavailable", translate) };
 }
 
 export function selectAllEligible(targets: BatchTarget[]) {
@@ -85,26 +91,26 @@ export function hasExecutableSelection(targets: BatchTarget[], selected: Set<str
   return targets.some((target) => selected.has(target.pluginId) && targetEligibility(target).eligible);
 }
 
-export function exactLocalTime(value: string | undefined) {
+export function exactLocalTime(value: string | undefined, locale?: string) {
   const date = validDate(value);
-  return date ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date) : "Unknown time";
+  return date ? new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date) : "Unknown time";
 }
 
-export function freshnessLabel(target: Pick<BatchTarget, "lastSuccessfulRefreshAt" | "failure">, now = new Date(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
+export function freshnessLabel(target: Pick<BatchTarget, "lastSuccessfulRefreshAt" | "failure">, now = new Date(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone, translate?: Translate, locale?: string) {
   const success = validDate(target.lastSuccessfulRefreshAt);
-  if (!success) return target.failure ? "Refresh failed; no successful refresh recorded" : "Not refreshed yet";
-  if (target.failure && isToday(target.failure.timestamp, now, timeZone)) return `Refresh failed today; last success ${exactLocalTime(target.lastSuccessfulRefreshAt)}`;
+  if (!success) return target.failure ? label("Refresh failed; no successful refresh recorded", translate) : label("Not refreshed yet", translate);
+  if (target.failure && isToday(target.failure.timestamp, now, timeZone)) return label("Refresh failed today; last success {time}", translate, { time: exactLocalTime(target.lastSuccessfulRefreshAt, locale) });
   const deltaMinutes = Math.round((now.valueOf() - success.valueOf()) / 60_000);
-  if (deltaMinutes < 2) return "Refreshed just now";
-  if (deltaMinutes < 60) return `Refreshed ${deltaMinutes} minutes ago`;
+  if (deltaMinutes < 2) return label("Refreshed just now", translate);
+  if (deltaMinutes < 60) return label("Refreshed {minutes} minutes ago", translate, { minutes: deltaMinutes });
   const deltaHours = Math.round(deltaMinutes / 60);
-  if (deltaHours < 24) return `Refreshed ${deltaHours} hours ago`;
+  if (deltaHours < 24) return label("Refreshed {hours} hours ago", translate, { hours: deltaHours });
   const deltaDays = Math.round(deltaHours / 24);
-  return `Refreshed ${deltaDays} ${deltaDays === 1 ? "day" : "days"} ago`;
+  return label(deltaDays === 1 ? "Refreshed {days} day ago" : "Refreshed {days} days ago", translate, { days: deltaDays });
 }
 
-export function selectionEmptyState(targets: BatchTarget[], now = new Date(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
-  const eligible = targets.filter((target) => targetEligibility(target).eligible);
-  if (!eligible.length) return "Nothing is currently executable";
-  return selectNotRefreshedToday(targets, now, timeZone).size ? "Select a Workspace to refresh" : "All executable Workspaces refreshed today";
+export function selectionEmptyState(targets: BatchTarget[], now = new Date(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone, translate?: Translate) {
+  const eligible = targets.filter((target) => targetEligibility(target, translate).eligible);
+  if (!eligible.length) return label("Nothing is currently executable", translate);
+  return selectNotRefreshedToday(targets, now, timeZone).size ? label("Select a Workspace to refresh", translate) : label("All executable Workspaces refreshed today", translate);
 }

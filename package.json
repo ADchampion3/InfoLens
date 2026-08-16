@@ -12,7 +12,6 @@
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "dev:web": "vite --config apps/desktop/vite.config.ts",
     "install:opencli": "npm install --prefix resources/opencli --ignore-scripts && node scripts/apply-opencli-overrides.mjs",
     "postinstall": "npm run install:opencli",
     "build": "node scripts/verify-release.mjs && vite build --config apps/desktop/vite.config.ts",

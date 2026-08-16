@@ -23,6 +23,8 @@ import type { CommandItem } from "./components/CommandPalette";
 import { readJsonResponse, runtimeRequest } from "./runtime-api";
 import { useTheme } from "./useTheme";
 import type { HostView } from "./host-view";
+import { useLanguage } from "./i18n";
+import type { Translate } from "./i18n";
 
 type Status = "loading" | "ready" | "error";
 type DailySummaryDeliveryMode = `${"facts" | "prompt" | "written"}:${"copy" | "download"}`;
@@ -64,6 +66,7 @@ const ERROR_GUIDANCE: Record<string, { explanation: string; action: string }> = 
 };
 
 function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: LogFilters; setFilters: (filters: LogFilters) => void; focusEntryId?: string; onNotice: (message: string) => void }) {
+  const { t, locale } = useLanguage();
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>();
   const [error, setError] = useState<string>();
@@ -113,7 +116,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
       setEntries(page.entries);
       setCursor(page.nextCursor);
     }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : "Logs could not be loaded.");
+      if (active) setError(reason instanceof Error ? reason.message : t("Logs could not be loaded."));
     }).finally(() => { if (active) setLoading(false); });
 
     const timer = window.setInterval(async () => {
@@ -136,7 +139,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
           setPendingCount(pendingIdsRef.current.size);
         }
       } catch (reason) {
-        if (active) setLiveError(reason instanceof Error ? reason.message : "Live updates are temporarily unavailable.");
+        if (active) setLiveError(reason instanceof Error ? reason.message : t("Live updates are temporarily unavailable."));
       }
     }, 2_000);
     return () => { active = false; window.clearInterval(timer); };
@@ -154,7 +157,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
       tableRef.current?.scrollTo({ top: 0 });
       setLiveError(undefined);
     } catch (reason) {
-      setLiveError(reason instanceof Error ? reason.message : "Newest logs could not be loaded.");
+      setLiveError(reason instanceof Error ? reason.message : t("Newest logs could not be loaded."));
     }
   };
 
@@ -167,7 +170,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
       setEntries((current) => [...current, ...page.entries]);
       setCursor(page.nextCursor);
     } catch (reason) {
-      setLiveError(reason instanceof Error ? reason.message : "Older logs could not be loaded.");
+      setLiveError(reason instanceof Error ? reason.message : t("Older logs could not be loaded."));
     } finally { setLoadingOlder(false); }
   };
 
@@ -181,46 +184,46 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
       const result = await action();
       if (!result.canceled) onNotice(success(result.count));
     } catch (reason) {
-      onNotice(reason instanceof Error ? reason.message : "Logs could not be shared.");
+      onNotice(reason instanceof Error ? reason.message : t("Logs could not be shared."));
     } finally { setSharing(false); }
   };
   const sources = [...new Set(["host", "runtime", ...filters.sources, ...entries.map((entry) => entry.source)])].sort();
 
   return (
     <section className="host-page logs-page">
-      <header className="page-header"><div><h1>Logs</h1><p>Operational evidence from this device</p></div></header>
-      <div className="logs-toolbar" aria-label="Log filters">
-        <label>Source<select aria-label="Source" value={filters.sources[0] ?? ""} onChange={(event) => setFilters({ ...filters, sources: event.target.value ? [event.target.value] : [] })}><option value="">All sources</option>{sources.map((source) => <option value={source} key={source}>{source}</option>)}</select></label>
-        <fieldset><legend>Severity</legend>{(["debug", "info", "warn", "error"] as LogLevel[]).map((level) => <label key={level}><input type="checkbox" checked={filters.levels.includes(level)} onChange={(event) => updateLevel(level, event.target.checked)} />{level === "warn" ? "Warning" : level[0].toUpperCase() + level.slice(1)}</label>)}</fieldset>
-        <label>From<input aria-label="From time" type="datetime-local" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label>
-        <label>To<input aria-label="To time" type="datetime-local" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></label>
-        <label className="log-search">Keyword<input aria-label="Keyword" type="search" value={filters.keyword} onChange={(event) => setFilters({ ...filters, keyword: event.target.value })} placeholder="Search messages" /></label>
-        <label className="operation-search">Batch ID<input aria-label="Batch ID" value={filters.batchId} onChange={(event) => setFilters({ ...filters, batchId: event.target.value })} /></label>
-        <label className="operation-search">Operation ID<input aria-label="Operation ID" value={filters.operationId} onChange={(event) => setFilters({ ...filters, operationId: event.target.value })} /></label>
-        <div className="log-share-actions"><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.copyFilteredLogs(requestFilters), (count) => `${count} filtered log entries copied`)}><Copy size={15} />Copy filtered</button><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.exportFilteredLogs(requestFilters), (count) => `${count} log entries exported`)}><Download size={15} />Export JSONL</button></div>
+      <header className="page-header"><div><h1>{t("Logs")}</h1><p>{t("Operational evidence from this device")}</p></div></header>
+      <div className="logs-toolbar" aria-label={t("Log filters")}>
+        <label>{t("Source")}<select aria-label={t("Source")} value={filters.sources[0] ?? ""} onChange={(event) => setFilters({ ...filters, sources: event.target.value ? [event.target.value] : [] })}><option value="">{t("All sources")}</option>{sources.map((source) => <option value={source} key={source}>{source}</option>)}</select></label>
+        <fieldset><legend>{t("Severity")}</legend>{(["debug", "info", "warn", "error"] as LogLevel[]).map((level) => <label key={level}><input type="checkbox" checked={filters.levels.includes(level)} onChange={(event) => updateLevel(level, event.target.checked)} />{level === "warn" ? t("Warning") : t(level[0].toUpperCase() + level.slice(1))}</label>)}</fieldset>
+        <label>{t("From")}<input aria-label={t("From time")} type="datetime-local" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label>
+        <label>{t("To")}<input aria-label={t("To time")} type="datetime-local" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></label>
+        <label className="log-search">{t("Keyword")}<input aria-label={t("Keyword")} type="search" value={filters.keyword} onChange={(event) => setFilters({ ...filters, keyword: event.target.value })} placeholder={t("Search messages")} /></label>
+        <label className="operation-search">{t("Batch ID")}<input aria-label={t("Batch ID")} value={filters.batchId} onChange={(event) => setFilters({ ...filters, batchId: event.target.value })} /></label>
+        <label className="operation-search">{t("Operation ID")}<input aria-label={t("Operation ID")} value={filters.operationId} onChange={(event) => setFilters({ ...filters, operationId: event.target.value })} /></label>
+        <div className="log-share-actions"><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.copyFilteredLogs(requestFilters), (count) => t("{count} filtered log entries copied", { count }))}><Copy size={15} />{t("Copy filtered")}</button><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.exportFilteredLogs(requestFilters), (count) => t("{count} log entries exported", { count }))}><Download size={15} />{t("Export JSONL")}</button></div>
       </div>
-      {pendingCount > 0 && <button className="new-logs-button" type="button" aria-label={`${pendingCount} new log ${pendingCount === 1 ? "entry" : "entries"}; move to newest`} onClick={showNewest}>{pendingCount} new {pendingCount === 1 ? "entry" : "entries"}</button>}
-      {liveError && <div className="live-log-status" role="status">Live updates paused: {liveError}</div>}
-      {error && <div className="logs-state" role="alert"><AlertCircle size={20} /><strong>Logs unavailable</strong><span>{error}</span></div>}
-      {!error && loading && <div className="logs-state" role="status"><LoaderCircle className="spinner" size={20} /><span>Loading logs...</span></div>}
-      {!error && !loading && entries.length === 0 && <div className="logs-state"><ScrollText size={20} /><strong>No logs match these filters</strong></div>}
+      {pendingCount > 0 && <button className="new-logs-button" type="button" aria-label={`${pendingCount} ${t("new")} ${t("Logs")}; move to newest`} onClick={showNewest}>{pendingCount} {t("new")} {t(pendingCount === 1 ? "entry" : "entries")}</button>}
+      {liveError && <div className="live-log-status" role="status">{t("Live updates paused: {value}", { value: liveError })}</div>}
+      {error && <div className="logs-state" role="alert"><AlertCircle size={20} /><strong>{t("Logs unavailable")}</strong><span>{error}</span></div>}
+      {!error && loading && <div className="logs-state" role="status"><LoaderCircle className="spinner" size={20} /><span>{t("Loading logs...")}</span></div>}
+      {!error && !loading && entries.length === 0 && <div className="logs-state"><ScrollText size={20} /><strong>{t("No logs match these filters")}</strong></div>}
       {!loading && entries.length > 0 && (
-        <div className="log-table" aria-label="Operational logs" ref={tableRef} onScroll={(event) => { atNewestRef.current = event.currentTarget.scrollTop <= 8; }}>
+        <div className="log-table" aria-label={t("Operational logs")} ref={tableRef} onScroll={(event) => { atNewestRef.current = event.currentTarget.scrollTop <= 8; }}>
           <div className="log-row log-header" aria-hidden="true">
-            <span>Time</span><span>Severity</span><span>Source</span><span>Message</span>
+            <span>{t("Time")}</span><span>{t("Severity")}</span><span>{t("Source")}</span><span>{t("Message")}</span>
           </div>
           {entries.map((entry) => (
             <div className="log-entry" key={entry.id} data-log-id={entry.id}>
               <button className="log-row" type="button" aria-expanded={expanded === entry.id} onClick={() => setExpanded(expanded === entry.id ? undefined : entry.id)}>
-                <time dateTime={entry.timestamp} title={entry.timestamp}>{new Date(entry.timestamp).toLocaleTimeString()}</time>
-                <span className={`log-level log-level--${entry.level}`}>{entry.level}</span>
+                <time dateTime={entry.timestamp} title={entry.timestamp}>{new Date(entry.timestamp).toLocaleTimeString(locale)}</time>
+                <span className={`log-level log-level--${entry.level}`}>{t(entry.level)}</span>
                 <span className="log-source">{entry.source}</span>
                 <span className="log-message">{entry.message}</span>
               </button>
-              {expanded === entry.id && <div className="log-details"><dl><dt>ID</dt><dd>{entry.id}</dd><dt>Canonical timestamp</dt><dd>{entry.timestamp}</dd><dt>Severity</dt><dd>{entry.level}</dd><dt>Source</dt><dd>{entry.source}</dd><dt>Session ID</dt><dd>{entry.sessionId}</dd>{entry.batchId && <><dt>Batch ID</dt><dd className="operation-value"><span>{entry.batchId}</span><button type="button" onClick={() => setFilters({ ...filters, batchId: entry.batchId! })}>Filter this Batch</button></dd></>}{entry.code && <><dt>Code</dt><dd>{entry.code}</dd></>}{entry.operationId && <><dt>Operation ID</dt><dd className="operation-value"><span>{entry.operationId}</span><button type="button" onClick={() => setFilters({ ...filters, operationId: entry.operationId! })}>Filter this operation</button></dd></>}<dt>Message</dt><dd>{entry.message}</dd></dl><div className="log-entry-actions"><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.copyLogEntry(entry.id), () => "Log entry copied")}><Copy size={15} />Copy entry</button></div>{entry.code && ERROR_GUIDANCE[entry.code] && <div className="log-guidance"><strong>{ERROR_GUIDANCE[entry.code].explanation}</strong><span>{ERROR_GUIDANCE[entry.code].action}</span></div>}</div>}
+              {expanded === entry.id && <div className="log-details"><dl><dt>ID</dt><dd>{entry.id}</dd><dt>{t("Canonical timestamp")}</dt><dd>{entry.timestamp}</dd><dt>{t("Severity")}</dt><dd>{t(entry.level)}</dd><dt>{t("Source")}</dt><dd>{entry.source}</dd><dt>{t("Session ID")}</dt><dd>{entry.sessionId}</dd>{entry.batchId && <><dt>{t("Batch ID")}</dt><dd className="operation-value"><span>{entry.batchId}</span><button type="button" onClick={() => setFilters({ ...filters, batchId: entry.batchId! })}>{t("Filter this Batch")}</button></dd></>}{entry.code && <><dt>{t("Code")}</dt><dd>{entry.code}</dd></>}{entry.operationId && <><dt>{t("Operation ID")}</dt><dd className="operation-value"><span>{entry.operationId}</span><button type="button" onClick={() => setFilters({ ...filters, operationId: entry.operationId! })}>{t("Filter this operation")}</button></dd></>}<dt>{t("Message")}</dt><dd>{entry.message}</dd></dl><div className="log-entry-actions"><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.copyLogEntry(entry.id), () => t("Log entry copied"))}><Copy size={15} />{t("Copy entry")}</button></div>{entry.code && ERROR_GUIDANCE[entry.code] && <div className="log-guidance"><strong>{t(ERROR_GUIDANCE[entry.code].explanation)}</strong><span>{t(ERROR_GUIDANCE[entry.code].action)}</span></div>}</div>}
             </div>
           ))}
-          <div className="log-history-state">{cursor ? <button type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? "Loading..." : "Load older"}</button> : <span>End of retained history</span>}</div>
+          <div className="log-history-state">{cursor ? <button type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? t("Loading...") : t("Load older")}</button> : <span>{t("End of retained history")}</span>}</div>
         </div>
       )}
     </section>
@@ -231,12 +234,12 @@ function batchTerminal(batch?: BatchSummary) {
   return Boolean(batch && ["succeeded", "partial", "failed", "skipped", "interrupted"].includes(batch.status));
 }
 
-function batchStatusLabel(status: string) {
-  return ({ queued: "Queued", running: "Refreshing", succeeded: "Completed", partial: "Partially completed", failed: "Failed", skipped: "Skipped", interrupted: "Interrupted" } as Record<string, string>)[status] ?? status;
+function batchStatusLabel(status: string, t: Translate) {
+  return t(({ queued: "Queued", running: "Refreshing", succeeded: "Completed", partial: "Partially completed", failed: "Failed", skipped: "Skipped", interrupted: "Interrupted" } as Record<string, string>)[status] ?? status);
 }
 
-function itemStatusLabel(status: BatchItemState) {
-  return ({ queued: "Queued", running: "Refreshing", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped", interrupted: "Interrupted" } as Record<BatchItemState, string>)[status];
+function itemStatusLabel(status: BatchItemState, t: Translate) {
+  return t(({ queued: "Queued", running: "Refreshing", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped", interrupted: "Interrupted" } as Record<BatchItemState, string>)[status]);
 }
 
 function DailySummaryView({
@@ -252,6 +255,7 @@ function DailySummaryView({
   selectedPluginIds?: Set<string>;
   onSelectionChange: (selected: Set<string>) => void;
 }) {
+  const { t } = useLanguage();
   const [aggregate, setAggregate] = useState<DailySummaryAggregate>();
   const [preview, setPreview] = useState<DailySummaryPreview>();
   const [promptText, setPromptText] = useState("");
@@ -283,7 +287,7 @@ function DailySummaryView({
       const nextSelection = selectedPluginIds === undefined ? defaultDailySummarySelection(next) : preserveDailySummarySelection(next, selectedPluginIds);
       applyAggregate(next, nextSelection);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Daily Summary could not be loaded.");
+      setError(reason instanceof Error ? reason.message : t("Daily Summary could not be loaded."));
     } finally {
       setLoading(false);
     }
@@ -305,7 +309,7 @@ function DailySummaryView({
 
   const generatePreview = async () => {
     if (!aggregate || !selection.size) {
-      onNotice("Select at least one source before generating a preview.");
+      onNotice(t("Select at least one source before generating a preview."));
       return;
     }
     setLoading(true);
@@ -315,7 +319,7 @@ function DailySummaryView({
       const nextSelection = preserveDailySummarySelection(next, selection);
       if (!nextSelection.size) {
         applyAggregate(next, nextSelection);
-        onNotice("Select at least one source before generating a preview.");
+        onNotice(t("Select at least one source before generating a preview."));
         return;
       }
       setAggregate(next);
@@ -328,7 +332,7 @@ function DailySummaryView({
       setPrivacyMode(undefined);
       setPrivacySources([]);
     } catch (reason) {
-      onNotice(reason instanceof Error ? reason.message : "Daily Summary preview could not be generated.");
+      onNotice(reason instanceof Error ? reason.message : t("Daily Summary preview could not be generated."));
     } finally {
       setLoading(false);
     }
@@ -347,7 +351,7 @@ function DailySummaryView({
         deliveryFilename = dailySummaryWrittenFilename(aggregate.localDate);
       }
     } catch (reason) {
-      onNotice(reason instanceof Error ? reason.message : "Daily Summary content is unavailable.");
+      onNotice(reason instanceof Error ? reason.message : t("Daily Summary content is unavailable."));
       return;
     }
     const decision = dailySummaryDeliveryDecision({ aggregate, selectedPluginIds: selection, preview, acknowledgedPreviewKey: acknowledgedKey ?? privacyKey, deliveryText, deliveryFilename });
@@ -356,22 +360,22 @@ function DailySummaryView({
         setPrivacySources(decision.privacySources ?? []);
         setPrivacyKey(preview.key);
         setPrivacyMode(`${kind}:${mode}`);
-      } else if (decision.reason === "content-required") onNotice("Write a Daily Summary before exporting it.");
-      else onNotice(decision.reason === "preview-required" ? "Generate a preview before delivery." : "Generate a new preview for the current selection.");
+      } else if (decision.reason === "content-required") onNotice(t("Write a Daily Summary before exporting it."));
+      else onNotice(decision.reason === "preview-required" ? t("Generate a preview before delivery.") : t("Generate a new preview for the current selection."));
       return;
     }
     try {
       if (mode === "copy") {
         if (window.infolens) await window.infolens.copyText(decision.text!);
         else await navigator.clipboard.writeText(decision.text!);
-        onNotice(kind === "prompt" ? "Writing prompt copied." : kind === "written" ? "Written summary copied." : "Daily Summary copied.");
+        onNotice(kind === "prompt" ? t("Writing prompt copied.") : kind === "written" ? t("Written summary copied.") : t("Daily Summary copied."));
       } else {
-        if (!window.infolens) throw new Error("File delivery is unavailable.");
+        if (!window.infolens) throw new Error(t("File delivery is unavailable."));
         const result = await window.infolens.downloadText({ filename: decision.filename!, text: decision.text! });
-        if (!result.canceled) onNotice(kind === "prompt" ? "Writing prompt downloaded." : kind === "written" ? "Written summary downloaded." : "Daily Summary downloaded.");
+        if (!result.canceled) onNotice(kind === "prompt" ? t("Writing prompt downloaded.") : kind === "written" ? t("Written summary downloaded.") : t("Daily Summary downloaded."));
       }
     } catch {
-      onNotice("Daily Summary delivery failed.");
+      onNotice(t("Daily Summary delivery failed."));
     }
   };
 
@@ -393,13 +397,13 @@ function DailySummaryView({
 
   return <section className="host-page daily-summary-page">
     <header className="page-header">
-      <div><h1>Daily Summary</h1><p>Inspect today&apos;s retained Plugin Context before delivery.</p></div>
-      <div className="daily-summary-actions"><button type="button" onClick={onOpenBatch}><RefreshCw size={15} />Open Batch Refresh</button><button type="button" onClick={() => void readAggregate()} disabled={loading}><RotateCcw size={15} />Read again</button></div>
+      <div><h1>{t("Daily Summary")}</h1><p>{t("Inspect today&apos;s retained Plugin Context before delivery.")}</p></div>
+      <div className="daily-summary-actions"><button type="button" onClick={onOpenBatch}><RefreshCw size={15} />{t("Open Batch Refresh")}</button><button type="button" onClick={() => void readAggregate()} disabled={loading}><RotateCcw size={15} />{t("Read again")}</button></div>
     </header>
-    {loading && <div className="daily-summary-state" role="status"><LoaderCircle className="spinner" size={20} />Loading Daily Summary data...</div>}
-    {error && <div className="daily-summary-state daily-summary-state--error" role="alert"><AlertCircle size={20} /><strong>Daily Summary unavailable</strong><span>{error}</span></div>}
+    {loading && <div className="daily-summary-state" role="status"><LoaderCircle className="spinner" size={20} />{t("Loading Daily Summary data...")}</div>}
+    {error && <div className="daily-summary-state daily-summary-state--error" role="alert"><AlertCircle size={20} /><strong>{t("Daily Summary unavailable")}</strong><span>{error}</span></div>}
     {!loading && !error && aggregate && <>
-      <div className="daily-summary-meta"><span><strong>{aggregate.localDate}</strong> local date</span><span>{aggregate.timeZone}</span><span>Generated {aggregate.generatedAt}</span></div>
+      <div className="daily-summary-meta"><span><strong>{aggregate.localDate}</strong> {t("local date")}</span><span>{aggregate.timeZone}</span><span>{t("Generated")} {aggregate.generatedAt}</span></div>
       <div className="daily-summary-layout">
         <div className="daily-summary-sources">
           {aggregate.plugins.filter((plugin) => plugin.status !== "disabled").map((plugin) => {
@@ -407,38 +411,38 @@ function DailySummaryView({
             const selected = selection.has(plugin.pluginId);
             const metadata = dailySummarySourceMetadata(plugin, aggregate.generatedAt);
             const sourceDetails = plugin.status === "unsupported"
-              ? "Daily Summary not supported"
-              : `${plugin.status === "no-data" ? "No qualifying snapshot for today" : plugin.status === "unavailable" ? "Data unavailable" : ""}${plugin.status === "ready" ? "" : " | "}${metadata.recordCount} records | ${metadata.collectedAt} | ${metadata.relativeAge}`;
+              ? t("Daily Summary not supported")
+              : `${plugin.status === "no-data" ? t("No qualifying snapshot for today") : plugin.status === "unavailable" ? t("Data unavailable") : ""}${plugin.status === "ready" ? "" : " | "}${metadata.recordCount} ${t("records")} | ${metadata.collectedAt} | ${metadata.relativeAge}`;
             return <label className={`daily-summary-source ${selected ? "is-selected" : ""} ${!selectable ? "is-disabled" : ""}`} key={plugin.pluginId}>
               <input type="checkbox" checked={selected} disabled={!selectable} onChange={() => selectionChanged(plugin.pluginId)} />
               <span className="daily-summary-source-main"><strong>{plugin.name}</strong><small>{sourceDetails}</small></span>
-              <span className={`daily-summary-status daily-summary-status--${plugin.status}`}>{plugin.status}</span>
+              <span className={`daily-summary-status daily-summary-status--${plugin.status}`}>{t(plugin.status)}</span>
             </label>;
           })}
-          {!aggregate.plugins.length && <div className="daily-summary-state">No enabled Plugins participate in Daily Summary.</div>}
-          <div className="daily-summary-toolbar"><span>{selection.size} selected</span><button className="primary-button" type="button" disabled={!selection.size || loading} onClick={() => void generatePreview()}><ListChecks size={15} />Generate preview</button></div>
+          {!aggregate.plugins.length && <div className="daily-summary-state">{t("No enabled Plugins participate in Daily Summary.")}</div>}
+          <div className="daily-summary-toolbar"><span>{selection.size} {t("selected")}</span><button className="primary-button" type="button" disabled={!selection.size || loading} onClick={() => void generatePreview()}><ListChecks size={15} />{t("Generate preview")}</button></div>
         </div>
         <div className="daily-summary-workbench">
           <section className="daily-summary-panel daily-summary-prompt-panel">
-            <div className="daily-summary-preview-header"><div><h2>Writing prompt</h2><p>按 topic 重新归类 entry，并生成可回溯的每日摘要。</p></div><span>{promptText ? "Editable" : "Select a source"}</span></div>
-            <textarea aria-label="Daily Summary writing prompt" value={promptText} onChange={(event) => setPromptText(event.currentTarget.value)} placeholder="Generate a preview to prepare the writing prompt." />
-            <div className="daily-summary-delivery"><button type="button" disabled={!promptText.trim() || !preview} onClick={() => void deliver("prompt", "copy")}><Copy size={15} />Copy prompt</button><button type="button" disabled={!promptText.trim() || !preview} onClick={() => void deliver("prompt", "download")}><Download size={15} />Export prompt</button></div>
+            <div className="daily-summary-preview-header"><div><h2>{t("Writing prompt")}</h2><p>{t("Reclassify entries by topic and generate a traceable Daily Summary.")}</p></div><span>{promptText ? t("Editable") : t("Select a source")}</span></div>
+            <textarea aria-label={t("Daily Summary writing prompt")} value={promptText} onChange={(event) => setPromptText(event.currentTarget.value)} placeholder={t("Generate a preview to prepare the writing prompt.")} />
+            <div className="daily-summary-delivery"><button type="button" disabled={!promptText.trim() || !preview} onClick={() => void deliver("prompt", "copy")}><Copy size={15} />{t("Copy prompt")}</button><button type="button" disabled={!promptText.trim() || !preview} onClick={() => void deliver("prompt", "download")}><Download size={15} />{t("Export prompt")}</button></div>
           </section>
           <section className="daily-summary-panel daily-summary-written-panel">
-            <div className="daily-summary-preview-header"><div><h2>Written summary</h2><p>粘贴或撰写模型输出，完成后导出。</p></div><span>{writtenContent.trim() ? `${writtenContent.trim().length} chars` : "Draft"}</span></div>
-            <textarea aria-label="Written Daily Summary" value={writtenContent} onChange={(event) => setWrittenContent(event.currentTarget.value)} placeholder="在这里粘贴或撰写按主题组织的每日摘要..." />
-            <div className="daily-summary-delivery"><button type="button" disabled={!writtenContent.trim() || !preview} onClick={() => void deliver("written", "copy")}><Copy size={15} />Copy summary</button><button type="button" className="primary-button" disabled={!writtenContent.trim() || !preview} onClick={() => void deliver("written", "download")}><Download size={15} />Export summary</button></div>
+            <div className="daily-summary-preview-header"><div><h2>{t("Written summary")}</h2><p>{t("Paste or write model output, then export it.")}</p></div><span>{writtenContent.trim() ? `${writtenContent.trim().length} ${t("chars")}` : t("Draft")}</span></div>
+            <textarea aria-label={t("Written Daily Summary")} value={writtenContent} onChange={(event) => setWrittenContent(event.currentTarget.value)} placeholder={t("Paste or write a topic-organized Daily Summary here...")} />
+            <div className="daily-summary-delivery"><button type="button" disabled={!writtenContent.trim() || !preview} onClick={() => void deliver("written", "copy")}><Copy size={15} />{t("Copy summary")}</button><button type="button" className="primary-button" disabled={!writtenContent.trim() || !preview} onClick={() => void deliver("written", "download")}><Download size={15} />{t("Export summary")}</button></div>
           </section>
           <section className="daily-summary-panel daily-summary-facts-panel">
-            <div className="daily-summary-preview-header"><div><h2>Facts preview</h2><p>导出 prompt 和摘要使用的冻结素材。</p></div>{preview && <span>{isDailySummaryPreviewCurrent(preview, aggregate, selection) ? "Current" : "Regenerate required"}</span>}</div>
-            {!preview && <div className="daily-summary-preview-empty">Generate a preview to freeze the selected facts.</div>}
-            {preview && <pre aria-label="Daily Summary Markdown preview">{preview.markdown}</pre>}
-            <div className="daily-summary-delivery"><button type="button" disabled={!preview} onClick={() => void deliver("facts", "copy")}><Copy size={15} />Copy facts</button><button type="button" disabled={!preview} onClick={() => void deliver("facts", "download")}><Download size={15} />Export facts</button></div>
+            <div className="daily-summary-preview-header"><div><h2>{t("Facts preview")}</h2><p>{t("Export the frozen facts used by the prompt and summary.")}</p></div>{preview && <span>{isDailySummaryPreviewCurrent(preview, aggregate, selection) ? t("Current") : t("Regenerate required")}</span>}</div>
+            {!preview && <div className="daily-summary-preview-empty">{t("Generate a preview to freeze the selected facts.")}</div>}
+            {preview && <pre aria-label={t("Daily Summary Markdown preview")}>{preview.markdown}</pre>}
+            <div className="daily-summary-delivery"><button type="button" disabled={!preview} onClick={() => void deliver("facts", "copy")}><Copy size={15} />{t("Copy facts")}</button><button type="button" disabled={!preview} onClick={() => void deliver("facts", "download")}><Download size={15} />{t("Export facts")}</button></div>
           </section>
         </div>
       </div>
     </>}
-    {privacySources.length > 0 && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="daily-summary-privacy-title"><TriangleAlert className="dialog-symbol warning" size={26} /><h2 id="daily-summary-privacy-title">Confirm browser-dependent sources</h2><p>This Daily Summary includes information collected through browser-backed or signed-in Plugins.</p><small>{privacySources.join(", ")}</small><div className="dialog-actions"><button type="button" onClick={cancelPrivacy}>Cancel</button><button type="button" className="primary-button" onClick={confirmPrivacy}>Continue</button></div></div></div>}
+    {privacySources.length > 0 && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="daily-summary-privacy-title"><TriangleAlert className="dialog-symbol warning" size={26} /><h2 id="daily-summary-privacy-title">{t("Confirm browser-dependent sources")}</h2><p>{t("This Daily Summary includes information collected through browser-backed or signed-in Plugins.")}</p><small>{privacySources.join(", ")}</small><div className="dialog-actions"><button type="button" onClick={cancelPrivacy}>{t("Cancel")}</button><button type="button" className="primary-button" onClick={confirmPrivacy}>{t("Continue")}</button></div></div></div>}
   </section>;
 }
 
@@ -518,6 +522,7 @@ function BatchRefreshView({
   onBatchStarted: (batchId: string) => void;
   onOpenLogs: (batchId: string, operationId?: string) => void;
 }) {
+  const { t, locale } = useLanguage();
   const [targets, setTargets] = useState<BatchTarget[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [refreshInputs, setRefreshInputs] = useState<Record<string, Record<string, RefreshOptionValue>>>({});
@@ -557,7 +562,7 @@ function BatchRefreshView({
       fetchHistory(),
       initialBatchId ? fetchBatch(initialBatchId) : Promise.resolve(),
     ]).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : "Batch refresh could not be loaded.");
+      if (active) setError(reason instanceof Error ? reason.message : t("Batch refresh could not be loaded."));
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [runtimeOrigin, initialBatchId]);
@@ -571,7 +576,7 @@ function BatchRefreshView({
     if (!initialBatchId || !batch || batch.batchId !== initialBatchId || batchTerminal(batch)) return;
     let active = true;
     const timer = window.setInterval(() => fetchBatch(initialBatchId).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : "Batch progress could not be loaded.");
+      if (active) setError(reason instanceof Error ? reason.message : t("Batch progress could not be loaded."));
     }), 900);
     return () => { active = false; window.clearInterval(timer); };
   }, [runtimeOrigin, initialBatchId, batch?.batchId, batch?.status]);
@@ -619,7 +624,7 @@ function BatchRefreshView({
       setSelectedIds(new Set());
       await fetchHistory();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Batch refresh could not start.");
+      setError(reason instanceof Error ? reason.message : t("Batch refresh could not start."));
     } finally { setSubmitting(false); }
   };
   const retryFailed = async () => {
@@ -633,7 +638,7 @@ function BatchRefreshView({
       onBatchStarted(created.batchId);
       await fetchHistory();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Failed targets could not be retried.");
+      setError(reason instanceof Error ? reason.message : t("Failed targets could not be retried."));
     } finally { setSubmitting(false); }
   };
   const startNewBatch = () => {
@@ -643,48 +648,48 @@ function BatchRefreshView({
     onBatchIdChange(undefined);
   };
 
-  const emptyState = selectionEmptyState(targets, now);
+  const emptyState = selectionEmptyState(targets, now, undefined, t);
   const today = localDayKey(now);
   const targetRows = batch
     ? batch.items.map((item) => ({ item, target: batch.targets?.find((target) => target.pluginId === item.pluginId) ?? targets.find((target) => target.pluginId === item.pluginId) }))
     : [];
   const historyPanel = (
     <aside className="batch-history">
-      <h2>Session history</h2>
-      {history.map((entry) => <button type="button" className={entry.batchId === batch?.batchId ? "batch-history-row is-selected" : "batch-history-row"} key={entry.batchId} onClick={() => { setBatch(entry); onBatchIdChange(entry.batchId); }}><span><strong>{new Date(entry.createdAt).toLocaleTimeString()}</strong><small>{entry.parentBatchId ? "Retry" : "Batch refresh"}</small></span><span><strong>{batchStatusLabel(entry.status)}</strong><small>{entry.counts.succeeded}/{entry.counts.total} succeeded</small></span></button>)}
-      {!history.length && <p>No Batch history in this Application Session.</p>}
+      <h2>{t("Session history")}</h2>
+      {history.map((entry) => <button type="button" className={entry.batchId === batch?.batchId ? "batch-history-row is-selected" : "batch-history-row"} key={entry.batchId} onClick={() => { setBatch(entry); onBatchIdChange(entry.batchId); }}><span><strong>{new Date(entry.createdAt).toLocaleTimeString(locale)}</strong><small>{entry.parentBatchId ? t("Retry") : t("Batch refresh")}</small></span><span><strong>{batchStatusLabel(entry.status, t)}</strong><small>{entry.counts.succeeded}/{entry.counts.total} {t("succeeded")}</small></span></button>)}
+      {!history.length && <p>{t("No Batch history in this Application Session.")}</p>}
     </aside>
   );
 
   return (
     <section className="host-page batch-page">
       <header className="page-header">
-        <div><h1>Batch refresh</h1><p>{batch ? `${batchStatusLabel(batch.status)} · ${batch.counts.remaining} remaining` : "Choose one or more Plugin Workspaces"}</p></div>
-        {batch && <div className="batch-header-actions"><button type="button" onClick={() => onOpenLogs(batch.batchId)}><ScrollText size={15} />View Batch logs</button>{batchTerminal(batch) && <button type="button" onClick={startNewBatch}><RefreshCw size={15} />New batch</button>}{batchTerminal(batch) && batch.counts.failed > 0 && <button className="primary-button" type="button" disabled={submitting} onClick={retryFailed}><RotateCcw size={15} />Retry failed</button>}</div>}
+        <div><h1>{t("Batch refresh")}</h1><p>{batch ? `${batchStatusLabel(batch.status, t)} · ${batch.counts.remaining} ${t("remaining")}` : t("Choose one or more Plugin Workspaces")}</p></div>
+        {batch && <div className="batch-header-actions"><button type="button" onClick={() => onOpenLogs(batch.batchId)}><ScrollText size={15} />{t("View Batch logs")}</button>{batchTerminal(batch) && <button type="button" onClick={startNewBatch}><RefreshCw size={15} />{t("New batch")}</button>}{batchTerminal(batch) && batch.counts.failed > 0 && <button className="primary-button" type="button" disabled={submitting} onClick={retryFailed}><RotateCcw size={15} />{t("Retry failed")}</button>}</div>}
       </header>
       {error && <div className="batch-error" role="alert"><AlertCircle size={17} />{error}</div>}
-      {loading && !targets.length && <div className="logs-state" role="status"><LoaderCircle className="spinner" size={20} />Loading Workspaces...</div>}
+      {loading && !targets.length && <div className="logs-state" role="status"><LoaderCircle className="spinner" size={20} />{t("Loading Workspaces...")}</div>}
       {!loading && !batch && (
         <div className="batch-selection-layout">
           <div className="batch-selection-main">
             <div className="batch-toolbar">
-              <div><strong>{selectedIds.size}</strong> selected <span className="batch-toolbar-note">{today ? `Local day ${today}` : ""}</span></div>
-              <div className="batch-toolbar-actions"><button type="button" onClick={() => setSelectedIds(selectAllEligible(targets))}><ListChecks size={15} />Select all eligible</button><button type="button" onClick={() => setSelectedIds(selectNotRefreshedToday(targets, now))}><RefreshCw size={15} />Not refreshed today</button></div>
+              <div><strong>{selectedIds.size}</strong> {t("selected")} <span className="batch-toolbar-note">{today ? `${t("Local day")} ${today}` : ""}</span></div>
+              <div className="batch-toolbar-actions"><button type="button" onClick={() => setSelectedIds(selectAllEligible(targets))}><ListChecks size={15} />{t("Select all eligible")}</button><button type="button" onClick={() => setSelectedIds(selectNotRefreshedToday(targets, now))}><RefreshCw size={15} />{t("Not refreshed today")}</button></div>
             </div>
-            <div className="batch-target-list" aria-label="Plugin Workspace refresh targets">
+            <div className="batch-target-list" aria-label={t("Plugin Workspace refresh targets")}>
               {targets.map((target) => {
-                const eligibility = targetEligibility(target);
+                const eligibility = targetEligibility(target, t);
                 return <div className={`batch-target-row ${selectedIds.has(target.pluginId) ? "is-selected" : ""} ${!eligibility.eligible ? "is-unavailable" : ""}`} key={target.pluginId}>
-                  <input aria-label={`Select ${target.name}`} type="checkbox" checked={selectedIds.has(target.pluginId)} disabled={!eligibility.eligible} onChange={() => toggle(target.pluginId)} />
-                  <div className="batch-target-main"><strong>{target.name}</strong><small>{target.pluginId} · {freshnessLabel(target, now)}</small><small className="batch-target-exact">{target.lastSuccessfulRefreshAt ? exactLocalTime(target.lastSuccessfulRefreshAt) : "No successful refresh"}</small><RefreshOptionControls target={target} input={refreshInputs[target.pluginId]} disabled={!eligibility.eligible} onChange={(key, value) => updateRefreshInput(target.pluginId, key, value)} /></div>
-                  <span className="batch-target-state"><span>{target.state}</span>{eligibility.warning && <span title={eligibility.warning}><TriangleAlert size={15} aria-label={eligibility.warning} /></span>}{!eligibility.eligible && <small>{eligibility.reason}</small>}</span>
+                  <input aria-label={t("Select {value}", { value: target.name })} type="checkbox" checked={selectedIds.has(target.pluginId)} disabled={!eligibility.eligible} onChange={() => toggle(target.pluginId)} />
+                  <div className="batch-target-main"><strong>{target.name}</strong><small>{target.pluginId} · {freshnessLabel(target, now, undefined, t, locale)}</small><small className="batch-target-exact">{target.lastSuccessfulRefreshAt ? exactLocalTime(target.lastSuccessfulRefreshAt, locale) : t("No successful refresh")}</small><RefreshOptionControls target={target} input={refreshInputs[target.pluginId]} disabled={!eligibility.eligible} onChange={(key, value) => updateRefreshInput(target.pluginId, key, value)} /></div>
+                  <span className="batch-target-state"><span>{t(target.state)}</span>{eligibility.warning && <span title={eligibility.warning}><TriangleAlert size={15} aria-label={eligibility.warning} /></span>}{!eligibility.eligible && <small>{eligibility.reason}</small>}</span>
                 </div>;
               })}
-              {!targets.length && <div className="logs-state"><strong>No Plugin Workspaces found</strong></div>}
+              {!targets.length && <div className="logs-state"><strong>{t("No Plugin Workspaces found")}</strong></div>}
             </div>
             <div className="batch-submit-bar">
-              <span>{selectedIds.size ? `${selectedIds.size} selected` : emptyState}</span>
-              <button className="primary-button" type="button" disabled={!selectedExecutable || submitting} onClick={startBatch}>{submitting ? <LoaderCircle className="spinner" size={15} /> : <RefreshCw size={15} />}Start refresh</button>
+              <span>{selectedIds.size ? `${selectedIds.size} ${t("selected")}` : emptyState}</span>
+              <button className="primary-button" type="button" disabled={!selectedExecutable || submitting} onClick={startBatch}>{submitting ? <LoaderCircle className="spinner" size={15} /> : <RefreshCw size={15} />}{t("Start refresh")}</button>
             </div>
           </div>
           {historyPanel}
@@ -693,12 +698,12 @@ function BatchRefreshView({
       {batch && (
         <div className="batch-result-layout">
           <div className="batch-result-main">
-            <div className="batch-counts" aria-label="Batch counts"><span><strong>{batch.counts.succeeded}</strong> succeeded</span><span><strong>{batch.counts.failed}</strong> failed</span><span><strong>{batch.counts.skipped}</strong> skipped</span><span><strong>{batch.counts.remaining}</strong> remaining</span></div>
-            <div className="batch-item-list" aria-label="Batch Workspace results">
+            <div className="batch-counts" aria-label={t("Batch counts")}><span><strong>{batch.counts.succeeded}</strong> {t("succeeded")}</span><span><strong>{batch.counts.failed}</strong> {t("failed")}</span><span><strong>{batch.counts.skipped}</strong> {t("skipped")}</span><span><strong>{batch.counts.remaining}</strong> {t("remaining")}</span></div>
+            <div className="batch-item-list" aria-label={t("Batch Workspace results")}>
               {targetRows.map(({ item, target }) => <div className="batch-item-row" key={item.pluginId}>
                 <span className={`batch-item-icon batch-item-icon--${item.state}`}>{item.state === "running" || item.state === "queued" ? <LoaderCircle className="spinner" size={16} /> : item.state === "succeeded" ? <CheckCircle2 size={16} /> : item.state === "failed" ? <AlertCircle size={16} /> : <CircleOff size={16} />}</span>
-                <span className="batch-item-main"><strong>{item.name}</strong><small>{item.pluginId} · {itemStatusLabel(item.state)}{item.coalesced ? " · followed existing refresh" : ""}</small>{item.reason && <small className="batch-item-reason">{item.reason}</small>}{target?.lastSuccessfulRefreshAt && <small className="batch-target-exact">Last success {exactLocalTime(target.lastSuccessfulRefreshAt)}</small>}</span>
-                <span className="batch-item-actions">{item.operationId && <button type="button" onClick={() => onOpenLogs(batch.batchId, item.operationId)}><ExternalLink size={14} />Evidence</button>}</span>
+                <span className="batch-item-main"><strong>{item.name}</strong><small>{item.pluginId} · {itemStatusLabel(item.state, t)}{item.coalesced ? ` · ${t("followed existing refresh")}` : ""}</small>{item.reason && <small className="batch-item-reason">{item.reason}</small>}{target?.lastSuccessfulRefreshAt && <small className="batch-target-exact">{t("Last success {value}", { value: exactLocalTime(target.lastSuccessfulRefreshAt, locale) })}</small>}</span>
+                <span className="batch-item-actions">{item.operationId && <button type="button" onClick={() => onOpenLogs(batch.batchId, item.operationId)}><ExternalLink size={14} />{t("Evidence")}</button>}</span>
               </div>)}
             </div>
           </div>
@@ -710,8 +715,9 @@ function BatchRefreshView({
 }
 
 export function App() {
+  const { language, setLanguage, t } = useLanguage();
   const [status, setStatus] = useState<Status>("loading");
-  const [message, setMessage] = useState("Starting plugin services...");
+  const [message, setMessage] = useState(() => t("Starting plugin services..."));
   const [runtime, setRuntime] = useState<RuntimeInfo>();
   const [view, setView] = useState<HostView>({ kind: "overview" });
   const [dailySummarySelection, setDailySummarySelection] = useState<Set<string>>();
@@ -753,7 +759,7 @@ export function App() {
       setView({ kind: "overview" });
       setManagedKey(info.plugins[0]?.id ?? info.rejectedPlugins[0]?.package);
     }).catch((error: unknown) => {
-      setMessage(error instanceof Error ? error.message : "Plugin services did not start.");
+      setMessage(error instanceof Error ? t(error.message) : t("Plugin services did not start."));
       setStatus("error");
     });
   }, []);
@@ -787,14 +793,14 @@ export function App() {
         if (response.activeBatch) batches.set(response.activeBatch.batchId, response.activeBatch);
         for (const batch of batches.values()) {
           const notice = batchCompletionNotice(batch, observedBatchIds.current, notifiedBatchIds.current);
-          if (notice) showNotice(notice);
+          if (notice) showNotice({ ...notice, actionLabel: t("View results"), message: t("Batch refresh {status}: {succeeded} succeeded, {failed} failed, {skipped} skipped, {interrupted} interrupted", { status: t(({ succeeded: "completed", partial: "partially completed", failed: "failed", skipped: "skipped", interrupted: "interrupted" } as Record<string, string>)[batch.status] ?? batch.status), succeeded: batch.counts.succeeded, failed: batch.counts.failed, skipped: batch.counts.skipped, interrupted: batch.counts.interrupted }) });
         }
       } catch {}
     };
     void checkBatches();
     const timer = window.setInterval(checkBatches, 900);
     return () => { active = false; window.clearInterval(timer); };
-  }, [status, runtime?.origin]);
+  }, [status, runtime?.origin, t]);
 
   useEffect(() => window.infolens?.onRuntimeStatus((event) => {
     if (event.status === "running") {
@@ -822,7 +828,7 @@ export function App() {
     window.infolens.getMarketCatalog().then((catalog) => {
       if (active) setMarketCatalog(catalog);
     }).catch((error) => {
-      if (active) showNotice(error instanceof Error ? error.message : "Market catalog is unavailable.");
+      if (active) showNotice(error instanceof Error ? error.message : t("Market catalog is unavailable."));
     }).finally(() => { if (active) setMarketLoading(false); });
     return () => { active = false; };
   }, [view.kind]);
@@ -869,44 +875,44 @@ export function App() {
       setBatchId(result.activeBatch?.batchId);
       setView({ kind: "batch" });
     } catch (reason) {
-      showNotice(reason instanceof Error ? reason.message : "Batch refresh is unavailable.");
+      showNotice(reason instanceof Error ? reason.message : t("Batch refresh is unavailable."));
     }
   };
 
   const mutate = async (action: () => Promise<unknown>, success: string) => {
     try { await action(); await refreshInfo(); showNotice(success); }
-    catch (error) { showNotice(error instanceof Error ? error.message : "Operation failed"); }
+    catch (error) { showNotice(error instanceof Error ? error.message : t("Operation failed")); }
   };
 
   const install = async () => {
     if (!runtime) return;
-    const sourcePath = window.infolens ? await window.infolens.selectPluginFolder() : window.prompt("Plugin folder path");
+    const sourcePath = window.infolens ? await window.infolens.selectPluginFolder() : window.prompt(t("Plugin folder path"));
     if (!sourcePath) return;
     await mutate(async () => {
       const result = await runtimeRequest<{ pluginId: string }>(runtime, "/runtime/plugins/install", { method: "POST", body: JSON.stringify({ sourcePath }) });
       setManagedKey(result.pluginId);
       setView({ kind: "plugins" });
-    }, "Plugin folder installed and enabled");
+    }, t("Plugin folder installed and enabled"));
   };
 
   const importArchive = async () => {
     if (!runtime) return;
-    const archivePath = window.infolens ? await window.infolens.selectPluginArchive() : window.prompt("Plugin ZIP path");
+    const archivePath = window.infolens ? await window.infolens.selectPluginArchive() : window.prompt(t("Plugin ZIP path"));
     if (!archivePath) return;
     await mutate(async () => {
       const result = await runtimeRequest<{ pluginId: string }>(runtime, "/runtime/plugins/install-archive", { method: "POST", body: JSON.stringify({ archivePath }) });
       setManagedKey(result.pluginId);
       setView({ kind: "plugins" });
-    }, "Plugin ZIP imported and enabled");
+    }, t("Plugin ZIP imported and enabled"));
   };
 
   const refreshMarket = async () => {
     if (!window.infolens) return;
     setMarketRefreshing(true);
-    try { setMarketCatalog(await window.infolens.refreshMarketCatalog()); showNotice("Market catalog refreshed"); }
+    try { setMarketCatalog(await window.infolens.refreshMarketCatalog()); showNotice(t("Market catalog refreshed")); }
     catch (error) {
       await window.infolens.getMarketCatalog().then(setMarketCatalog).catch(() => {});
-      showNotice(error instanceof Error ? error.message : "Market refresh failed.");
+      showNotice(error instanceof Error ? error.message : t("Market refresh failed."));
     }
     finally { setMarketRefreshing(false); }
   };
@@ -917,8 +923,8 @@ export function App() {
       const result = await window.infolens.installMarketPlugin({ pluginId: release.pluginId, version: release.version });
       setMarketOperation(await window.infolens.getMarketOperation(result.operationId));
       await refreshInfo();
-      showNotice(`${release.name} installed and enabled`);
-    } catch (error) { showNotice(error instanceof Error ? error.message : "Market installation failed."); }
+      showNotice(t("{name} installed and enabled", { name: release.name }));
+    } catch (error) { showNotice(error instanceof Error ? error.message : t("Market installation failed.")); }
   };
 
   const cancelMarket = () => {
@@ -931,8 +937,8 @@ export function App() {
       const result = await window.infolens.retryMarketInstall(marketOperation.operationId);
       setMarketOperation(await window.infolens.getMarketOperation(result.operationId));
       await refreshInfo();
-      showNotice(`${marketOperation.pluginId} installed and enabled`);
-    } catch (error) { showNotice(error instanceof Error ? error.message : "Market retry failed."); }
+      showNotice(t("{name} installed and enabled", { name: marketOperation.pluginId }));
+    } catch (error) { showNotice(error instanceof Error ? error.message : t("Market retry failed.")); }
   };
 
   const checkBridge = async () => {
@@ -943,7 +949,7 @@ export function App() {
     } catch (error) {
       const failedStatus = browserStatusFromError(error);
       if (failedStatus) setBrowserStatus(failedStatus);
-      showNotice(error instanceof Error ? error.message : "Browser connection check failed.");
+      showNotice(error instanceof Error ? error.message : t("Browser connection check failed."));
     } finally {
       setBrowserAction(undefined);
     }
@@ -957,7 +963,7 @@ export function App() {
     } catch (error) {
       const failedStatus = browserStatusFromError(error);
       if (failedStatus) setBrowserStatus(failedStatus);
-      showNotice(error instanceof Error ? error.message : "Browser reconnection failed.");
+      showNotice(error instanceof Error ? error.message : t("Browser reconnection failed."));
     } finally {
       setBrowserAction(undefined);
     }
@@ -998,84 +1004,85 @@ export function App() {
 
   const commands = useMemo<CommandItem[]>(() => {
     const goTo: CommandItem[] = [
-      { id: "view-overview", group: "Go to", label: "Overview", action: () => setView({ kind: "overview" }) },
-      { id: "view-market", group: "Go to", label: "Plugin Market", action: () => setView({ kind: "market" }) },
-      { id: "view-plugins", group: "Go to", label: "Plugins", action: () => setView({ kind: "plugins" }) },
-      { id: "view-daily-summary", group: "Go to", label: "Daily Summary", action: () => setView({ kind: "daily-summary" }) },
-      { id: "view-batch", group: "Go to", label: "Batch refresh", action: () => void openBatchRefresh() },
-      { id: "view-logs", group: "Go to", label: "Logs", action: () => setView({ kind: "logs" }) },
-      { id: "view-settings", group: "Go to", label: "Settings", action: () => setView({ kind: "settings" }) },
+      { id: "view-overview", group: t("Go to"), label: t("Overview"), action: () => setView({ kind: "overview" }) },
+      { id: "view-market", group: t("Go to"), label: t("Plugin Market"), action: () => setView({ kind: "market" }) },
+      { id: "view-plugins", group: t("Go to"), label: t("Plugins"), action: () => setView({ kind: "plugins" }) },
+      { id: "view-daily-summary", group: t("Go to"), label: t("Daily Summary"), action: () => setView({ kind: "daily-summary" }) },
+      { id: "view-batch", group: t("Go to"), label: t("Batch refresh"), action: () => void openBatchRefresh() },
+      { id: "view-logs", group: t("Go to"), label: t("Logs"), action: () => setView({ kind: "logs" }) },
+      { id: "view-settings", group: t("Go to"), label: t("Settings"), action: () => setView({ kind: "settings" }) },
     ];
     const workspaces: CommandItem[] = (runtime?.plugins ?? []).filter(available).map((plugin) => ({
       id: `plugin-${plugin.id}`,
-      group: "Workspaces",
+      group: t("Workspaces"),
       label: plugin.name,
       hint: plugin.id,
       action: () => void selectPlugin(plugin),
     }));
     const actions: CommandItem[] = [
-      { id: "action-install-folder", group: "Actions", label: "Install local plugin folder", action: () => void install() },
-      { id: "action-import-archive", group: "Actions", label: "Import plugin ZIP", action: () => void importArchive() },
-      { id: "theme-system", group: "Actions", label: "Theme: System", action: () => void changeTheme("system") },
-      { id: "theme-light", group: "Actions", label: "Theme: Light", action: () => void changeTheme("light") },
-      { id: "theme-dark", group: "Actions", label: "Theme: Dark", action: () => void changeTheme("dark") },
+      { id: "action-install-folder", group: t("Actions"), label: t("Install local plugin folder"), action: () => void install() },
+      { id: "action-import-archive", group: t("Actions"), label: t("Import plugin ZIP"), action: () => void importArchive() },
+      { id: "theme-system", group: t("Actions"), label: t("Theme: System"), action: () => void changeTheme("system") },
+      { id: "theme-light", group: t("Actions"), label: t("Theme: Light"), action: () => void changeTheme("light") },
+      { id: "theme-dark", group: t("Actions"), label: t("Theme: Dark"), action: () => void changeTheme("dark") },
     ];
     if (runtime?.plugins.some((plugin) => plugin.browserDependent)) {
-      actions.push({ id: "action-bridge-check", group: "Actions", label: "Check browser connection", action: () => void checkBridge() });
+      actions.push({ id: "action-bridge-check", group: t("Actions"), label: t("Check browser connection"), action: () => void checkBridge() });
     }
     return [...goTo, ...workspaces, ...actions];
-  }, [runtime, actualTheme]);
+  }, [runtime, actualTheme, t]);
 
   return (
     <div className="app-shell">
       <InstrumentRail runtime={runtime} view={view} onSelectPlugin={(plugin) => void selectPlugin(plugin)} onOpenView={setView} onOpenBatch={() => void openBatchRefresh()} onOpenPalette={() => setPaletteOpen(true)} />
 
       <main className="main-area">
-        {runtimeRestarting && <div className="restart-bar" role="status"><LoaderCircle className="spinner" size={15} /> Restarting plugin services...</div>}
+        {runtimeRestarting && <div className="restart-bar" role="status"><LoaderCircle className="spinner" size={15} /> {t("Restarting plugin services...")}</div>}
         {view.kind === "logs" && <LogsView filters={logFilters} setFilters={setLogFilters} focusEntryId={focusedLogId} onNotice={showNotice} />}
         {view.kind !== "logs" && status === "loading" && <div className="system-state" role="status"><LoaderCircle className="spinner" size={24} /><p>{message}</p></div>}
-        {view.kind !== "logs" && status === "error" && <div className="system-state system-state--error" role="alert"><h1>Plugin services unavailable</h1><p>{message}</p></div>}
+        {view.kind !== "logs" && status === "error" && <div className="system-state system-state--error" role="alert"><h1>{t("Plugin services unavailable")}</h1><p>{message}</p></div>}
         {status === "ready" && view.kind === "plugin" && selected && selected.state === "disabled" && (
-          <div className="system-state"><CircleOff size={28} /><h1>{selected.name} is disabled</h1><button className="primary-button" onClick={() => runtime && mutate(() => runtimeRequest(runtime, `/runtime/plugins/${selected.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: true }) }), `${selected.name} enabled`)}>Enable in Plugins</button></div>
+          <div className="system-state"><CircleOff size={28} /><h1>{selected.name} {t("is disabled")}</h1><button className="primary-button" onClick={() => runtime && mutate(() => runtimeRequest(runtime, `/runtime/plugins/${selected.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: true }) }), t("{name} enabled", { name: selected.name }))}>{t("Enable in Plugins")}</button></div>
         )}
-        {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? "Plugin"} workspace`} allow="clipboard-write" />}
+        {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? t("Plugin")} ${t("workspace")}`} allow="clipboard-write" />}
         {status === "ready" && view.kind === "overview" && runtime && <OverviewView runtime={runtime} onOpenPlugin={(plugin) => void selectPlugin(plugin)} onOpenBatch={() => void openBatchRefresh()} onOpenDailySummary={() => setView({ kind: "daily-summary" })} onOpenSettings={() => setView({ kind: "settings" })} />}
         {status === "ready" && view.kind === "market" && <MarketView catalog={marketCatalog} loading={marketLoading} refreshing={marketRefreshing} operation={marketOperation} onRefresh={() => void refreshMarket()} onInstall={installMarket} onCancel={cancelMarket} onRetry={() => void retryMarket()} />}
         {status === "ready" && view.kind === "batch" && runtime && <BatchRefreshView runtime={runtime} initialBatchId={batchId} onBatchIdChange={setBatchId} onBatchStarted={observeBatch} onOpenLogs={openBatchLogs} />}
         {status === "ready" && !runtimeRestarting && view.kind === "daily-summary" && runtime && <DailySummaryView runtime={runtime} onOpenBatch={openBatchRefresh} onNotice={showNotice} selectedPluginIds={dailySummarySelection} onSelectionChange={setDailySummarySelection} />}
         {status === "ready" && view.kind === "plugins" && runtime && (
           <section className="host-page plugin-manager">
-            <header className="page-header"><div><h1>Plugins</h1><p>Installed packages and local diagnostics</p></div><div className="page-header-actions"><button type="button" onClick={install}><FolderPlus size={17} />Install folder</button><button type="button" className="primary-button" onClick={importArchive}><FileArchive size={17} />Import ZIP</button></div></header>
+            <header className="page-header"><div><h1>{t("Plugins")}</h1><p>{t("Installed packages and local diagnostics")}</p></div><div className="page-header-actions"><button type="button" onClick={install}><FolderPlus size={17} />{t("Install folder")}</button><button type="button" className="primary-button" onClick={importArchive}><FileArchive size={17} />{t("Import ZIP")}</button></div></header>
             <div className="manager-layout">
-              <div className="package-list" role="listbox" aria-label="Installed plugins">
+              <div className="package-list" role="listbox" aria-label={t("Installed plugins")}>
                 {runtime.plugins.map((plugin) => <button key={plugin.id} className={managedKey === plugin.id ? "package-row selected" : "package-row"} onClick={() => setManagedKey(plugin.id)}><span className={`source-icon source-icon--${plugin.id}`}>{sourceInitial(plugin)}</span><span><strong>{plugin.name}</strong><small>{plugin.version}</small></span><Lifecycle state={plugin.state} /></button>)}
-                {runtime.rejectedPlugins.map((plugin) => <button key={plugin.package} className={managedKey === plugin.package ? "package-row selected" : "package-row"} onClick={() => setManagedKey(plugin.package)}><span className="source-icon"><TriangleAlert size={15} /></span><span><strong>{plugin.name ?? plugin.package}</strong><small>Incompatible</small></span><AlertCircle className="danger" size={15} /></button>)}
+                {runtime.rejectedPlugins.map((plugin) => <button key={plugin.package} className={managedKey === plugin.package ? "package-row selected" : "package-row"} onClick={() => setManagedKey(plugin.package)}><span className="source-icon"><TriangleAlert size={15} /></span><span><strong>{plugin.name ?? plugin.package}</strong><small>{t("Incompatible")}</small></span><AlertCircle className="danger" size={15} /></button>)}
               </div>
               <div className="package-detail">
-                {managed?.provenance && <div className="package-provenance"><strong>Origin: {managed.origin ?? managed.provenance.origin}</strong>{managed.releaseStatus && <span>Release status: {managed.releaseStatus}</span>}{managed.provenance.publisher && <span>Publisher: {managed.provenance.publisher}</span>}{managed.provenance.expectedSha256 && <span className="path-value">SHA-256: {managed.provenance.expectedSha256}</span>}</div>}
-                {managed && <><div className="detail-title"><span><h2>{managed.name}</h2><p>{managed.id} · {managed.version}</p></span><label className="toggle"><input type="checkbox" checked={managed.enabled} onChange={(event) => mutate(() => runtimeRequest(runtime, `/runtime/plugins/${managed.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: event.target.checked }) }), event.target.checked ? `${managed.name} enabled` : `${managed.name} disabled`)} /><span />Enabled</label></div><dl><dt>State</dt><dd>{managed.state}</dd><dt>Package</dt><dd className="path-value">{managed.packagePath}</dd><dt>Last successful refresh</dt><dd>{managed.statusSnapshot?.lastSuccessfulRefreshAt ?? "Not yet recorded"}</dd>{managed.statusSnapshot?.failure && <><dt>Latest failure</dt><dd className="failure-summary"><span>{managed.statusSnapshot.failure.code}: {managed.statusSnapshot.failure.message}</span><button type="button" onClick={() => openFailureLogs(managed.id, managed.statusSnapshot!.failure!)}>View matching logs</button></dd></>}</dl><div className="detail-actions"><button onClick={() => mutate(async () => { const value = await runtimeRequest<{ diagnostics: string }>(runtime, `/runtime/plugins/${managed.id}/diagnostics`); if (window.infolens) await window.infolens.copyText(value.diagnostics); else await navigator.clipboard.writeText(value.diagnostics); }, "Diagnostics copied")}><Copy size={16} />Copy diagnostics</button><button className="danger-button" onClick={() => setRemoveKey(managed.id)}><Trash2 size={16} />Remove plugin</button></div></>}
-                {rejected && <><div className="detail-title"><span><h2>{rejected.name ?? rejected.package}</h2><p>{rejected.version ?? "Invalid package"}</p></span><span className="incompatible">Incompatible</span></div><div className="failure-panel"><strong>{rejected.code}</strong><p>{rejected.message}</p></div><dl><dt>Package</dt><dd className="path-value">{rejected.packagePath}</dd></dl><div className="detail-actions"><button className="danger-button" onClick={() => setRemoveKey(rejected.package)}><Trash2 size={16} />Remove package</button></div></>}
+                {managed?.provenance && <div className="package-provenance"><strong>{t("Origin")}: {managed.origin ?? managed.provenance.origin}</strong>{managed.releaseStatus && <span>{t("Release status")}: {t(managed.releaseStatus)}</span>}{managed.provenance.publisher && <span>{t("Publisher")}: {managed.provenance.publisher}</span>}{managed.provenance.expectedSha256 && <span className="path-value">SHA-256: {managed.provenance.expectedSha256}</span>}</div>}
+                {managed && <><div className="detail-title"><span><h2>{managed.name}</h2><p>{managed.id} · {managed.version}</p></span><label className="toggle"><input type="checkbox" checked={managed.enabled} onChange={(event) => mutate(() => runtimeRequest(runtime, `/runtime/plugins/${managed.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: event.target.checked }) }), event.target.checked ? t("{name} enabled", { name: managed.name }) : t("{name} disabled", { name: managed.name }))} /><span />{t("Enabled")}</label></div><dl><dt>{t("State")}</dt><dd>{t(managed.state)}</dd><dt>{t("Package")}</dt><dd className="path-value">{managed.packagePath}</dd><dt>{t("Last successful refresh")}</dt><dd>{managed.statusSnapshot?.lastSuccessfulRefreshAt ?? t("Not yet recorded")}</dd>{managed.statusSnapshot?.failure && <><dt>{t("Latest failure")}</dt><dd className="failure-summary"><span>{managed.statusSnapshot.failure.code}: {managed.statusSnapshot.failure.message}</span><button type="button" onClick={() => openFailureLogs(managed.id, managed.statusSnapshot!.failure!)}>{t("View matching logs")}</button></dd></>}</dl><div className="detail-actions"><button onClick={() => mutate(async () => { const value = await runtimeRequest<{ diagnostics: string }>(runtime, `/runtime/plugins/${managed.id}/diagnostics`); if (window.infolens) await window.infolens.copyText(value.diagnostics); else await navigator.clipboard.writeText(value.diagnostics); }, t("Diagnostics copied"))}><Copy size={16} />{t("Copy diagnostics")}</button><button className="danger-button" onClick={() => setRemoveKey(managed.id)}><Trash2 size={16} />{t("Remove plugin")}</button></div></>}
+                {rejected && <><div className="detail-title"><span><h2>{rejected.name ?? rejected.package}</h2><p>{rejected.version ?? t("Invalid package")}</p></span><span className="incompatible">{t("Incompatible")}</span></div><div className="failure-panel"><strong>{rejected.code}</strong><p>{rejected.message}</p></div><dl><dt>{t("Package")}</dt><dd className="path-value">{rejected.packagePath}</dd></dl><div className="detail-actions"><button className="danger-button" onClick={() => setRemoveKey(rejected.package)}><Trash2 size={16} />{t("Remove package")}</button></div></>}
               </div>
             </div>
           </section>
         )}
         {status === "ready" && view.kind === "settings" && (
           <section className="host-page">
-            <header className="page-header"><div><h1>Settings</h1><p>Application preferences</p></div></header>
+            <header className="page-header"><div><h1>{t("Settings")}</h1><p>{t("Application preferences")}</p></div></header>
             <div className="settings-section">
-              <h2>Appearance</h2>
-              <div className="setting-row"><span><strong>Theme</strong><small>Applied to the host and open plugin workspace</small></span><div className="segmented" aria-label="Theme">{(["system", "light", "dark"] as ThemePreference[]).map((item) => <button aria-pressed={theme === item} className={theme === item ? "active" : ""} key={item} onClick={() => changeTheme(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}</div></div>
+              <h2>{t("Appearance")}</h2>
+              <div className="setting-row"><span><strong>{t("Theme")}</strong><small>{t("Applied to the host and open plugin workspace")}</small></span><div className="segmented" aria-label={t("Theme")}>{(["system", "light", "dark"] as ThemePreference[]).map((item) => <button aria-pressed={theme === item} className={theme === item ? "active" : ""} key={item} onClick={() => changeTheme(item)}>{t(item[0].toUpperCase() + item.slice(1))}</button>)}</div></div>
+              <div className="setting-row"><span><strong>{t("Language")}</strong><small>{t("Choose the language used by the Host Shell")}</small></span><div className="segmented" aria-label={t("Language")}><button aria-pressed={language === "zh-CN"} className={language === "zh-CN" ? "active" : ""} onClick={() => setLanguage("zh-CN")}>{t("中文")}</button><button aria-pressed={language === "en-US"} className={language === "en-US" ? "active" : ""} onClick={() => setLanguage("en-US")}>{t("English")}</button></div></div>
             </div>
             {runtime && runtime.plugins.some((plugin) => plugin.browserDependent) && <div className="settings-section">
-              <h2>Browser Bridge</h2>
+              <h2>{t("Browser Bridge")}</h2>
               <BridgePanel status={browserStatus} action={browserAction} onCheck={() => void checkBridge()} onReconnect={() => void reconnectBridge()} />
             </div>}
           </section>
         )}
       </main>
 
-      {removeKey && runtime && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="remove-title"><TriangleAlert className="dialog-symbol danger" size={26} /><h2 id="remove-title">Remove plugin?</h2><p>The package, Plugin-owned data, Adapter Scope, Host State entries, and retained logs will be permanently deleted.</p><div className="dialog-actions"><button onClick={() => setRemoveKey(undefined)}>Cancel</button><button className="danger-button" onClick={() => mutate(async () => { if (window.infolens) await window.infolens.removePlugin(removeKey); else await runtimeRequest(runtime, `/runtime/plugins/${encodeURIComponent(removeKey)}/remove`, { method: "DELETE" }); setRemoveKey(undefined); setManagedKey(undefined); }, "Plugin removed")}>Remove plugin</button></div></div></div>}
-      {toast && <div className="toast" role="status"><span>{toast.message}</span>{toast.batchId && <button type="button" onClick={() => { setBatchId(toast.batchId); setView({ kind: "batch" }); setToast(undefined); }}><ExternalLink size={14} />{toast.actionLabel ?? "View results"}</button>}</div>}
+      {removeKey && runtime && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="remove-title"><TriangleAlert className="dialog-symbol danger" size={26} /><h2 id="remove-title">{t("Remove plugin?")}</h2><p>{t("The package, Plugin-owned data, Adapter Scope, Host State entries, and retained logs will be permanently deleted.")}</p><div className="dialog-actions"><button onClick={() => setRemoveKey(undefined)}>{t("Cancel")}</button><button className="danger-button" onClick={() => mutate(async () => { if (window.infolens) await window.infolens.removePlugin(removeKey); else await runtimeRequest(runtime, `/runtime/plugins/${encodeURIComponent(removeKey)}/remove`, { method: "DELETE" }); setRemoveKey(undefined); setManagedKey(undefined); }, t("Plugin removed"))}>{t("Remove plugin")}</button></div></div></div>}
+      {toast && <div className="toast" role="status"><span>{toast.message}</span>{toast.batchId && <button type="button" onClick={() => { setBatchId(toast.batchId); setView({ kind: "batch" }); setToast(undefined); }}><ExternalLink size={14} />{toast.actionLabel ?? t("View results")}</button>}</div>}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
     </div>
   );

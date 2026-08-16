@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
+import { useLanguage } from "../i18n";
 
 export interface CommandItem {
   id: string;
@@ -16,6 +17,7 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({ open, onClose, commands }: CommandPaletteProps) {
+  const { t } = useLanguage();
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -54,13 +56,13 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
   let lastGroup = "";
   return (
     <div className="dialog-scrim palette-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+      <div className="palette" role="dialog" aria-modal="true" aria-label={t("Command palette")}>
         <div className="palette-input-row">
           <Search size={16} aria-hidden="true" />
-          <input ref={inputRef} aria-label="Search commands" placeholder="Type a command or search..." value={query} onChange={(event) => setQuery(event.currentTarget.value)} onKeyDown={onKeyDown} />
+          <input ref={inputRef} aria-label={t("Search commands")} placeholder={t("Type a command or search...")} value={query} onChange={(event) => setQuery(event.currentTarget.value)} onKeyDown={onKeyDown} />
           <kbd>esc</kbd>
         </div>
-        <div className="palette-list" role="listbox" aria-label="Commands" aria-activedescendant={filtered[activeIndex] ? `palette-item-${filtered[activeIndex].id}` : undefined}>
+        <div className="palette-list" role="listbox" aria-label={t("Commands")} aria-activedescendant={filtered[activeIndex] ? `palette-item-${filtered[activeIndex].id}` : undefined}>
           {filtered.map((item, index) => {
             const groupHeader = item.group !== lastGroup ? <div className="palette-group">{item.group}</div> : null;
             lastGroup = item.group;
@@ -74,7 +76,7 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
               </Fragment>
             );
           })}
-          {!filtered.length && <div className="palette-empty">No commands match &ldquo;{query}&rdquo;.</div>}
+          {!filtered.length && <div className="palette-empty">{t("No commands match “{query}”.", { query })}</div>}
         </div>
       </div>
     </div>

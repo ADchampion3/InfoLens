@@ -51,7 +51,13 @@ function shutdown(code = 0) {
 process.on("SIGINT", () => shutdown());
 process.on("SIGTERM", () => shutdown());
 
-start("npm", ["run", "dev:web", "--", "--configLoader", "runner", "--port", String(rendererPort), "--strictPort"], launchConfig.viteEnvironment);
+start(process.execPath, [
+  path.join(projectRoot, "node_modules", "vite", "bin", "vite.js"),
+  "--config", path.join("apps", "desktop", "vite.config.ts"),
+  "--configLoader", "runner",
+  "--port", String(rendererPort),
+  "--strictPort",
+], launchConfig.viteEnvironment);
 
 const waitForRenderer = async () => {
   for (let attempt = 0; attempt < 80; attempt += 1) {

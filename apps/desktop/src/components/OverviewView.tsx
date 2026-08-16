@@ -3,6 +3,8 @@ import { ArrowRight, LoaderCircle, RefreshCw, TriangleAlert } from "lucide-react
 import { runtimeRequest } from "../runtime-api";
 import type { DailySummaryAggregate } from "../daily-summary";
 import { sourceInitial } from "./InstrumentRail";
+import { useLanguage } from "../i18n";
+import type { Translate } from "../i18n";
 
 interface OverviewViewProps {
   runtime: RuntimeInfo;
@@ -12,15 +14,15 @@ interface OverviewViewProps {
   onOpenSettings: () => void;
 }
 
-function relativeAge(iso: string | undefined, now: Date): string {
-  if (!iso) return "No successful refresh";
+function relativeAge(iso: string | undefined, now: Date, t: Translate): string {
+  if (!iso) return t("No successful refresh");
   const elapsed = now.getTime() - new Date(iso).getTime();
-  if (elapsed < 60_000) return "Refreshed just now";
+  if (elapsed < 60_000) return t("Refreshed just now");
   const minutes = Math.floor(elapsed / 60_000);
-  if (minutes < 60) return `Refreshed ${minutes} min ago`;
+  if (minutes < 60) return t("Refreshed {minutes} min ago", { minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `Refreshed ${hours} h ago`;
-  return `Refreshed ${Math.floor(hours / 24)} d ago`;
+  if (hours < 48) return t("Refreshed {hours} h ago", { hours });
+  return t("Refreshed {days} d ago", { days: Math.floor(hours / 24) });
 }
 
 /** Freshness as a 0..1 meter: full at the last successful refresh, empty after 24 h. */
@@ -45,6 +47,7 @@ function bridgeTone(overall: BrowserStatusOverall | undefined): "ok" | "warn" | 
 }
 
 export function OverviewView({ runtime, onOpenPlugin, onOpenBatch, onOpenDailySummary, onOpenSettings }: OverviewViewProps) {
+  const { t, locale } = useLanguage();
   const [now, setNow] = useState(() => new Date());
   const [summary, setSummary] = useState<DailySummaryAggregate>();
   const [summaryState, setSummaryState] = useState<"loading" | "ready" | "error">("loading");
@@ -80,12 +83,12 @@ export function OverviewView({ runtime, onOpenPlugin, onOpenBatch, onOpenDailySu
   return (
     <section className="host-page overview-page">
       <header className="overview-header">
-        <span className="overview-weekday">{now.toLocaleDateString(undefined, { weekday: "long" })}</span>
-        <h1>{now.toLocaleDateString(undefined, { month: "long", day: "numeric" })}</h1>
-        <p>Signal deck · {runtime.plugins.length} {runtime.plugins.length === 1 ? "source" : "sources"} on this device</p>
+        <span className="overview-weekday">{now.toLocaleDateString(locale, { weekday: "long" })}</span>
+        <h1>{now.toLocaleDateString(locale, { month: "long", day: "numeric" })}</h1>
+        <p>{t("Signal deck · {count} {sourceLabel} on this device", { count: runtime.plugins.length, sourceLabel: t(runtime.plugins.length === 1 ? "source" : "sources") })}</p>
       </header>
 
-      <div className="signal-grid" aria-label="Source signals">
+      <div className="signal-grid" aria-label={t("Source signals")}>
         {runtime.plugins.map((plugin) => {
           const lastRefresh = plugin.statusSnapshot?.lastSuccessfulRefreshAt;
           const tone = stateTone(plugin.state);
@@ -93,78 +96,78 @@ export function OverviewView({ runtime, onOpenPlugin, onOpenBatch, onOpenDailySu
             <button className={`signal-card signal-card--${plugin.id}`} type="button" key={plugin.id} onClick={() => onOpenPlugin(plugin)}>
               <span className="signal-card-top">
                 <span className={`source-icon source-icon--${plugin.id}`} aria-hidden="true">{sourceInitial(plugin)}</span>
-                <span className={`ov-pill ov-pill--${tone}`}>{plugin.state}</span>
+                <span className={`ov-pill ov-pill--${tone}`}>{t(plugin.state)}</span>
               </span>
               <span className="signal-card-name">{plugin.name}</span>
               <span className="signal-card-meta">
-                {plugin.badge !== undefined && <span className="signal-card-badge">{plugin.badge} new</span>}
-                <span>{relativeAge(lastRefresh, now)}</span>
+                {plugin.badge !== undefined && <span className="signal-card-badge">{plugin.badge} {t("new")}</span>}
+                <span>{relativeAge(lastRefresh, now, t)}</span>
               </span>
               <span className="fresh-meter" aria-hidden="true"><span className="fresh-fill" style={{ width: `${Math.round(freshness(lastRefresh, now) * 100)}%` }} /></span>
             </button>
           );
         })}
-        {!runtime.plugins.length && <div className="logs-state"><strong>No sources installed</strong><span>Install a plugin to see signals here.</span></div>}
+        {!runtime.plugins.length && <div className="logs-state"><strong>{t("No sources installed")}</strong><span>{t("Install a plugin to see signals here.")}</span></div>}
       </div>
 
-      <section className="ov-band" aria-label="Batch refresh status">
+      <section className="ov-band" aria-label={t("Batch refresh status")}>
         <div className="ov-band-head">
-          <h2>{batch ? "Batch in progress" : "Batch refresh"}</h2>
+          <h2>{batch ? t("Batch in progress") : t("Batch refresh")}</h2>
           {batch
-            ? <button className="ov-band-action" type="button" onClick={onOpenBatch}>Open batch<ArrowRight size={14} /></button>
-            : <button className="ov-band-action" type="button" onClick={onOpenBatch}><RefreshCw size={14} />Start refresh</button>}
+            ? <button className="ov-band-action" type="button" onClick={onOpenBatch}>{t("Open batch")}<ArrowRight size={14} /></button>
+            : <button className="ov-band-action" type="button" onClick={onOpenBatch}><RefreshCw size={14} />{t("Start refresh")}</button>}
         </div>
         {batch && (
           <>
             <div className="ov-band-counts">
-              <span><strong>{batch.counts.succeeded}</strong> succeeded</span>
-              <span><strong>{batch.counts.failed}</strong> failed</span>
-              <span><strong>{batch.counts.remaining}</strong> remaining</span>
+              <span><strong>{batch.counts.succeeded}</strong> {t("succeeded")}</span>
+              <span><strong>{batch.counts.failed}</strong> {t("failed")}</span>
+              <span><strong>{batch.counts.remaining}</strong> {t("remaining")}</span>
             </div>
             <div className="ov-band-rows">
               {batch.items.map((item) => (
                 <div className="ov-band-row" key={item.pluginId}>
                   <span className="ov-band-row-name">{item.name}</span>
-                  <span className={`ov-pill ov-pill--${item.state === "succeeded" ? "ok" : item.state === "failed" ? "bad" : item.state === "running" || item.state === "queued" ? "busy" : "muted"}`}>{item.state}</span>
+                  <span className={`ov-pill ov-pill--${item.state === "succeeded" ? "ok" : item.state === "failed" ? "bad" : item.state === "running" || item.state === "queued" ? "busy" : "muted"}`}>{t(item.state)}</span>
                 </div>
               ))}
             </div>
           </>
         )}
-        {!batch && <p className="ov-band-note">No batch is running. Start one to refresh every source at once.</p>}
+        {!batch && <p className="ov-band-note">{t("No batch is running. Start one to refresh every source at once.")}</p>}
       </section>
 
       <div className="ov-duo">
-        <section className="ov-card" aria-label="Daily Summary status">
-          <div className="ov-card-head"><h2>Daily Summary</h2><button className="ov-card-action" type="button" onClick={onOpenDailySummary}>Open<ArrowRight size={14} /></button></div>
+        <section className="ov-card" aria-label={t("Daily Summary status")}>
+          <div className="ov-card-head"><h2>{t("Daily Summary")}</h2><button className="ov-card-action" type="button" onClick={onOpenDailySummary}>{t("Open")}<ArrowRight size={14} /></button></div>
           {summaryState === "loading" && <div className="ov-card-state" role="status"><LoaderCircle className="spinner" size={16} /></div>}
-          {summaryState === "error" && <div className="ov-card-state"><span>Daily Summary data is unavailable.</span></div>}
+          {summaryState === "error" && <div className="ov-card-state"><span>{t("Daily Summary data is unavailable.")}</span></div>}
           {summaryState === "ready" && summary && (
             <>
-              <div className="ov-card-meta"><span>{summary.localDate}</span><span>Generated {summary.generatedAt}</span></div>
+              <div className="ov-card-meta"><span>{summary.localDate}</span><span>{t("Generated {value}", { value: summary.generatedAt })}</span></div>
               <div className="ov-status-rows">
                 {summary.plugins.filter((plugin) => plugin.status !== "disabled").map((plugin) => (
                   <div className="ov-status-row" key={plugin.pluginId}>
                     <span>{plugin.name}</span>
-                    <span className={`daily-summary-status daily-summary-status--${plugin.status}`}>{plugin.status}</span>
+                    <span className={`daily-summary-status daily-summary-status--${plugin.status}`}>{t(plugin.status)}</span>
                   </div>
                 ))}
-                {!summary.plugins.length && <div className="ov-card-state"><span>No enabled plugins participate.</span></div>}
+                {!summary.plugins.length && <div className="ov-card-state"><span>{t("No enabled plugins participate.")}</span></div>}
               </div>
             </>
           )}
         </section>
 
         {browserDependent.length > 0 && (
-          <section className="ov-card" aria-label="Browser Bridge status">
-            <div className="ov-card-head"><h2>Browser Bridge</h2><button className="ov-card-action" type="button" onClick={onOpenSettings}>Settings<ArrowRight size={14} /></button></div>
+          <section className="ov-card" aria-label={t("Browser Bridge status")}>
+            <div className="ov-card-head"><h2>{t("Browser Bridge")}</h2><button className="ov-card-action" type="button" onClick={onOpenSettings}>{t("Settings")}<ArrowRight size={14} /></button></div>
             {bridgeState === "loading" && <div className="ov-card-state" role="status"><LoaderCircle className="spinner" size={16} /></div>}
-            {bridgeState === "error" && <div className="ov-card-state"><TriangleAlert size={15} /><span>Bridge status could not be read.</span></div>}
+            {bridgeState === "error" && <div className="ov-card-state"><TriangleAlert size={15} /><span>{t("Bridge status could not be read.")}</span></div>}
             {bridgeState === "ready" && (
               <div className="ov-bridge">
-                <span className={`ov-pill ov-pill--${bridgeTone(bridge?.overall)}`}>{bridge?.overall ?? "unknown"}</span>
-                <span className="ov-card-meta">{bridge?.checkedAt ? `Last checked ${new Date(bridge.checkedAt).toLocaleString()}` : "Not checked yet"}</span>
-                {Boolean(bridge?.affected.length) && <span className="ov-card-meta">Affects {bridge!.affected.map((plugin) => plugin.name).join(", ")}</span>}
+                <span className={`ov-pill ov-pill--${bridgeTone(bridge?.overall)}`}>{bridge?.overall ? t(bridge.overall) : t("unknown")}</span>
+                <span className="ov-card-meta">{bridge?.checkedAt ? t("Last checked {value}", { value: new Date(bridge.checkedAt).toLocaleString(locale) }) : t("Not checked yet")}</span>
+                {Boolean(bridge?.affected.length) && <span className="ov-card-meta">{t("Affects {value}", { value: bridge!.affected.map((plugin) => plugin.name).join(", ") })}</span>}
               </div>
             )}
           </section>
