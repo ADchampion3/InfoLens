@@ -509,6 +509,12 @@ test("Host Daily Summary Generate preview invokes the preview workflow", async (
   assert.match(appSource, /onClick=\{\(\) => void generatePreview\(\)\}/u);
 });
 
+test("Host Daily Summary keeps the prompt copy action enabled for the current selection", async () => {
+  const appSource = await readFile(path.join(root, "apps", "desktop", "src", "App.tsx"), "utf8");
+  assert.match(appSource, /setPreview\(nextSelection\.size \? createDailySummaryPreview\(next, nextSelection\) : undefined\);/u);
+  assert.match(appSource, /setPreview\(nextSelection\.size \? createDailySummaryPreview\(aggregate, nextSelection\) : undefined\);/u);
+});
+
 test("Host Daily Summary prepares a topic-based writing prompt and authored export", () => {
   const aggregate = hostAggregate();
   aggregate.plugins[0].context.records[0].fields.topic = "AI tooling";

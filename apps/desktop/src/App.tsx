@@ -275,7 +275,7 @@ function DailySummaryView({
   const applyAggregate = (next: DailySummaryAggregate, nextSelection: Set<string>) => {
     setAggregate(next);
     onSelectionChange(nextSelection);
-    setPreview(undefined);
+    setPreview(nextSelection.size ? createDailySummaryPreview(next, nextSelection) : undefined);
     setPromptText(nextSelection.size ? renderDailySummaryPrompt(next, nextSelection) : "");
     setWrittenContent("");
     setPrivacyKey(undefined);
@@ -305,7 +305,7 @@ function DailySummaryView({
     onSelectionChange(nextSelection);
     setPromptText(nextSelection.size ? renderDailySummaryPrompt(aggregate, nextSelection) : "");
     setWrittenContent("");
-    setPreview(undefined);
+    setPreview(nextSelection.size ? createDailySummaryPreview(aggregate, nextSelection) : undefined);
     setPrivacyKey(undefined);
     setPrivacyMode(undefined);
     setPrivacySources([]);
