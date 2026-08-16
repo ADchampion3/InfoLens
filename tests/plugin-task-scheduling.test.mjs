@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { test } from "node:test";
-import { openStore } from "../plugins/product-hunt/backend/storage.js";
+import { openStore } from "../plugins/product-hunt/backend/history-storage.js";
 import { validateCollection } from "../plugins/product-hunt/backend/index.js";
 import { PluginTaskManager, SharedTaskQueue } from "../packages/plugin-runtime/src/task-manager.mjs";
 

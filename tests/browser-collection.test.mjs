@@ -6,7 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { createServer } from "node:net";
 import { test } from "node:test";
-import { openStore } from "../plugins/zhihu-hot/backend/storage.js";
+import { openStore } from "../plugins/zhihu-hot/backend/history-storage.js";
 import { validateAuthStatus, validateCollection } from "../plugins/zhihu-hot/backend/index.js";
 import { loadBundledOpenCli } from "../packages/plugin-runtime/src/opencli-adapter.mjs";
 import { redactSensitiveText, redactSensitiveValue } from "../packages/plugin-runtime/src/redaction.mjs";

@@ -123,24 +123,6 @@ function createStore(db, filename) {
     cleanup,
     cleanupOnActivation() { if (store.metadata().retentionCleanupDeferred !== "true") cleanup(); },
     snapshotCount() { return db.prepare("SELECT COUNT(*) AS count FROM collection_snapshots").get().count; },
-    createExport(pluginVersion, exportedAt = new Date().toISOString()) {
-      const reader = new DatabaseSync(filename, { readOnly: true });
-      reader.exec("PRAGMA query_only=ON; BEGIN;");
-      try { for (const row of reader.prepare("SELECT id,payload FROM collection_snapshots ORDER BY collected_at,id").iterate()) parseSnapshot(row); }
-      catch (error) { reader.exec("ROLLBACK"); reader.close(); throw error; }
-      return (function* () {
-        try {
-          yield `{"pluginId":"hn","pluginVersion":${JSON.stringify(pluginVersion)},"schemaVersion":1,"exportedAt":${JSON.stringify(exportedAt)},"snapshots":[`;
-          let first = true;
-          for (const row of reader.prepare("SELECT id,collected_at AS collectedAt,payload FROM collection_snapshots ORDER BY collected_at,id").iterate()) {
-            yield `${first ? "" : ","}{"collectedAt":${JSON.stringify(row.collectedAt)},"records":${JSON.stringify(parseSnapshot(row))}}`;
-            first = false;
-          }
-          const userState = Object.fromEntries(reader.prepare("SELECT story_id,is_read FROM story_user_state ORDER BY story_id").all().map(({ story_id, is_read }) => [story_id, { read: Boolean(is_read) }]));
-          yield `],"userState":${JSON.stringify(userState)}}`;
-        } finally { reader.exec("ROLLBACK"); reader.close(); }
-      })();
-    },
     close() { db.close(); },
   };
   store.createExport = (pluginVersion, exportedAt = new Date().toISOString(), format = "json") => createTextExport(filename, { pluginId: "hn", pluginVersion, exportedAt, format });

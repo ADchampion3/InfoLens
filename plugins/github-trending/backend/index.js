@@ -1,4 +1,4 @@
-import { openStore } from "./storage.js";
+import { openStore } from "./history-storage.js";
 import { downloadableResponse } from "@infolens/plugin-sdk";
 import { readLatestDailySnapshot } from "@infolens/plugin-sdk/daily-summary-store";
 import { createExport, normalizeExportDate } from "./export.js";

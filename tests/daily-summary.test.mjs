@@ -8,13 +8,13 @@ import readline from "node:readline";
 import { test } from "node:test";
 import { aggregateDailySummary, normalizeDailySummaryResult } from "../packages/plugin-runtime/src/daily-summary.mjs";
 import { readLatestDailySnapshot } from "../packages/plugin-sdk/src/daily-summary-store.js";
-import { openStore as openGithub } from "../plugins/github-trending/backend/storage.js";
+import { openStore as openGithub } from "../plugins/github-trending/backend/history-storage.js";
 import { activate as activateGithub } from "../plugins/github-trending/backend/index.js";
-import { openStore as openHn } from "../plugins/hn/backend/storage.js";
+import { openStore as openHn } from "../plugins/hn/backend/history-storage.js";
 import { activate as activateHn } from "../plugins/hn/backend/index.js";
-import { openStore as openProductHunt } from "../plugins/product-hunt/backend/storage.js";
+import { openStore as openProductHunt } from "../plugins/product-hunt/backend/history-storage.js";
 import { activate as activateProductHunt } from "../plugins/product-hunt/backend/index.js";
-import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/storage.js";
+import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/history-storage.js";
 import { activate as activateZhihu } from "../plugins/zhihu-hot/backend/index.js";
 import {
   createDailySummaryPreview,

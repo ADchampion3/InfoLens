@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createExport, normalizeExportDate } from "../plugins/github-trending/backend/export.js";
-import { openStore } from "../plugins/github-trending/backend/storage.js";
+import { openStore } from "../plugins/github-trending/backend/history-storage.js";
 
 const firstRepository = {
   id: "first/repository",

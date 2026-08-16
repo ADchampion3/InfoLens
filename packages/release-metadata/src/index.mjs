@@ -9,7 +9,6 @@ const packageManifestPath = path.join(packageRoot, "package.json");
 const bootstrapMetadata = JSON.parse(readFileSync(metadataPath, "utf8"));
 
 export const RELEASE_METADATA_SOURCE = "release-metadata-package";
-export const RELEASE_METADATA_PATH = metadataPath;
 
 let cached;
 

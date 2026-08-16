@@ -7,10 +7,10 @@ import path from "node:path";
 import readline from "node:readline";
 import { test } from "node:test";
 import { downloadableResponse } from "../packages/plugin-sdk/src/index.js";
-import { openStore as openHn } from "../plugins/hn/backend/storage.js";
-import { openStore as openGithub } from "../plugins/github-trending/backend/storage.js";
-import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/storage.js";
-import { openStore as openProductHunt } from "../plugins/product-hunt/backend/storage.js";
+import { openStore as openHn } from "../plugins/hn/backend/history-storage.js";
+import { openStore as openGithub } from "../plugins/github-trending/backend/history-storage.js";
+import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/history-storage.js";
+import { openStore as openProductHunt } from "../plugins/product-hunt/backend/history-storage.js";
 
 const root=path.resolve(import.meta.dirname,"..");
 const story=(id)=>({id:String(id),rank:1,title:`Story ${id}`,domain:"example.com",points:1,author:"author",createdAt:"2026-01-01T00:00:00.000Z",comments:0,url:`https://example.com/${id}`,discussionUrl:`https://news.ycombinator.com/item?id=${id}`});

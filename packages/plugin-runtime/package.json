@@ -10,7 +10,6 @@
     "semver": "^7.6.3"
   },
   "exports": {
-    ".": "./src/index.mjs",
     "./contract": "./src/contract.mjs",
     "./opencli-adapter": "./src/opencli-adapter.mjs",
     "./adapter-scope": "./src/adapter-scope.mjs",

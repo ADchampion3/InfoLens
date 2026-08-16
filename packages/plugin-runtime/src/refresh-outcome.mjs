@@ -1,7 +1,5 @@
 import { redactSensitiveText } from "./redaction.mjs";
 
-export const REFRESH_OUTCOME_STATES = Object.freeze(["succeeded", "failed", "cancelled"]);
-
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
 const MAX_MESSAGE_LENGTH = 240;
 

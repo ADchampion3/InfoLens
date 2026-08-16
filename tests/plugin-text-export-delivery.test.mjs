@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { copyDownloadable, downloadExport } from "../packages/plugin-sdk/src/index.js";
-import { openStore as openHn } from "../plugins/hn/backend/storage.js";
-import { openStore as openGithub } from "../plugins/github-trending/backend/storage.js";
-import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/storage.js";
-import { openStore as openProductHunt } from "../plugins/product-hunt/backend/storage.js";
+import { openStore as openHn } from "../plugins/hn/backend/history-storage.js";
+import { openStore as openGithub } from "../plugins/github-trending/backend/history-storage.js";
+import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/history-storage.js";
+import { openStore as openProductHunt } from "../plugins/product-hunt/backend/history-storage.js";
 
 function installGlobal(name, value) {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);

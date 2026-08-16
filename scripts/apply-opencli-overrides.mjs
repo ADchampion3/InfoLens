@@ -17,10 +17,6 @@ function declaredOpenCliVersion(manifest) {
   return entries[0][1];
 }
 
-export function supportedOpenCliPatchTargets() {
-  return [...SUPPORTED_PATCH_TARGETS];
-}
-
 export function patchOpenCliDiscovery(source) {
   if (source.includes("export async function discoverPluginPaths")) return source;
   const marker = "/**\n * Flat scan: read ts/js files directly in a plugin directory.";
