@@ -22,7 +22,11 @@ let logService;
 let serializeLogEntries;
 let logQueryCount = 0;
 let marketService;
-const applicationSessionId = randomUUID();
+const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID || randomUUID();
+
+function runtimeHeaders(headers = {}) {
+  return { ...headers, authorization: `Bearer ${applicationSessionId}` };
+}
 
 function trustedWorkspacePermission(webContents, requestingUrl) {
   if (!runtimeInfo?.origin || typeof requestingUrl !== "string") return false;
@@ -88,7 +92,7 @@ async function initializeMarketService() {
       if (!runtimeInfo?.origin) return;
       const response = await fetch(`${runtimeInfo.origin}/runtime/plugins/reconcile-market`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: runtimeHeaders({ "content-type": "application/json" }),
         body: JSON.stringify({ releases: index.releases.map(({ pluginId, version, retraction }) => ({ pluginId, version, ...(retraction ? { retraction } : {}) })) }),
       });
       if (!response.ok) throw new Error("Plugin Runtime could not reconcile Market provenance");
@@ -98,7 +102,7 @@ async function initializeMarketService() {
       const response = await fetch(`${runtimeInfo.origin}/runtime/plugins/install-market`, {
         method: "POST",
         signal,
-        headers: { "content-type": "application/json", "x-infolens-operation-id": operationId },
+        headers: runtimeHeaders({ "content-type": "application/json", "x-infolens-operation-id": operationId }),
         body: JSON.stringify({ archivePath, expectedSha256, observedSha256, release: selectedRelease }),
       });
       let body;
@@ -248,7 +252,7 @@ async function removePlugin(id) {
   const record = runtimeInfo.plugins?.find((plugin) => plugin.id === id)
     ?? runtimeInfo.rejectedPlugins?.find((plugin) => plugin.id === id || plugin.package === id);
   if (!record?.packagePath) throw new Error(`Plugin '${id}' is not installed`);
-  const response = await fetch(`${runtimeInfo.origin}/runtime/plugins/${encodeURIComponent(id)}/remove`, { method: "DELETE", headers: { "x-infolens-operation-id": operationId } });
+  const response = await fetch(`${runtimeInfo.origin}/runtime/plugins/${encodeURIComponent(id)}/remove`, { method: "DELETE", headers: runtimeHeaders({ "x-infolens-operation-id": operationId }) });
   if (response.ok) {
     await logService?.write({ level: "info", message: `Plugin removed id=${id}`, operationId });
     return;
@@ -309,7 +313,7 @@ ipcMain.handle("runtime:get-info", async () => {
   }
   if (!runtimeInfo?.origin) return runtimeInfo;
   try {
-    const response = await fetch(`${runtimeInfo.origin}/runtime/info`);
+    const response = await fetch(`${runtimeInfo.origin}/runtime/info`, { headers: runtimeHeaders() });
     if (response.ok) runtimeInfo = await response.json();
     return runtimeInfo;
   } catch {
@@ -483,7 +487,7 @@ app.on("before-quit", (event) => {
     let activeBatch = false;
     try {
       if (runtimeInfo?.origin) {
-        const response = await fetch(`${runtimeInfo.origin}/runtime/batches/active`);
+        const response = await fetch(`${runtimeInfo.origin}/runtime/batches/active`, { headers: runtimeHeaders() });
         if (response.ok) activeBatch = Boolean((await response.json()).batch);
       }
     } catch {}

@@ -9,6 +9,7 @@ import { healthResponse, pluginApiUrl, pluginHealthUrl, pluginWorkspaceUrl } fro
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const fixturesRoot = path.join(import.meta.dirname, "fixtures", "plugin-contract");
+const RUNTIME_TOKEN = "plugin-runtime-contract-test-session";
 
 async function materializePlugins(root) {
   const manifestsRoot = path.join(fixturesRoot, "manifests");
@@ -37,6 +38,7 @@ function startRuntime({ pluginsRoot, dataRoot }) {
       INFOLENS_PLUGIN_LOG_MAX_BYTES: "700",
       INFOLENS_PLUGIN_LOG_MAX_FILES: "3",
       INFOLENS_RUNTIME_PORT: "0",
+      INFOLENS_APPLICATION_SESSION_ID: RUNTIME_TOKEN,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -153,7 +155,7 @@ test("Plugin contracts execute through the actual Plugin Runtime", async () => {
     assert.equal(undeclared.status, 500);
     assert.match((await undeclared.json()).error, /not declared/);
 
-    const events = await fetch(`${origin}/runtime/events`).then((response) => response.json());
+    const events = await fetch(`${origin}/runtime/events`, { headers: { authorization: `Bearer ${RUNTIME_TOKEN}` } }).then((response) => response.json());
     assert.ok(events.events.some((event) => event.event === "task-coalesced" && event.pluginId === "valid-contract"));
     assert.ok(events.events.some((event) => event.event === "activation-failed" && event.pluginId === "activation-failure"));
     assert.ok(events.events.some((event) => event.event === "route-failed" && event.pluginId === "route-failure"));

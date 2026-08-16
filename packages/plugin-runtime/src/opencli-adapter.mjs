@@ -8,6 +8,7 @@ import { redactSensitiveText } from "./redaction.mjs";
 import { parseBrowserDoctorOutput } from "./browser-bridge.mjs";
 
 const require = createRequire(import.meta.url);
+const MAX_CAPTURED_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 export class BundledOpenCliError extends Error {
   constructor(code, message, details = {}) {
@@ -217,10 +218,33 @@ export function createOpenCliAdapter(runtime) {
       });
       let stdout = "";
       let stderr = "";
-      child.stdout.on("data", (chunk) => { stdout += chunk; });
-      child.stderr.on("data", (chunk) => { stderr += chunk; });
-      child.once("error", reject);
+      let capturedBytes = 0;
+      let settled = false;
+      let outputError;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      const capture = (target, chunk) => {
+        capturedBytes += Buffer.byteLength(chunk);
+        if (capturedBytes > MAX_CAPTURED_OUTPUT_BYTES) {
+          if (!outputError) {
+            outputError = new Error("Bundled OpenCLI output exceeded the capture limit");
+            outputError.code = "OPENCLI_OUTPUT_TOO_LARGE";
+            child.kill();
+          }
+          return target;
+        }
+        return target + chunk;
+      };
+      child.stdout.on("data", (chunk) => { stdout = capture(stdout, chunk); });
+      child.stderr.on("data", (chunk) => { stderr = capture(stderr, chunk); });
+      child.once("error", (error) => { if (!outputError) fail(error); });
       child.once("close", (code) => {
+        if (settled) return;
+        settled = true;
+        if (outputError) { reject(outputError); return; }
         if (code !== 0) { reject(classifyFailure(`${stderr}\n${stdout}`, code)); return; }
         resolve({ stdout, stderr });
       });

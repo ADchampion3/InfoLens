@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import path from "node:path";
 
@@ -205,8 +205,31 @@ function sha256Buffer(data) {
   return createHash("sha256").update(data).digest("hex");
 }
 
-export async function sha256File(filePath) {
-  return sha256Buffer(await readFile(filePath));
+async function readBoundedFile(filePath, maxBytes) {
+  const handle = await open(filePath, "r");
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new ArchiveError("ARCHIVE_INVALID", "Plugin archive is not a regular file");
+    if (metadata.size > maxBytes) throw new ArchiveError("ARCHIVE_TOO_LARGE", "Plugin archive exceeds the archive size limit");
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const chunk = Buffer.alloc(Math.min(1024 * 1024, maxBytes - total + 1));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (!bytesRead) break;
+      total += bytesRead;
+      if (total > maxBytes) throw new ArchiveError("ARCHIVE_TOO_LARGE", "Plugin archive exceeds the archive size limit");
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    return Buffer.concat(chunks, total);
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function sha256File(filePath, options = {}) {
+  const limits = { ...ARCHIVE_LIMITS, ...options };
+  return sha256Buffer(await readBoundedFile(filePath, limits.maxArchiveBytes));
 }
 
 function readUInt32(buffer, offset, code, message) {
@@ -304,8 +327,9 @@ function safeDestination(root, name) {
 }
 
 export async function extractZip(input, destinationRoot, options = {}) {
-  const buffer = Buffer.isBuffer(input) ? input : await readFile(input);
-  const inspected = inspectZip(buffer, options);
+  const limits = { ...ARCHIVE_LIMITS, ...options };
+  const buffer = Buffer.isBuffer(input) ? input : await readBoundedFile(input, limits.maxArchiveBytes);
+  const inspected = inspectZip(buffer, limits);
   const destination = path.resolve(destinationRoot);
   await mkdir(destination, { recursive: true });
   for (const entry of inspected.entries) {

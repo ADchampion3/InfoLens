@@ -13,14 +13,16 @@ import { redactSensitiveText, redactSensitiveValue } from "../packages/plugin-ru
 
 const root=path.resolve(import.meta.dirname,"..");
 const mockOpenCli=path.join(root,"tests/fixtures/browser-collection/opencli");
+const runtimeTokens=new Map();
 
 async function startRuntime(dataRoot,stateFile){
-  const child=spawn(process.execPath,[path.join(root,"packages/plugin-runtime/src/server.mjs")],{cwd:root,env:{...process.env,INFOLENS_PROJECT_ROOT:root,INFOLENS_PLUGIN_DATA_ROOT:dataRoot,INFOLENS_BUNDLED_OPENCLI_ROOT:mockOpenCli,INFOLENS_TEST_OPENCLI_STATE:stateFile,INFOLENS_RUNTIME_PORT:"0"},stdio:["pipe","pipe","pipe"]});
+  const child=spawn(process.execPath,[path.join(root,"packages/plugin-runtime/src/server.mjs")],{cwd:root,env:{...process.env,INFOLENS_PROJECT_ROOT:root,INFOLENS_PLUGIN_DATA_ROOT:dataRoot,INFOLENS_BUNDLED_OPENCLI_ROOT:mockOpenCli,INFOLENS_TEST_OPENCLI_STATE:stateFile,INFOLENS_RUNTIME_PORT:"0",INFOLENS_APPLICATION_SESSION_ID:"browser-collection-test-session"},stdio:["pipe","pipe","pipe"]});
   const lines=readline.createInterface({input:child.stdout});
-  return new Promise((resolve,reject)=>{const errors=[];child.stderr.on("data",chunk=>errors.push(chunk));child.once("error",reject);const timeout=setTimeout(()=>reject(new Error(`Runtime start timed out: ${Buffer.concat(errors).toString()}`)),5000);lines.on("line",line=>{const message=JSON.parse(line);if(message.type==="runtime-ready"){clearTimeout(timeout);resolve({child,message})}})});
+  return new Promise((resolve,reject)=>{const errors=[];child.stderr.on("data",chunk=>errors.push(chunk));child.once("error",reject);const timeout=setTimeout(()=>reject(new Error(`Runtime start timed out: ${Buffer.concat(errors).toString()}`)),5000);lines.on("line",line=>{const message=JSON.parse(line);if(message.type==="runtime-ready"){clearTimeout(timeout);runtimeTokens.set(message.origin,message.runtimeToken);resolve({child,message})}})});
 }
 async function stopRuntime(child){if(child.exitCode!==null)return;child.stdin.write("shutdown\n");await new Promise(resolve=>child.once("exit",resolve))}
-async function api(origin,plugin,route,method="GET"){const response=await fetch(`${origin}/plugins/${plugin}/api/${route}`,{method});assert.equal(response.status,200,`${plugin} ${route}`);return response.json()}
+async function api(origin,plugin,route,method="GET"){const response=await fetch(`${origin}/plugins/${plugin}/api/${route}`,{method,headers:{authorization:`Bearer ${runtimeTokens.get(origin)}`}});assert.equal(response.status,200,`${plugin} ${route}`);return response.json()}
+function runtimeFetch(origin,route,options={}){return fetch(`${origin}${route}`,{...options,headers:{authorization:`Bearer ${runtimeTokens.get(origin)}`,...options.headers}})}
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve)});const {port}=server.address();await new Promise(resolve=>server.close(resolve));return port}
 async function waitForUrl(url){for(let attempt=0;attempt<50;attempt+=1){try{const response=await fetch(url);if(response.ok)return response}catch{}await new Promise(resolve=>setTimeout(resolve,100))}throw new Error(`URL did not become ready: ${url}`)}
 
@@ -63,7 +65,7 @@ test("COOKIE collection persists, degrades only Zhihu, and distinguishes depende
     const persisted=openStore(path.join(dataRoot,"zhihu-hot","zhihu-hot.sqlite"));assert.equal(persisted.snapshotCount(),1);assert.equal(persisted.list()[0].read,true);persisted.close();
     runtime=await startRuntime(dataRoot,stateFile);zhihu=await api(runtime.message.origin,"zhihu-hot","summary");assert.equal(zhihu.questions.length,15);assert.equal(zhihu.questions[0].read,true);
     await writeFile(stateFile,JSON.stringify({zhihu:"disconnected"}));zhihu=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.equal(zhihu.ok,false);assert.equal(zhihu.dependencyState,"disconnected");assert.equal(zhihu.questions.length,15);
-    let info=await fetch(`${runtime.message.origin}/runtime/info`).then(response=>response.json());assert.equal(info.plugins.find(({id})=>id==="zhihu-hot").state,"ready");assert.equal(info.plugins.find(({id})=>id==="zhihu-hot").dependencyState,"disconnected");assert.notEqual(info.plugins.find(({id})=>id==="hn").state,"unavailable");assert.equal((await api(runtime.message.origin,"hn","summary")).source,"Hacker News");
+    let info=await runtimeFetch(runtime.message.origin,"/runtime/info").then(response=>response.json());assert.equal(info.plugins.find(({id})=>id==="zhihu-hot").state,"ready");assert.equal(info.plugins.find(({id})=>id==="zhihu-hot").dependencyState,"disconnected");assert.notEqual(info.plugins.find(({id})=>id==="hn").state,"unavailable");assert.equal((await api(runtime.message.origin,"hn","summary")).source,"Hacker News");
     await writeFile(stateFile,JSON.stringify({zhihu:"expired"}));zhihu=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.equal(zhihu.dependencyState,"login-required");assert.equal(zhihu.questions.length,15);
     await writeFile(stateFile,JSON.stringify({zhihu:"success"}));zhihu=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.equal(zhihu.dependencyState,"connected");assert.equal(zhihu.ok,true);
   }finally{if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}
@@ -74,10 +76,10 @@ test("Browser Bridge status is read-only until an explicit check or reconnect",a
   try{
     runtime=await startRuntime(path.join(temp,"data"),stateFile);
     const statusPath=`${stateFile}.calls`;
-    let response=await fetch(`${runtime.message.origin}/runtime/browser-status`);let status=await response.json();assert.equal(response.status,200);assert.equal(status.overall,"unknown");await assert.rejects(access(statusPath));
-    response=await fetch(`${runtime.message.origin}/runtime/browser-status/check`,{method:"POST"});status=await response.json();assert.equal(response.status,200);assert.equal(status.overall,"disconnected");assert.equal(status.code,"OPENCLI_FAILED");assert.doesNotMatch(JSON.stringify(status),/unexpected command|context-id/u);
-    const cached=await fetch(`${runtime.message.origin}/runtime/browser-status`).then((result)=>result.json());assert.equal(cached.code,"OPENCLI_FAILED");
-    response=await fetch(`${runtime.message.origin}/runtime/browser-status/reconnect`,{method:"POST"});status=await response.json();assert.equal(response.status,200);assert.equal(status.code,"DAEMON_RESTART_FAILED");
+    let response=await runtimeFetch(runtime.message.origin,"/runtime/browser-status");let status=await response.json();assert.equal(response.status,200);assert.equal(status.overall,"unknown");await assert.rejects(access(statusPath));
+    response=await runtimeFetch(runtime.message.origin,"/runtime/browser-status/check",{method:"POST"});status=await response.json();assert.equal(response.status,200);assert.equal(status.overall,"disconnected");assert.equal(status.code,"OPENCLI_FAILED");assert.doesNotMatch(JSON.stringify(status),/unexpected command|context-id/u);
+    const cached=await runtimeFetch(runtime.message.origin,"/runtime/browser-status").then((result)=>result.json());assert.equal(cached.code,"OPENCLI_FAILED");
+    response=await runtimeFetch(runtime.message.origin,"/runtime/browser-status/reconnect",{method:"POST"});status=await response.json();assert.equal(response.status,200);assert.equal(status.code,"DAEMON_RESTART_FAILED");
     const calls=(await readFile(statusPath,"utf8")).trim().split(/\r?\n/).map(JSON.parse);assert.deepEqual(calls,[ ["doctor"], ["browser","__doctor__","close"], ["daemon","restart"] ]);
   }finally{if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}
 });
@@ -99,7 +101,7 @@ test("the bare Vite preview root resolves Runtime info as JSON",async()=>{
   const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-browser-preview-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success"}));let runtime;let vite;
   try{
     runtime=await startRuntime(path.join(temp,"data"),stateFile);const port=await freePort();
-    vite=spawn(process.execPath,[path.join(root,"node_modules/vite/bin/vite.js"),"--config",path.join(root,"apps/desktop/vite.config.ts"),"--configLoader","runner","--host","127.0.0.1","--port",String(port),"--strictPort"],{cwd:root,env:{...process.env,INFOLENS_RUNTIME_ORIGIN:runtime.message.origin},stdio:["ignore","ignore","pipe"]});
+    vite=spawn(process.execPath,[path.join(root,"node_modules/vite/bin/vite.js"),"--config",path.join(root,"apps/desktop/vite.config.ts"),"--configLoader","runner","--host","127.0.0.1","--port",String(port),"--strictPort"],{cwd:root,env:{...process.env,INFOLENS_RUNTIME_ORIGIN:runtime.message.origin,INFOLENS_APPLICATION_SESSION_ID:runtime.message.runtimeToken},stdio:["ignore","ignore","pipe"]});
     await waitForUrl(`http://127.0.0.1:${port}/`);const response=await fetch(`http://127.0.0.1:${port}/runtime-info.json`);assert.match(response.headers.get("content-type")??"",/application\/json/);const info=await response.json();assert.equal(info.type,"runtime-ready");assert.equal(info.origin,runtime.message.origin);
   }finally{vite?.kill();if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}
 });

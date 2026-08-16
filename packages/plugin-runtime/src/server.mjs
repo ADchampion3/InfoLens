@@ -43,7 +43,15 @@ const pluginSdkWorkspaceStyles = path.join(pluginSdkRoot, "workspace.css");
 const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
 const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? path.join(path.dirname(dataRoot), "opencli-adapters"));
 const batchStatePath = process.env.INFOLENS_BATCH_STATE_PATH ? path.resolve(process.env.INFOLENS_BATCH_STATE_PATH) : undefined;
-const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID;
+const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID?.trim();
+if (!applicationSessionId) throw new Error("INFOLENS_APPLICATION_SESSION_ID is required");
+const publicRuntimePaths = new Set([
+  "/runtime/plugin-sdk.js",
+  "/runtime/plugin-workspace-history.js",
+  "/runtime/plugin-workspace-history.css",
+  "/runtime/plugin-sdk-tokens.css",
+  "/runtime/plugin-sdk-workspace.css",
+]);
 const dailySummaryTimeZone = process.env.INFOLENS_DAILY_SUMMARY_TIME_ZONE || undefined;
 const dailySummaryNow = process.env.INFOLENS_DAILY_SUMMARY_NOW || undefined;
 let bundledPluginIds = new Set();
@@ -177,6 +185,56 @@ function json(response, status, body) {
   if (response.destroyed || response.writableEnded) return;
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+function runtimeInfoPayload(origin) {
+  return {
+    type: "runtime-ready",
+    origin,
+    ...(applicationSessionId ? { runtimeToken: applicationSessionId } : {}),
+    plugins: compatiblePlugins.filter((plugin) => !plugin.deactivated).map((plugin) => publicCompatiblePlugin(plugin, origin)),
+    rejectedPlugins,
+    hostState: hostState.snapshot(),
+    activeBatch: batchManager.active(),
+  };
+}
+
+function configuredCorsOrigins() {
+  const values = [
+    process.env.INFOLENS_RENDERER_URL,
+    ...(process.env.INFOLENS_RUNTIME_ALLOWED_ORIGINS ?? "").split(","),
+  ];
+  const origins = new Set();
+  for (const value of values) {
+    if (!value?.trim()) continue;
+    try { origins.add(new URL(value.trim()).origin); } catch {}
+  }
+  return origins;
+}
+
+const corsOrigins = configuredCorsOrigins();
+
+function setCorsHeaders(request, response, pathname) {
+  if (!pathname.startsWith("/runtime/")) return;
+  const origin = request.headers.origin;
+  if (typeof origin !== "string" || !corsOrigins.has(origin)) return;
+  response.setHeader("access-control-allow-origin", origin);
+  response.setHeader("access-control-allow-headers", "authorization, content-type, x-infolens-operation-id");
+  response.setHeader("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  response.setHeader("vary", "Origin");
+}
+
+function hasRuntimeAuthorization(request) {
+  return request.headers.authorization === `Bearer ${applicationSessionId}`;
+}
+
+function requiresRuntimeAuthorization(pathname) {
+  return pathname.startsWith("/runtime/") && !publicRuntimePaths.has(pathname);
+}
+
+function rejectRuntimeAuthorization(response) {
+  response.setHeader("www-authenticate", "Bearer");
+  json(response, 401, { error: "Runtime authorization required", code: "RUNTIME_UNAUTHORIZED" });
 }
 
 function isDownloadableResponse(value) {
@@ -1149,10 +1207,12 @@ await discoverPlugins();
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
-  response.setHeader("access-control-allow-origin", "*");
-  response.setHeader("access-control-allow-headers", "content-type");
-  response.setHeader("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  setCorsHeaders(request, response, url.pathname);
   if (request.method === "OPTIONS") { response.writeHead(204); response.end(); return; }
+  if (requiresRuntimeAuthorization(url.pathname) && !hasRuntimeAuthorization(request)) {
+    rejectRuntimeAuthorization(response);
+    return;
+  }
   if (url.pathname === "/runtime/plugin-sdk.js" && request.method === "GET") {
     try {
       response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
@@ -1395,14 +1455,7 @@ const server = createServer(async (request, response) => {
   }
   if (url.pathname === "/runtime/info") {
     const origin = `http://${request.headers.host}`;
-    json(response, 200, {
-      type: "runtime-ready",
-      origin,
-      plugins: compatiblePlugins.filter((plugin) => !plugin.deactivated).map((plugin) => publicCompatiblePlugin(plugin, origin)),
-      rejectedPlugins,
-      hostState: hostState.snapshot(),
-      activeBatch: batchManager.active(),
-    });
+    json(response, 200, runtimeInfoPayload(origin));
     return;
   }
 
@@ -1480,14 +1533,7 @@ server.listen(port, "127.0.0.1", () => {
   if (!address || typeof address === "string") throw new Error("Runtime did not bind a TCP port");
   const origin = `http://127.0.0.1:${address.port}`;
   runtimeLogger.info("runtime-started", { origin }).catch((error) => process.stderr.write(`[runtime-log] ${error.message}\n`));
-  process.stdout.write(`${JSON.stringify({
-    type: "runtime-ready",
-    origin,
-    plugins: compatiblePlugins.filter((plugin) => !plugin.deactivated).map((plugin) => publicCompatiblePlugin(plugin, origin)),
-    rejectedPlugins,
-    hostState: hostState.snapshot(),
-    activeBatch: batchManager.active(),
-  })}\n`);
+  process.stdout.write(`${JSON.stringify(runtimeInfoPayload(origin))}\n`);
 });
 
 let stopping = false;

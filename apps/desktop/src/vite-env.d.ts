@@ -245,6 +245,7 @@ interface RejectedPlugin {
 interface RuntimeInfo {
   type: "runtime-ready";
   origin: string;
+  runtimeToken?: string;
   plugins: RuntimePlugin[];
   rejectedPlugins: RejectedPlugin[];
   hostState: HostState;

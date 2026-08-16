@@ -40,7 +40,11 @@ async function getRuntimeInfo(): Promise<RuntimeInfo> {
     throw new Error("Plugin services are unavailable.");
   }
   const origin = previewOrigin();
-  const response = await fetch(origin ? `${origin}/runtime/info` : "/runtime-info.json");
+  const headers = new Headers();
+  if (origin && import.meta.env.VITE_INFOLENS_RUNTIME_TOKEN) {
+    headers.set("authorization", `Bearer ${import.meta.env.VITE_INFOLENS_RUNTIME_TOKEN}`);
+  }
+  const response = await fetch(origin ? `${origin}/runtime/info` : "/runtime-info.json", { headers });
   const body = await readJsonResponse<RuntimeInfo>(response, "Plugin services are unavailable.");
   if (!response.ok) throw new Error("Plugin services are unavailable.");
   return body;

@@ -12,6 +12,7 @@ import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/history-sto
 
 const root = path.resolve(import.meta.dirname, "..");
 const openCliRoot = path.join(root, "tests", "fixtures", "runtime-opencli", "opencli");
+const RUNTIME_TOKEN = "plugin-runtime-export-test-session";
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -36,6 +37,7 @@ function startRuntime({ pluginsRoot, dataRoot }) {
       INFOLENS_PLUGIN_DATA_ROOT: dataRoot,
       INFOLENS_BUNDLED_OPENCLI_ROOT: openCliRoot,
       INFOLENS_RUNTIME_PORT: "0",
+      INFOLENS_APPLICATION_SESSION_ID: RUNTIME_TOKEN,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });

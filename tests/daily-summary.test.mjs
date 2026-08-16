@@ -39,6 +39,7 @@ const mockOpenCli = path.join(root, "tests", "fixtures", "runtime-opencli", "ope
 const GENERATED_AT = "2026-08-12T03:00:00.000Z";
 const TIME_ZONE = "Asia/Shanghai";
 const LOCAL_DATE = "2026-08-12";
+const RUNTIME_TOKEN = "daily-summary-test-session";
 
 async function withTempDirectory(callback) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "infolens-daily-summary-"));
@@ -77,6 +78,7 @@ async function startRuntime({ pluginsRoot, dataRoot, extraEnv = {} }) {
       INFOLENS_BUNDLED_OPENCLI_ROOT: mockOpenCli,
       INFOLENS_TEST_OPENCLI_STATE: stateFile,
       INFOLENS_RUNTIME_PORT: "0",
+      INFOLENS_APPLICATION_SESSION_ID: RUNTIME_TOKEN,
       ...extraEnv,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -108,7 +110,7 @@ async function stopRuntime(runtime) {
 }
 
 async function request(origin, route, init) {
-  const response = await fetch(`${origin}${route}`, { headers: { "content-type": "application/json" }, ...init });
+  const response = await fetch(`${origin}${route}`, { headers: { "content-type": "application/json", authorization: `Bearer ${RUNTIME_TOKEN}` }, ...init });
   const body = await response.json();
   return { response, body };
 }

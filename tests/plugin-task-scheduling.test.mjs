@@ -11,6 +11,7 @@ import { PluginTaskManager, SharedTaskQueue } from "../packages/plugin-runtime/s
 
 const root=path.resolve(import.meta.dirname,"..");
 const mockOpenCli=path.join(root,"tests/fixtures/runtime-opencli/opencli");
+const RUNTIME_TOKEN="plugin-task-scheduling-test-session";
 const tick=()=>new Promise((resolve)=>setImmediate(resolve));
 
 function controlledTask(counter, maximum, gates) {
@@ -43,11 +44,12 @@ test("task failures release permits and leave sibling plugins operational",async
 });
 
 async function startRuntime(dataRoot,stateFile){
-  const child=spawn(process.execPath,[path.join(root,"packages/plugin-runtime/src/server.mjs")],{cwd:root,env:{...process.env,INFOLENS_PROJECT_ROOT:root,INFOLENS_PLUGIN_DATA_ROOT:dataRoot,INFOLENS_BUNDLED_OPENCLI_ROOT:mockOpenCli,INFOLENS_TEST_OPENCLI_STATE:stateFile,INFOLENS_RUNTIME_PORT:"0"},stdio:["pipe","pipe","pipe"]});
+  const child=spawn(process.execPath,[path.join(root,"packages/plugin-runtime/src/server.mjs")],{cwd:root,env:{...process.env,INFOLENS_PROJECT_ROOT:root,INFOLENS_PLUGIN_DATA_ROOT:dataRoot,INFOLENS_BUNDLED_OPENCLI_ROOT:mockOpenCli,INFOLENS_TEST_OPENCLI_STATE:stateFile,INFOLENS_RUNTIME_PORT:"0",INFOLENS_APPLICATION_SESSION_ID:RUNTIME_TOKEN},stdio:["pipe","pipe","pipe"]});
   const lines=readline.createInterface({input:child.stdout});return new Promise((resolve,reject)=>{const errors=[];child.stderr.on("data",(chunk)=>errors.push(chunk));child.once("error",reject);const timeout=setTimeout(()=>reject(new Error(`Runtime start timed out: ${Buffer.concat(errors).toString()}`)),5000);lines.on("line",(line)=>{const message=JSON.parse(line);if(message.type==="runtime-ready"){clearTimeout(timeout);resolve({child,message})}})});
 }
 async function stopRuntime(child){if(child.exitCode!==null)return;child.stdin.write("shutdown\n");await new Promise((resolve)=>child.once("exit",resolve))}
 async function api(origin,plugin,route,method="GET"){const response=await fetch(`${origin}/plugins/${plugin}/api/${route}`,{method});assert.equal(response.status,200);return response.json()}
+function runtimeFetch(origin,route,options={}){return fetch(`${origin}${route}`,{...options,headers:{authorization:`Bearer ${RUNTIME_TOKEN}`,...options.headers}})}
 
 test("Product Hunt INTERCEPT collection validates, persists, and serializes with COOKIE work",async()=>{
   const productionAdapter=await readFile(path.join(root,"plugins/product-hunt/opencli-adapters/producthunt/today.js"),"utf8");assert.match(productionAdapter,/strategy:\s*Strategy\.INTERCEPT/);assert.match(productionAdapter,/installInterceptor\("producthunt\.com"\)/);
@@ -66,9 +68,9 @@ test("Runtime deactivation cancels active plugin work and unregisters future act
   const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-task-scheduling-deactivate-"));const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({delayMs:10000}));let runtime;
   try {
     runtime=await startRuntime(path.join(temp,"data"),stateFile);const refresh=fetch(`${runtime.message.origin}/plugins/product-hunt/api/refresh`,{method:"POST"});
-    for(let attempt=0;attempt<50;attempt+=1){const tasks=await fetch(`${runtime.message.origin}/runtime/tasks`).then((response)=>response.json());if(tasks.activePlugins.includes("product-hunt"))break;await new Promise((resolve)=>setTimeout(resolve,20))}
-    const removed=await fetch(`${runtime.message.origin}/runtime/plugins/product-hunt`,{method:"DELETE"});assert.equal(removed.status,200);assert.equal((await removed.json()).ok,true);await refresh;
-    const info=await fetch(`${runtime.message.origin}/runtime/info`).then((response)=>response.json());assert(!info.plugins.some(({id})=>id==="product-hunt"));const tasks=await fetch(`${runtime.message.origin}/runtime/tasks`).then((response)=>response.json());assert(!tasks.activePlugins.includes("product-hunt"));assert(!tasks.queued.some(({pluginId})=>pluginId==="product-hunt"));
-    const activeOnExit=fetch(`${runtime.message.origin}/plugins/zhihu-hot/api/refresh`,{method:"POST"}).catch(()=>undefined);for(let attempt=0;attempt<50;attempt+=1){const current=await fetch(`${runtime.message.origin}/runtime/tasks`).then((response)=>response.json());if(current.activePlugins.includes("zhihu-hot"))break;await new Promise((resolve)=>setTimeout(resolve,20))}const started=Date.now();await stopRuntime(runtime.child);assert(Date.now()-started<5000,"Runtime shutdown should cancel active source work");await activeOnExit;
+    for(let attempt=0;attempt<50;attempt+=1){const tasks=await runtimeFetch(runtime.message.origin,"/runtime/tasks").then((response)=>response.json());if(tasks.activePlugins.includes("product-hunt"))break;await new Promise((resolve)=>setTimeout(resolve,20))}
+    const removed=await runtimeFetch(runtime.message.origin,"/runtime/plugins/product-hunt",{method:"DELETE"});assert.equal(removed.status,200);assert.equal((await removed.json()).ok,true);await refresh;
+    const info=await runtimeFetch(runtime.message.origin,"/runtime/info").then((response)=>response.json());assert(!info.plugins.some(({id})=>id==="product-hunt"));const tasks=await runtimeFetch(runtime.message.origin,"/runtime/tasks").then((response)=>response.json());assert(!tasks.activePlugins.includes("product-hunt"));assert(!tasks.queued.some(({pluginId})=>pluginId==="product-hunt"));
+    const activeOnExit=fetch(`${runtime.message.origin}/plugins/zhihu-hot/api/refresh`,{method:"POST"}).catch(()=>undefined);for(let attempt=0;attempt<50;attempt+=1){const current=await runtimeFetch(runtime.message.origin,"/runtime/tasks").then((response)=>response.json());if(current.activePlugins.includes("zhihu-hot"))break;await new Promise((resolve)=>setTimeout(resolve,20))}const started=Date.now();await stopRuntime(runtime.child);assert(Date.now()-started<5000,"Runtime shutdown should cancel active source work");await activeOnExit;
   } finally {if(runtime)await stopRuntime(runtime.child);await rm(temp,{recursive:true,force:true})}
 });

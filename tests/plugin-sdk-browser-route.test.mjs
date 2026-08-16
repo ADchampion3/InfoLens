@@ -10,11 +10,11 @@ const root = path.resolve(import.meta.dirname, "..");
 async function startRuntime() {
   const child = spawn(process.execPath, [path.join(root, "packages/plugin-runtime/src/server.mjs")], {
     cwd: root,
-    env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_RUNTIME_PORT: "0" },
+    env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_RUNTIME_PORT: "0", INFOLENS_APPLICATION_SESSION_ID: "plugin-sdk-browser-route-test-session" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const lines = readline.createInterface({ input: child.stdout });
-  const origin = await new Promise((resolve, reject) => {
+  const message = await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error("Runtime did not become ready")), 10_000);
     child.once("error", reject);
     lines.on("line", (line) => {
@@ -22,11 +22,11 @@ async function startRuntime() {
         const message = JSON.parse(line);
         if (message.type !== "runtime-ready") return;
         clearTimeout(timeout);
-        resolve(message.origin);
+        resolve(message);
       } catch {}
     });
   });
-  return { child, lines, origin };
+  return { child, lines, origin: message.origin, token: message.runtimeToken };
 }
 
 test("runtime exposes the plugin SDK as a browser module", async () => {
@@ -49,7 +49,7 @@ test("runtime exposes the plugin SDK as a browser module", async () => {
     assert.match(historyStylesResponse.headers.get("content-type") ?? "", /^text\/css/);
     assert.match(await historyStylesResponse.text(), /\.history-calendar/);
 
-    const oldHistoryResponse = await fetch(`${runtime.origin}/runtime/plugin-sdk-history.js`);
+    const oldHistoryResponse = await fetch(`${runtime.origin}/runtime/plugin-sdk-history.js`, { headers: { authorization: `Bearer ${runtime.token}` } });
     assert.equal(oldHistoryResponse.status, 404);
 
     const tokenResponse = await fetch(`${runtime.origin}/runtime/plugin-sdk-tokens.css`);

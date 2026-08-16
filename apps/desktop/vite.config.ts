@@ -7,11 +7,13 @@ import { fileURLToPath } from "node:url";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const runtimeOrigin = process.env.INFOLENS_RUNTIME_ORIGIN;
+const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID;
 const runtimeInfoProxy = runtimeOrigin ? {
   "/runtime-info.json": {
     target: runtimeOrigin,
     changeOrigin: true,
     rewrite: () => "/runtime/info",
+    ...(applicationSessionId ? { headers: { authorization: `Bearer ${applicationSessionId}` } } : {}),
   },
 } : undefined;
 

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
-  createDeterministicZip, extractZip, inspectZip,
+  createDeterministicZip, extractZip, inspectZip, sha256File,
   MarketError, PluginMarketService, publishMarketRelease,
   assertAllowedRegistryUrl, fetchMarketIndex, latestCompatibleRelease,
   validateMarketIndex,
@@ -89,6 +89,9 @@ test("deterministic archives are stable and unsafe archive entries are rejected"
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-market-archive-"));
   try {
+    const oversizedPath = path.join(temporaryRoot, "oversized.zip");
+    await writeFile(oversizedPath, "12", "utf8");
+    await assert.rejects(sha256File(oversizedPath, { maxArchiveBytes: 1 }), (error) => error.code === "ARCHIVE_TOO_LARGE");
     const extracted = await extractZip(first, path.join(temporaryRoot, "staged"));
     assert.equal(await readFile(path.join(extracted.destination, "manifest.json"), "utf8"), "{}");
   } finally {

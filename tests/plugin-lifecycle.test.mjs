@@ -10,6 +10,7 @@ import { observeWorkspaceTheme, workspaceTheme } from "@infolens/plugin-sdk";
 const root = path.resolve(import.meta.dirname, "..");
 const openCliRoot = path.join(root, "tests/fixtures/plugin-contract/opencli");
 const providedOpenCliRoot = path.join(root, "tests/fixtures/runtime-opencli/opencli");
+const RUNTIME_TOKEN = "plugin-lifecycle-test-session";
 
 async function packageFixture(packageRoot, id, { valid = true } = {}) {
   await mkdir(path.join(packageRoot, "backend"), { recursive: true });
@@ -63,6 +64,7 @@ function startRuntime(temporaryRoot, environment = {}) {
       INFOLENS_HOST_STATE_PATH: path.join(temporaryRoot, "data", "host-state.json"),
       INFOLENS_BUNDLED_OPENCLI_ROOT: openCliRoot,
       INFOLENS_RUNTIME_PORT: "0",
+      INFOLENS_APPLICATION_SESSION_ID: RUNTIME_TOKEN,
       ...environment,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -90,7 +92,7 @@ async function stopRuntime(child) {
 }
 
 async function request(origin, route, options) {
-  const response = await fetch(`${origin}${route}`, options);
+  const response = await fetch(`${origin}${route}`, { ...options, headers: { authorization: `Bearer ${RUNTIME_TOKEN}`, ...options?.headers } });
   const body = await response.json();
   return { response, body };
 }

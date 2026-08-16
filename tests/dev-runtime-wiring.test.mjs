@@ -36,10 +36,13 @@ test("development launch wires the same Runtime port to Vite and Electron", () =
   assert.equal(launch.runtimeOrigin, "http://127.0.0.1:61234");
   assert.deepEqual(launch.viteEnvironment, {
     INFOLENS_RUNTIME_ORIGIN: "http://127.0.0.1:61234",
+    INFOLENS_APPLICATION_SESSION_ID: launch.electronEnvironment.INFOLENS_APPLICATION_SESSION_ID,
+    VITE_INFOLENS_RUNTIME_TOKEN: launch.electronEnvironment.INFOLENS_APPLICATION_SESSION_ID,
   });
   assert.deepEqual(launch.electronEnvironment, {
     INFOLENS_RENDERER_URL: "http://127.0.0.1:5173",
     INFOLENS_RUNTIME_PORT: "61234",
+    INFOLENS_APPLICATION_SESSION_ID: launch.viteEnvironment.INFOLENS_APPLICATION_SESSION_ID,
   });
 });
 

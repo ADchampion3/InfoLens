@@ -12,15 +12,17 @@ import { createLogService } from "../packages/log-service/src/index.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const mockOpenCli = path.join(root, "tests/fixtures/runtime-opencli/opencli");
+const runtimeTokens = new Map();
 
 function target(pluginId, overrides = {}) {
   return { pluginId, targetId: `${pluginId}@1.0.0`, name: pluginId, version: "1.0.0", state: "ready", enabled: true, eligible: true, ...overrides };
 }
 
 async function startRuntime(dataRoot, stateFile, extraEnv = {}) {
+  const sessionId = extraEnv.INFOLENS_APPLICATION_SESSION_ID ?? "batch-refresh-test-session";
   const child = spawn(process.execPath, [path.join(root, "packages/plugin-runtime/src/server.mjs")], {
     cwd: root,
-    env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_PLUGIN_DATA_ROOT: dataRoot, INFOLENS_BUNDLED_OPENCLI_ROOT: mockOpenCli, INFOLENS_TEST_OPENCLI_STATE: stateFile, INFOLENS_RUNTIME_PORT: "0", ...extraEnv },
+    env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_PLUGIN_DATA_ROOT: dataRoot, INFOLENS_BUNDLED_OPENCLI_ROOT: mockOpenCli, INFOLENS_TEST_OPENCLI_STATE: stateFile, INFOLENS_RUNTIME_PORT: "0", INFOLENS_APPLICATION_SESSION_ID: sessionId, ...extraEnv },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const lines = readline.createInterface({ input: child.stdout });
@@ -33,6 +35,7 @@ async function startRuntime(dataRoot, stateFile, extraEnv = {}) {
       const message = JSON.parse(line);
       if (message.type === "runtime-ready") {
         clearTimeout(timeout);
+        runtimeTokens.set(message.origin, message.runtimeToken);
         resolve({ child, message });
       }
     });
@@ -49,7 +52,8 @@ async function stopRuntime(child) {
 }
 
 async function request(origin, route, init) {
-  const response = await fetch(`${origin}${route}`, { headers: { "content-type": "application/json" }, ...init });
+  const headers = { "content-type": "application/json", ...(runtimeTokens.get(origin) ? { authorization: `Bearer ${runtimeTokens.get(origin)}` } : {}), ...init?.headers };
+  const response = await fetch(`${origin}${route}`, { ...init, headers });
   const body = await response.json();
   return { response, body };
 }

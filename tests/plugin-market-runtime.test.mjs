@@ -11,6 +11,7 @@ import { writeDeterministicZip } from "@infolens/plugin-market/archive";
 const root = path.resolve(import.meta.dirname, "..");
 const openCliRoot = path.join(root, "tests", "fixtures", "plugin-contract", "opencli");
 const officialUrl = "https://market.infolens.test/v1/index.json";
+const RUNTIME_TOKEN = "plugin-market-runtime-test-session";
 
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -74,6 +75,7 @@ function startRuntime(temporaryRoot, environment = {}) {
       INFOLENS_ADAPTER_REGISTRY_ROOT: path.join(temporaryRoot, "data", "opencli-adapters"),
       INFOLENS_BUNDLED_OPENCLI_ROOT: openCliRoot,
       INFOLENS_RUNTIME_PORT: "0",
+      INFOLENS_APPLICATION_SESSION_ID: RUNTIME_TOKEN,
       ...environment,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -101,7 +103,7 @@ async function stopRuntime(child) {
 }
 
 async function request(origin, route, options = {}) {
-  const response = await fetch(`${origin}${route}`, { headers: { "content-type": "application/json", ...options.headers }, ...options });
+  const response = await fetch(`${origin}${route}`, { ...options, headers: { "content-type": "application/json", authorization: `Bearer ${RUNTIME_TOKEN}`, ...options.headers } });
   let body = {};
   try { body = await response.json(); } catch {}
   return { response, body };

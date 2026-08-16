@@ -28,6 +28,8 @@ if (args[0] === "doctor") {
   process.stdout.write("closed");
 } else if (args[0] === "daemon" && args[1] === "restart") {
   process.stdout.write("daemon restarted");
+} else if (args[0] === "oversized") {
+  process.stdout.write("x".repeat(17 * 1024 * 1024));
 } else {
   process.stdout.write(JSON.stringify({ args }));
 }
@@ -48,6 +50,21 @@ if (args[0] === "doctor") {
     assert.equal(await readFile(doctorWindowStatePath, "utf8"), "closed");
     const restarted = await adapter.restartDaemon();
     assert.equal(restarted.stdout, "daemon restarted");
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("OpenCLI adapter terminates a child that exceeds the output capture limit", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-opencli-output-limit-"));
+  const executablePath = path.join(temporaryRoot, "fake-opencli.mjs");
+  await writeFile(executablePath, `process.stdout.write("x".repeat(17 * 1024 * 1024));\n`, "utf8");
+  try {
+    const adapter = createOpenCliAdapter({ executablePath });
+    await assert.rejects(
+      adapter.run({ command: ["oversized"], strategy: "PUBLIC" }),
+      (error) => error?.code === "OPENCLI_OUTPUT_TOO_LARGE",
+    );
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
