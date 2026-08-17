@@ -92,6 +92,19 @@ test("GitHub Trending export controls preview and filter retained snapshots by d
   assert.match(controls, /downloadExport\(route\)/);
 });
 
+test("non-GitHub workspaces provide internal details and external browser actions", async () => {
+  for (const pluginId of ["hn", "product-hunt", "zhihu-hot"]) {
+    const html = await readFile(path.join(root, "plugins", pluginId, "web", "dist", "index.html"), "utf8");
+    const source = await readFile(path.join(root, "plugins", pluginId, "web", "dist", "workspace.js"), "utf8");
+    assert.match(html, /id="detail-sheet"/, `${pluginId} has no internal detail view`);
+    assert.match(source, /showDetail/, `${pluginId} has no internal detail action`);
+    assert.match(source, /window\.open\(/, `${pluginId} has no external browser action`);
+  }
+  const hostSource = await readFile(path.join(root, "apps/desktop/main.cjs"), "utf8");
+  assert.match(hostSource, /setWindowOpenHandler/);
+  assert.match(hostSource, /shell\.openExternal/);
+});
+
 function fakeConfirmDialog() {
   const listeners = new Map();
   const nodes = {};

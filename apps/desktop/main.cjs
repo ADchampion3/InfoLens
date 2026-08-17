@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, session } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const { access, cp, mkdir, readFile, readdir, rename, rm, writeFile } = require("node:fs/promises");
@@ -300,6 +300,13 @@ function createWindow() {
     },
   });
   mainWindow = window;
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") void shell.openExternal(parsed.toString()).catch(() => {});
+    } catch {}
+    return { action: "deny" };
+  });
 
   window.once("ready-to-show", () => window.show());
   const rendererUrl = process.env.INFOLENS_RENDERER_URL;
