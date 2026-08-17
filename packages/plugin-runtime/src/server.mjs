@@ -33,7 +33,7 @@ const diagnosticKeepAlive = diagnosticMode ? setInterval(() => {}, 1_000) : unde
 function packageFile(packageName, fallback) {
   try { return require.resolve(packageName); } catch { return fallback; }
 }
-const pluginSdkBrowserEntry = packageFile("@infolens/plugin-sdk", path.join(projectRoot, "packages", "plugin-sdk", "src", "index.js"));
+const pluginSdkBrowserEntry = packageFile("@infolens/plugin-sdk/src/index.js", path.join(projectRoot, "packages", "plugin-sdk", "src", "index.js"));
 const pluginSdkRoot = path.dirname(pluginSdkBrowserEntry);
 const pluginWorkspaceHistoryEntry = packageFile("@infolens/plugin-workspace/history-controls", path.join(projectRoot, "packages", "plugin-workspace", "src", "history-controls.js"));
 const pluginWorkspaceRoot = path.dirname(pluginWorkspaceHistoryEntry);
@@ -1215,8 +1215,9 @@ const server = createServer(async (request, response) => {
   }
   if (url.pathname === "/runtime/plugin-sdk.js" && request.method === "GET") {
     try {
+      const data = await readFile(pluginSdkBrowserEntry);
       response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
-      response.end(await readFile(pluginSdkBrowserEntry));
+      response.end(data);
     } catch {
       json(response, 404, { error: "Plugin SDK browser entry not found" });
     }

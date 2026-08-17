@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { createConnection } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createReleaseManifest, verifyRelease } from "../scripts/verify-release.mjs";
 import { loadBundledOpenCli } from "../packages/plugin-runtime/src/opencli-adapter.mjs";
 import { diagnoseWorkspaceBundle } from "../packages/plugin-runtime/src/workspace-diagnostics.mjs";
-import { createPreviewSession } from "../packages/plugin-sdk/src/preview.mjs";
+import { createPreviewSession, runWorkspaceBuild, workspaceBuildScript } from "../packages/plugin-sdk/src/preview.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "packages", "plugin-sdk", "bin", "infolens-plugin.mjs");
@@ -280,6 +283,243 @@ test("preview restarts the isolated Runtime after package changes", async () => 
   } finally {
     clearTimeout(restartTimer);
     await session.stop("test");
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("preview rebuilds the Workspace before restarting after source changes", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-preview-build-"));
+  const packageRoot = await createFixture(temporaryRoot, "fixture", {
+    backend: "export async function activate(context) { context.setHealth({ state: \"ready\" }); }",
+  });
+  const manifestPath = path.join(packageRoot, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.ui.entry = "web/dist/index.html";
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  const sourcePath = path.join(packageRoot, "web", "src.txt");
+  const workspaceRoot = path.join(packageRoot, "web", "dist");
+  await mkdir(workspaceRoot, { recursive: true });
+  await writeFile(sourcePath, "one", "utf8");
+  await writeFile(path.join(packageRoot, "package.json"), `${JSON.stringify({
+    name: "fixture-fixture",
+    version: "1.0.0",
+    type: "module",
+    scripts: { "build:workspace": "node build.mjs" },
+  }, null, 2)}\n`, "utf8");
+  await writeFile(path.join(packageRoot, "build.mjs"), `import { readFile, writeFile } from "node:fs/promises";
+const value = await readFile(new URL("./web/src.txt", import.meta.url), "utf8");
+await writeFile(new URL("./web/dist/index.html", import.meta.url), "<!doctype html><body>" + value + "</body>", "utf8");
+`, "utf8");
+  assert.equal(await workspaceBuildScript(packageRoot), "node build.mjs");
+
+  let builds = 0;
+  const buildWorkspace = async () => {
+    builds += 1;
+    await runWorkspaceBuild(packageRoot);
+  };
+  await buildWorkspace();
+
+  let resolveRestart;
+  let rejectRestart;
+  const restart = new Promise((resolve, reject) => {
+    resolveRestart = resolve;
+    rejectRestart = reject;
+  });
+  const restartTimer = setTimeout(() => rejectRestart(new Error("Preview did not rebuild the Workspace")), 15_000);
+  const session = createPreviewSession({
+    packageRoot,
+    pluginId: "fixture",
+    sdkRoot: path.join(root, "packages", "plugin-sdk"),
+    runtimePackageRoot: path.join(root, "packages", "plugin-runtime"),
+    bundledOpenCliRoot: path.join(root, "resources", "opencli"),
+    buildWorkspace,
+    workspaceRoot,
+    timeoutMs: 5_000,
+    onEvent: (event) => {
+      if (event.type === "restarted") resolveRestart(event);
+    },
+  });
+  try {
+    const started = await session.start();
+    const readWorkspace = async () => {
+      const response = await fetch(started.workspaceUrl);
+      assert.equal(response.status, 200);
+      return response.text();
+    };
+    assert.equal(builds, 1);
+    assert.match(await readWorkspace(), />one</);
+
+    await writeFile(sourcePath, "two", "utf8");
+    const restarted = await restart;
+    assert.equal(restarted.origin, started.origin);
+    assert.equal(builds, 2);
+    assert.match(await readWorkspace(), />two</);
+  } finally {
+    clearTimeout(restartTimer);
+    await session.stop("test");
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("preview dev proxy keeps Workspace, API, SDK, and HMR on one origin", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-preview-dev-"));
+  const requests = [];
+  const devServer = createServer((request, response) => {
+    requests.push(request.url);
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.end(`dev:${request.url}`);
+  });
+  devServer.on("upgrade", (request, socket) => {
+    requests.push(`ws:${request.url}`);
+    socket.end("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+  });
+  await new Promise((resolve) => devServer.listen(0, "127.0.0.1", resolve));
+  const devPort = devServer.address().port;
+  const packageRoot = await createFixture(temporaryRoot, "fixture", {
+    backend: "export async function activate(context) { context.route(\"GET\", \"/version\", () => ({ version: \"dev\" })); context.setHealth({ state: \"ready\" }); }",
+  });
+  const manifestPath = path.join(packageRoot, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.ui.entry = "web/dist/index.html";
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await rm(path.join(packageRoot, "web", "index.html"));
+  const workspaceEntry = path.join(packageRoot, "web", "dist", "index.html");
+  const session = createPreviewSession({
+    packageRoot,
+    pluginId: "fixture",
+    sdkRoot: path.join(root, "packages", "plugin-sdk"),
+    runtimePackageRoot: path.join(root, "packages", "plugin-runtime"),
+    bundledOpenCliRoot: path.join(root, "resources", "opencli"),
+    workspaceDev: { url: `http://127.0.0.1:${devPort}`, start: false },
+    workspaceEntry,
+    workspaceRoot: path.dirname(workspaceEntry),
+    timeoutMs: 5_000,
+  });
+  try {
+    const started = await session.start();
+    const workspaceUrl = new URL(started.workspaceUrl);
+    assert.equal(workspaceUrl.origin, started.origin);
+    assert.equal(workspaceUrl.searchParams.get("pluginId"), "fixture");
+    assert.equal(new URL(workspaceUrl.searchParams.get("apiBaseUrl")).origin, started.origin);
+    assert.match(await fetch(started.workspaceUrl).then((response) => response.text()), /^dev:\/\?/);
+    assert.match(await fetch(new URL("/@vite/client", started.origin)).then((response) => response.text()), /^dev:\/@vite\/client/);
+    assert.deepEqual(await fetch(new URL("version", started.apiBaseUrl)).then((response) => response.json()), { version: "dev" });
+    const sdkResponse = await fetch(new URL("/runtime/plugin-sdk.js", started.origin));
+    if (sdkResponse.status !== 200) {
+      const failure = await Promise.race([session.wait(), new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 250))]);
+      assert.equal(sdkResponse.status, 200, `${await sdkResponse.text()} ${failure.error?.message ?? JSON.stringify(failure)}`);
+    }
+    assert.match(await fetch(new URL("/runtime/health", started.origin)).then((response) => response.text()), /^dev:\/runtime\/health/);
+
+    const handshake = await new Promise((resolve, reject) => {
+      const socket = createConnection(Number(new URL(started.origin).port), "127.0.0.1", () => {
+        socket.write(`GET /@vite/client HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`);
+      });
+      let output = "";
+      socket.on("data", (chunk) => { output += String(chunk); });
+      socket.once("end", () => resolve(output));
+      socket.once("error", reject);
+    });
+    assert.match(handshake, /^HTTP\/1\.1 101/);
+    assert(requests.includes("ws:/@vite/client"));
+  } finally {
+    await session.stop("test");
+    await new Promise((resolve) => devServer.close(resolve));
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("preview --dev starts the configured server before a static Workspace exists", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-preview-dev-start-"));
+  const portServer = createServer();
+  await new Promise((resolve) => portServer.listen(0, "127.0.0.1", resolve));
+  const port = portServer.address().port;
+  await new Promise((resolve) => portServer.close(resolve));
+  const packageRoot = await createFixture(temporaryRoot, "fixture", {
+    backend: "export async function activate(context) { context.setHealth({ state: \"ready\" }); }",
+  });
+  const manifestPath = path.join(packageRoot, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.ui.entry = "web/dist/index.html";
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await rm(path.join(packageRoot, "web", "index.html"));
+  await writeFile(path.join(packageRoot, "dev-server.mjs"), `import { createServer } from "node:http";
+createServer((request, response) => { response.end("auto-dev"); }).listen(${port}, "127.0.0.1");
+`, "utf8");
+  const packageJsonPath = path.join(packageRoot, "package.json");
+  const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  packageJson.scripts = { "dev:workspace": "node dev-server.mjs" };
+  packageJson.infolens = { workspaceDev: { url: `http://127.0.0.1:${port}` } };
+  await writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
+  const session = createPreviewSession({
+    packageRoot,
+    pluginId: "fixture",
+    sdkRoot: path.join(root, "packages", "plugin-sdk"),
+    runtimePackageRoot: path.join(root, "packages", "plugin-runtime"),
+    bundledOpenCliRoot: path.join(root, "resources", "opencli"),
+    workspaceDev: { url: `http://127.0.0.1:${port}`, start: true },
+    workspaceEntry: path.join(packageRoot, "web", "dist", "index.html"),
+    workspaceRoot: path.join(packageRoot, "web", "dist"),
+    timeoutMs: 5_000,
+  });
+  try {
+    const started = await session.start();
+    assert.equal(await fetch(started.workspaceUrl).then((response) => response.text()), "auto-dev");
+  } finally {
+    await session.stop("test");
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("preview runs build:workspace before validating the package", async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-preview-cli-build-"));
+  const packageRoot = await createFixture(temporaryRoot, "fixture");
+  const manifestPath = path.join(packageRoot, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.ui.entry = "web/dist/index.html";
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await writeFile(path.join(packageRoot, "web", "src.txt"), "built", "utf8");
+  await writeFile(path.join(packageRoot, "build.mjs"), `import { mkdir, readFile, writeFile } from "node:fs/promises";
+const value = await readFile(new URL("./web/src.txt", import.meta.url), "utf8");
+await mkdir(new URL("./web/dist/", import.meta.url), { recursive: true });
+await writeFile(new URL("./web/dist/index.html", import.meta.url), "<!doctype html><body>" + value + "</body>", "utf8");
+`, "utf8");
+  const packageJsonPath = path.join(packageRoot, "package.json");
+  const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  packageJson.scripts = { "build:workspace": "node build.mjs" };
+  await writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
+
+  const child = spawn(process.execPath, [cli, "preview", packageRoot, "--format", "text", "--timeout", "5000"], {
+    cwd: root,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const workspaceUrl = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Preview did not start:\n${stdout}\n${stderr}`)), 15_000);
+    const check = () => {
+      const match = stdout.match(/Workspace: (http:\/\/[^\r\n]+)/);
+      if (!match) return;
+      clearTimeout(timer);
+      resolve(match[1]);
+    };
+    child.stdout.on("data", check);
+    child.once("error", reject);
+  });
+  try {
+    const response = await fetch(workspaceUrl);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), />built</);
+    child.stdin.end("shutdown\n");
+    const [code] = await once(child, "close");
+    assert.equal(code, 0, `${stdout}\n${stderr}`);
+    assert.match(stdout, /Workspace build: enabled/);
+    assert.doesNotMatch(stdout, /npm notice/);
+  } finally {
+    if (child.exitCode === null) child.kill();
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });

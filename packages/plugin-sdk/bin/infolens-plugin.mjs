@@ -8,7 +8,7 @@ import readline from "node:readline";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import semver from "semver";
-import { createPreviewSession } from "../src/preview.mjs";
+import { createPreviewSession, runWorkspaceBuild, workspaceBuildScript, workspaceDevConfig } from "../src/preview.mjs";
 
 const require = createRequire(import.meta.url);
 const sdkRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,6 +38,8 @@ Options:
   --format <json|text>        Output JSON (default) or a human-readable summary
   --target-host-version <v>  Override only the Minimum Host Version comparison
   --timeout <milliseconds>   Set the doctor phase timeout (default: 10000)
+  --dev                       Start the configured frontend dev server for preview
+  --dev-url <url>             Proxy an already-running loopback frontend dev server
   --out <path>                Output package path for pack
   --registry-root <path>      Local static Registry directory for publish
   --publisher <name>          Publisher name for publish metadata
@@ -71,7 +73,9 @@ Examples:
 Operational commands return stable JSON by default. Use --format text for a
 compact summary with failed check IDs, codes, phases, and next actions.
 Preview runs in the foreground, watches package files, and restarts its
-isolated Runtime after changes. Press Ctrl+C or type shutdown to stop it.
+isolated Runtime after changes. If package.json defines build:workspace,
+Preview builds the Workspace before startup and after source changes. Press
+Ctrl+C or type shutdown to stop it.
 `;
 
 function codedError(code, message, phase = "bootstrap", checkId) {
@@ -225,6 +229,7 @@ function formatText(result) {
     lines.push(`Workspace: ${result.preview.workspaceUrl}`);
     lines.push(`API: ${result.preview.apiBaseUrl}`);
     lines.push(`Health: ${result.preview.healthUrl}`);
+    lines.push(`Workspace build: ${result.preview.build ? "enabled" : "disabled"}`);
     lines.push(`Watch: ${result.preview.watch ? "enabled" : "unavailable"}`);
   }
   if (result.created?.length) lines.push(`Created: ${result.created.join(", ")}`);
@@ -336,7 +341,7 @@ function validationCheckId(error) {
   return "plugin.validation";
 }
 
-async function validatePackage(packageRoot, deps, context, { command = "validate", development = false } = {}) {
+async function validatePackage(packageRoot, deps, context, { command = "validate", development = false, allowMissingWorkspaceEntry = false } = {}) {
   const manifest = await readManifest(packageRoot);
   const result = baseResult(command, context.environment, manifest, packageRoot);
   addEnvironmentChecks(result);
@@ -345,7 +350,7 @@ async function validatePackage(packageRoot, deps, context, { command = "validate
 
   const registryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-author-adapters-"));
   try {
-    const validated = await deps.contract.validatePluginPackage(packageRoot, validationRuntime(context), adapterOptions(deps, context, registryRoot, development));
+    const validated = await deps.contract.validatePluginPackage(packageRoot, validationRuntime(context), { ...adapterOptions(deps, context, registryRoot, development), allowMissingWorkspaceEntry });
     result.plugin = pluginIdentity(validated.manifest, packageRoot);
     addCheck(result, "plugin.manifest", "info", "passed", { phase: "validate" });
     addCheck(result, "plugin.contract", "info", "passed", { phase: "validate", details: { value: validated.manifest.contractVersion } });
@@ -796,8 +801,20 @@ async function runDev(packageRoot, deps, context) {
   }
 }
 
-async function runPreview(packageRoot, deps, context, timeoutMs) {
-  const validation = await validatePackage(packageRoot, deps, context, { command: "preview" });
+async function runPreview(packageRoot, deps, context, timeoutMs, options) {
+  const workspaceDev = await workspaceDevConfig(packageRoot, { enabled: Boolean(options.dev), url: options.dev_url });
+  const buildScript = await workspaceBuildScript(packageRoot);
+  const buildWorkspace = buildScript ? () => runWorkspaceBuild(packageRoot) : undefined;
+  if (buildWorkspace && !context.bootstrapError && !context.targetError) {
+    try {
+      await buildWorkspace();
+    } catch (error) {
+      const result = baseResult("preview", context.environment, await readManifest(packageRoot), packageRoot);
+      addEnvironmentChecks(result);
+      return { result: setFailure(result, error, { phase: "workspace-build", checkId: "preview.workspace-build", id: "preview.workspace-build" }) };
+    }
+  }
+  const validation = await validatePackage(packageRoot, deps, context, { command: "preview", allowMissingWorkspaceEntry: Boolean(workspaceDev) });
   const result = validation.result;
   if (!validation.validated || !result.ok) return { result };
 
@@ -807,7 +824,15 @@ async function runPreview(packageRoot, deps, context, timeoutMs) {
     sdkRoot,
     runtimePackageRoot: runtimePackageRoot(),
     bundledOpenCliRoot: context.runtime.distributionRoot,
+    buildWorkspace,
+    workspaceRoot: path.dirname(validation.validated.workspaceEntry),
+    workspaceDev,
+    workspaceEntry: validation.validated.workspaceEntry,
+    backendRoot: path.dirname(validation.validated.backendPath),
     timeoutMs,
+    onEvent: (event) => {
+      if (event.type === "workspace-build-failed") process.stderr.write(`[preview] ${event.message}\n`);
+    },
   });
   activePreviewSession = session;
   if (previewSignalReason) {
@@ -967,8 +992,8 @@ async function runPublish(packageRoot, deps, context, options, timeoutMs) {
 function parseOptions(argv) {
   const options = {};
   const positional = [];
-  const valueOptions = new Set(["target-host-version", "timeout", "out", "format", "id", "name", "registry-root", "publisher", "approved-by", "license", "category", "description", "changelog", "platform", "arch", "index-url"]);
-  const flagOptions = new Set(["check"]);
+  const valueOptions = new Set(["target-host-version", "timeout", "out", "format", "id", "name", "registry-root", "publisher", "approved-by", "license", "category", "description", "changelog", "platform", "arch", "index-url", "dev-url"]);
+  const flagOptions = new Set(["check", "dev"]);
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     const optionName = value.startsWith("--") ? value.slice(2).split("=", 1)[0] : undefined;
@@ -1016,6 +1041,11 @@ async function main(argv) {
     setFailure(result, codedError("INVALID_ARGUMENTS", "--id, --name, and --check are only valid for init", "arguments"), { phase: "arguments", id: "arguments" });
     return { result, format: outputFormat };
   }
+  if (command !== "preview" && (options.dev || options.dev_url !== undefined)) {
+    const result = baseResult(command ?? "unknown");
+    setFailure(result, codedError("INVALID_ARGUMENTS", "--dev and --dev-url are only valid for preview", "arguments"), { phase: "arguments", id: "arguments" });
+    return { result, format: outputFormat };
+  }
   if (command === "init" && positional.length !== 1) {
     const result = baseResult(command);
     setFailure(result, codedError("INVALID_ARGUMENTS", "Usage: infolens-plugin init <path> [--id <id>] [--name <name>] [--check] [--format <json|text>]", "arguments"), { phase: "arguments", id: "arguments" });
@@ -1040,7 +1070,7 @@ async function main(argv) {
     else if (command === "pack") outcome = await runPack(packageRoot, deps, context, path.resolve(options.out ?? path.join(path.dirname(packageRoot), `${path.basename(packageRoot)}.infolens-plugin`)), timeoutMs);
     else if (command === "publish") outcome = await runPublish(packageRoot, deps, context, options, timeoutMs);
     else if (command === "dev") outcome = await runDev(packageRoot, deps, context);
-    else if (command === "preview") outcome = await runPreview(packageRoot, deps, context, timeoutMs);
+    else if (command === "preview") outcome = await runPreview(packageRoot, deps, context, timeoutMs, options);
     else if (command === "adapters" && positional[0] === "list") outcome = await runListAdapters(packageRoot, deps, context);
     else {
       const result = baseResult(command ?? "unknown", context.environment);

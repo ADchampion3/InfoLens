@@ -633,11 +633,52 @@ preview session's temporary data and loopback port.
 infolens-plugin preview . --format text
 ~~~
 
+For a source-based frontend, add a <code>build:workspace</code> script to the
+Plugin's <code>package.json</code>:
+
+~~~json
+{
+  "scripts": {
+    "build:workspace": "vite build"
+  }
+}
+~~~
+
+<code>preview</code> runs that script before validation and repeats it after
+Workspace source changes. The generated files must land at the path selected
+by <code>ui.entry</code>; build output changes are ignored by the watcher so a
+successful build causes one Runtime restart. A failed rebuild keeps the last
+working Runtime alive and retries on the next source change.
+
 Press <code>Ctrl+C</code> or write <code>shutdown</code> to stdin to stop the
-preview. Preview serves the built static Workspace Bundle; it does not compile
-frontend source, execute Workspace JavaScript, render a browser, or verify a
-real Browser Bridge session. It does not create a Development Link or change
-the managed Plugin Directory, and <code>pack</code> never invokes it.
+preview. Without <code>build:workspace</code>, Preview keeps serving the
+already-built static Workspace Bundle. It does not execute Workspace
+JavaScript, render a browser, or verify a real Browser Bridge session. It does
+not create a Development Link or change the managed Plugin Directory.
+
+For framework development with HMR, configure a loopback dev server and run
+<code>preview --dev</code>:
+
+~~~json
+{
+  "scripts": {
+    "dev:workspace": "vite --host 127.0.0.1 --port 5173"
+  },
+  "infolens": {
+    "workspaceDev": {
+      "url": "http://127.0.0.1:5173"
+    }
+  }
+}
+~~~
+
+Preview proxies frontend HTTP and WebSocket traffic through the same origin as
+the isolated Runtime. Only <code>localhost</code>, <code>127.0.0.1</code>, and
+<code>::1</code> are accepted. Use <code>--dev-url</code> for an already-running
+loopback server. Dev mode may start before <code>ui.entry</code> exists in the
+source package; <code>validate</code>, <code>doctor</code>, and
+<code>pack</code> still require the final static Workspace Bundle.
+<code>pack</code> never invokes it.
 
 ### pack
 

@@ -58,9 +58,15 @@ export async function validatePluginPackage(packageRoot, runtime, options = {}) 
   const backendPath = resolvePackagePath(packageRoot, manifest.backend.entry, "backend.entry");
   const workspaceEntry = resolvePackagePath(packageRoot, manifest.ui.entry, "ui.entry");
   try {
-    await Promise.all([access(backendPath), access(workspaceEntry)]);
+    await access(backendPath);
+    if (!options.allowMissingWorkspaceEntry) await access(workspaceEntry);
   } catch {
-    throw new ContractError("INVALID_PACKAGE_STRUCTURE", "backend.entry and ui.entry must point to existing files");
+    throw new ContractError(
+      "INVALID_PACKAGE_STRUCTURE",
+      options.allowMissingWorkspaceEntry
+        ? "backend.entry must point to an existing file"
+        : "backend.entry and ui.entry must point to existing files",
+    );
   }
 
   reject(!manifest.openCliAdapters || typeof manifest.openCliAdapters !== "object" || Array.isArray(manifest.openCliAdapters), "INVALID_ADAPTERS", "openCliAdapters must be an object");

@@ -598,9 +598,44 @@ infolens-plugin preview . --format text
 ```
 
 按 `Ctrl+C` 或向 stdin 写入 `shutdown` 停止 Preview。Preview 提供已经构建的静态
-Workspace Bundle；它不会编译 Frontend Source、执行 Workspace JavaScript、渲染浏览器
-或验证真实 Browser Bridge Session。它不会创建 Development Link，也不会修改受管理的
-Plugin Directory；`pack` 永远不会调用它。
+Workspace Bundle；配置 `build:workspace` 后会在启动和源码变化时执行该脚本。Preview 不会
+执行 Workspace JavaScript、渲染浏览器或验证真实 Browser Bridge Session。它不会创建
+Development Link，也不会修改受管理的 Plugin Directory；`pack` 永远不会调用它。
+
+如果前端有源码构建流程，可以在 Plugin 的 `package.json` 中添加 `build:workspace`：
+
+```json
+{
+  "scripts": {
+    "build:workspace": "vite build"
+  }
+}
+```
+
+`preview` 会在启动前执行该脚本，并在 Workspace 源码变化后再次执行。构建产物必须写入
+`ui.entry` 指向的路径；监听器会忽略构建产物自身的变化，构建成功后只重启一次 Runtime。
+增量构建失败时会保留上一个可用 Runtime，下一次源码变化会再次尝试。未配置该脚本时，
+Preview 继续直接服务已有的静态 Workspace Bundle。
+
+需要框架 HMR 时，配置 loopback 前端 dev server 并运行 `preview --dev`：
+
+```json
+{
+  "scripts": {
+    "dev:workspace": "vite --host 127.0.0.1 --port 5173"
+  },
+  "infolens": {
+    "workspaceDev": {
+      "url": "http://127.0.0.1:5173"
+    }
+  }
+}
+```
+
+Preview 会把前端 HTTP 和 WebSocket 请求代理到与隔离 Runtime 相同的源，生产环境的
+`manifest.ui.entry` 仍然是包内静态文件。仅允许 `localhost`、`127.0.0.1` 和 `::1`；使用
+`--dev-url` 可以代理已经运行的 loopback server，但不会启动它。开发态允许源码包暂时没有
+`ui.entry`，而 `validate`、`doctor` 和 `pack` 仍要求最终的静态 Workspace Bundle。
 
 ### pack
 
