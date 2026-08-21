@@ -54,7 +54,7 @@ async function openWorkspace(app, plugin) {
   await clickText(app, plugin.name);
   const frame = await waitFor(() => app.cdp.evaluate(`(() => { const frame=document.querySelector('iframe'); return frame?.src.includes(${JSON.stringify(`/plugins/${plugin.id}/workspace/`)}) ? frame.src : false; })()`), `${plugin.name} workspace did not load`);
   const targetPath = new URL(frame).pathname;
-  await waitFor(() => app.cdp.evaluateTarget(targetPath, "(() => { const button=document.querySelector('#refresh'); return Boolean(button && (button.onclick || document.querySelector('.question-list, .empty, .dependency'))); })()"), `${plugin.name} workspace did not become interactive`);
+  await waitFor(() => app.cdp.evaluateTarget(targetPath, "(() => { const button=document.querySelector('#refresh'); return Boolean(button && (button.onclick || document.querySelector('.reader-list, .ledger-list, .board-grid, .empty, .dependency-panel'))); })()"), `${plugin.name} workspace did not become interactive`);
   return targetPath;
 }
 

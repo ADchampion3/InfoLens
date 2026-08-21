@@ -28,6 +28,7 @@
     "test:release-candidate": "npm run package:release && node --test tests/release-candidate.test.mjs",
     "test:release-evidence": "node --test tests/release-evidence.test.mjs",
     "verify:real-source": "node scripts/verify-real-source.mjs",
+    "prototype:plugin-workspace-templates": "vite prototypes/plugin-workspace-templates --host 127.0.0.1",
     "typecheck": "npm run typecheck:desktop && npm run typecheck:sdk",
     "typecheck:desktop": "tsc --noEmit -p apps/desktop/tsconfig.json",
     "typecheck:sdk": "tsc --noEmit -p packages/plugin-sdk/tsconfig.json",
