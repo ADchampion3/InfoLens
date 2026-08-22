@@ -11,12 +11,14 @@ import { openStore as openHn } from "../plugins/hn/backend/history-storage.js";
 import { openStore as openGithub } from "../plugins/github-trending/backend/history-storage.js";
 import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/history-storage.js";
 import { openStore as openProductHunt } from "../plugins/product-hunt/backend/history-storage.js";
+import { openStore as openJuejin } from "../plugins/juejin/backend/history-storage.js";
 
 const root=path.resolve(import.meta.dirname,"..");
 const story=(id)=>({id:String(id),rank:1,title:`Story ${id}`,domain:"example.com",points:1,author:"author",createdAt:"2026-01-01T00:00:00.000Z",comments:0,url:`https://example.com/${id}`,discussionUrl:`https://news.ycombinator.com/item?id=${id}`});
 const repo=(id)=>({id:`owner/repo${id}`,rank:1,owner:"owner",name:`repo${id}`,description:"desc",language:"JavaScript",languageColor:"#f1e05a",stars:1,forks:0,starsGained:1,url:`https://github.com/owner/repo${id}`});
 const question=(id)=>({url:`https://www.zhihu.com/question/${id}`,rank:1,title:`Question ${id}`,excerpt:"excerpt",heat:"1 热度",answers:1,thumbnailUrl:null});
 const product=(id)=>({url:`https://www.producthunt.com/products/product-${id}`,rank:1,name:`Product ${id}`,votes:1});
+const article=(id)=>({id:`12345678901234567${id}`,category:"backend",rank:1,title:`Article ${id}`,brief:"brief",author:"author",views:10,likes:2,comments:1,hotRank:5,url:`https://juejin.cn/post/12345678901234567${id}`});
 
 test("downloadable response convention rejects unsafe filenames and non-stream bodies",()=>{
   assert.throws(()=>downloadableResponse("../private.json",["{}"]),/filenameBase/);
@@ -32,6 +34,7 @@ test("all plugin stores retain snapshots, share read ledgers, and export only bu
   const cases=[
     ["hn",openHn,story,"0.3.0",2],
     ["github-trending",openGithub,repo,"0.3.0",3],
+    ["juejin",openJuejin,article,"0.1.0",1],
     ["zhihu-hot",openZhihu,question,"0.2.0",2],
     ["product-hunt",openProductHunt,product,"0.2.0",2],
   ];
@@ -39,7 +42,7 @@ test("all plugin stores retain snapshots, share read ledgers, and export only bu
     const filename=path.join(temp,`${pluginId}.sqlite`);const store=openStore(filename);
     assert.equal(store.schemaVersion(),schema);assert.equal(store.settings().retentionDays,30);
     store.replace([record(1)],"2026-07-03T00:00:00.000Z");
-    const identity=pluginId==="hn"?"1":pluginId==="github-trending"?"owner/repo1":record(1).url;
+    const identity=pluginId==="hn"?"1":pluginId==="github-trending"?"owner/repo1":pluginId==="juejin"?record(1).id:record(1).url;
     store.markRead(identity,true);store.replace([record(2)],"2026-08-01T00:00:00.000Z");
     const history=store.snapshots({limit:1,offset:1});assert.equal(history.total,2);assert.equal(history.items.length,1);
     assert.equal(store.snapshot(history.items[0].id).records[0].read,true);
@@ -79,6 +82,7 @@ test("retention preserves the newest UTC collected_at snapshot when a backfill h
   const cases=[
     ["hn",openHn,story],
     ["github-trending",openGithub,repo],
+    ["juejin",openJuejin,article],
     ["zhihu-hot",openZhihu,question],
     ["product-hunt",openProductHunt,product],
   ];

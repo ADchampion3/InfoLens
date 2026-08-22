@@ -14,7 +14,7 @@ import { createPreviewSession, runWorkspaceBuild, workspaceBuildScript } from ".
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "packages", "plugin-sdk", "bin", "infolens-plugin.mjs");
-const officialIds = ["hn", "github-trending", "product-hunt", "zhihu-hot"];
+const officialIds = ["hn", "github-trending", "juejin", "product-hunt", "zhihu-hot"];
 
 async function runCliProcess(cliPath, cwd, args, extraEnvironment = {}) {
   return new Promise((resolve, reject) => {

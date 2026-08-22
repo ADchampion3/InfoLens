@@ -11,6 +11,7 @@ const state=JSON.parse(await readFile(process.env.INFOLENS_TEST_OPENCLI_STATE,"u
 await appendFile(`${process.env.INFOLENS_TEST_OPENCLI_STATE}.calls`,`${JSON.stringify(process.argv.slice(2))}\n`);
 if(command==="hackernews top")process.stdout.write(JSON.stringify([{id:1,rank:1,title:"Public sibling remains available",score:100,author:"tester",comments:12,url:"https://example.com/hn"}]));
 else if(command==="github-trending repos")process.stdout.write(JSON.stringify([{rank:1,repo:"infolens/runtime",description:"Public sibling remains available",language:"JavaScript",stars:100,forks:10,starsSince:5,url:"https://github.com/infolens/runtime"}]));
+else if(command==="juejin hot")process.stdout.write(JSON.stringify([{rank:1,article_id:"1234567890123456789",title:"Browser Juejin article",brief:"Public Juejin fixture",views:800,likes:80,comments:8,hot_rank:88,author:"fixture",url:"https://juejin.cn/post/1234567890123456789"}]))
 else if(command==="zhihu whoami"){
   const mode=state.zhihu??"success";
   if(mode==="disconnected"){process.stderr.write("Browser Bridge extension not connected\n");process.exit(69)}

@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 const root = path.resolve(import.meta.dirname, "..");
-const plugins = ["hn", "github-trending", "zhihu-hot", "product-hunt"];
+const plugins = ["hn", "github-trending", "juejin", "zhihu-hot", "product-hunt"];
 
 test("history browsing uses a shared calendar popover instead of a snapshot page", async () => {
   const source = await readFile(path.join(root, "packages/plugin-workspace/src/history-controls.js"), "utf8");

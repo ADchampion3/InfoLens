@@ -1,0 +1,9 @@
+{
+  "name": "@infolens/plugin-juejin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@infolens/plugin-sdk": "0.1.0"
+  }
+}

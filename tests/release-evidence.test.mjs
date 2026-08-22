@@ -20,7 +20,7 @@ test("Runtime enables Node environment proxy support without overriding explicit
 });
 
 test("Release evidence covers every strategy and redacts authentication material", () => {
-  assert.deepEqual(releasePlugins.map(({ strategy }) => strategy), ["PUBLIC", "PUBLIC", "COOKIE", "INTERCEPT"]);
+  assert.deepEqual(releasePlugins.map(({ strategy }) => strategy), ["PUBLIC", "PUBLIC", "PUBLIC", "COOKIE", "INTERCEPT"]);
   const evidence = safeEvidence({ cookie: "secret", profilePath: "C:\\Users\\person\\Chrome", failure: "token=abc" });
   assert.equal(evidence.cookie, "[REDACTED]");
   assert.equal(evidence.profilePath, "[REDACTED]");

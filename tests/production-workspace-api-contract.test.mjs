@@ -7,6 +7,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const plugins = [
   { id: "hn", entry: "signal-ledger.js", field: "stories", row: "ledger-row" },
   { id: "github-trending", entry: "source-board.js", field: "repositories", row: "board-card" },
+  { id: "juejin", entry: "workspace.js", field: "articles", row: "article-card" },
   { id: "zhihu-hot", entry: "reading-desk.js", field: "questions", row: "reader-list-item" },
   { id: "product-hunt", entry: "source-board.js", field: "products", row: "board-card" },
 ];

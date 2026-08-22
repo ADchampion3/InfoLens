@@ -7,7 +7,7 @@ import { launchPackagedApp, waitFor } from "./helpers/packaged-app.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const releaseRoot = path.join(root, "release", "infolens-win32-x64");
-const officialIds = ["github-trending", "hn", "product-hunt", "zhihu-hot"];
+const officialIds = ["github-trending", "hn", "juejin", "product-hunt", "zhihu-hot"];
 
 async function request(origin, route, options) {
   const response = await fetch(`${origin}${route}`, options);
@@ -68,7 +68,7 @@ test("packaged Electron executes the full release integration matrix", { timeout
   try {
     const initial = await waitFor(async () => {
       const info = await runtimeInfo(app.cdp);
-      return info?.plugins?.length === 4 ? info : undefined;
+      return info?.plugins?.length === officialIds.length ? info : undefined;
     }, "packaged Runtime did not activate all official plugins");
     assert.deepEqual(initial.plugins.map(({ id }) => id).sort(), officialIds);
     assert.equal(initial.rejectedPlugins[0].code, "INCOMPATIBLE_CONTRACT");
@@ -82,11 +82,13 @@ test("packaged Electron executes the full release integration matrix", { timeout
     const summaries = {
       hn: await waitFor(async () => { const value=await request(initial.origin, "/plugins/hn/api/summary"); return value.stories.length ? value : undefined; }, "Hacker News workspace refresh did not persist"),
       github: await waitFor(async () => { const value=await request(initial.origin, "/plugins/github-trending/api/summary"); return value.repositories.length ? value : undefined; }, "GitHub workspace refresh did not persist"),
+      juejin: await waitFor(async () => { const value=await request(initial.origin, "/plugins/juejin/api/summary"); return value.articles.length ? value : undefined; }, "Juejin workspace refresh did not persist"),
       zhihu: await waitFor(async () => { const value=await request(initial.origin, "/plugins/zhihu-hot/api/summary"); return value.questions.length ? value : undefined; }, "Zhihu workspace refresh did not persist"),
       productHunt: await waitFor(async () => { const value=await request(initial.origin, "/plugins/product-hunt/api/summary"); return value.products.length ? value : undefined; }, "Product Hunt workspace refresh did not persist"),
     };
     assert.equal(summaries.hn.stories.length, 1);
     assert.equal(summaries.github.repositories.length, 1);
+    assert.equal(summaries.juejin.articles.length, 1);
     assert.equal(summaries.zhihu.questions.length, 1);
     assert.equal(summaries.productHunt.products.length, 12);
 
@@ -127,7 +129,7 @@ test("packaged Electron executes the full release integration matrix", { timeout
     await app.cdp.evaluate("window.infolens.testTerminateRuntime()");
     const recovered = await waitFor(async () => {
       const info = await runtimeInfo(app.cdp);
-      return info?.origin && info.origin !== oldOrigin && info.plugins.length === 4 ? info : undefined;
+      return info?.origin && info.origin !== oldOrigin && info.plugins.length === officialIds.length ? info : undefined;
     }, "host did not recover and reactivate all plugins", 15_000);
     assert.equal((await request(recovered.origin, "/plugins/hn/api/summary")).stories.length, 1);
     assert.equal(recovered.hostState.theme, "dark");
@@ -140,6 +142,7 @@ test("packaged Electron executes the full release integration matrix", { timeout
     assert.equal(restarted.hostState.lastSelection, "hn");
     assert.equal((await request(restarted.origin, "/plugins/hn/api/summary")).stories.length, 1);
     assert.equal((await request(restarted.origin, "/plugins/product-hunt/api/summary")).products.length, 12);
+    assert.equal((await request(restarted.origin, "/plugins/juejin/api/summary")).articles.length, 1);
     for (const id of officialIds) await access(path.join(profile, "plugins-data", id));
   } finally {
     await app.stop();

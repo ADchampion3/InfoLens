@@ -380,7 +380,7 @@ test("Runtime exposes fixed multi-Workspace Batches and canonical failure recove
     const origin = runtime.message.origin;
     const targets = await request(origin, "/runtime/batches/targets");
     assert.equal(targets.response.status, 200);
-    assert.deepEqual(targets.body.targets.map(({ pluginId }) => pluginId), ["github-trending", "hn", "product-hunt", "zhihu-hot"]);
+    assert.deepEqual(targets.body.targets.map(({ pluginId }) => pluginId), ["github-trending", "hn", "juejin", "product-hunt", "zhihu-hot"]);
     const githubTarget = targets.body.targets.find(({ pluginId }) => pluginId === "github-trending");
     assert.deepEqual(githubTarget.refreshOptions.values, { period: "daily", language: "all" });
     assert.deepEqual(githubTarget.refreshOptions.fields.map(({ key, type }) => ({ key, type })), [
@@ -388,7 +388,7 @@ test("Runtime exposes fixed multi-Workspace Batches and canonical failure recove
       { key: "language", type: "select" },
     ]);
 
-    const created = await request(origin, "/runtime/batches", { method: "POST", body: JSON.stringify({ pluginIds: ["hn", "product-hunt"] }) });
+    const created = await request(origin, "/runtime/batches", { method: "POST", body: JSON.stringify({ pluginIds: ["hn", "juejin", "product-hunt"] }) });
     assert.equal(created.response.status, 202);
     assert.equal(created.body.batchId, created.body.batch.batchId);
     const activeReuse = await request(origin, "/runtime/batches", { method: "POST", body: JSON.stringify({ pluginIds: ["hn"] }) });
@@ -396,7 +396,7 @@ test("Runtime exposes fixed multi-Workspace Batches and canonical failure recove
     assert.equal(activeReuse.body.batchId, created.body.batchId);
     const finished = await waitForBatch(origin, created.body.batchId);
     assert.equal(finished.status, "succeeded");
-    assert.equal(finished.counts.succeeded, 2);
+    assert.equal(finished.counts.succeeded, 3);
     assert(finished.items.every(({ operationId }) => operationId));
 
     const parameterized = await request(origin, "/runtime/batches", { method: "POST", body: JSON.stringify({ targets: [{ pluginId: "github-trending", refreshInput: { period: "weekly", language: "Rust" } }] }) });
@@ -439,7 +439,7 @@ test("Runtime batches use shared resource permits and recover interrupted work a
   try {
     await writeFile(stateFile, JSON.stringify({ producthunt: "success", delayMs: 250 }));
     runtime = await startRuntime(path.join(temporaryRoot, "data"), stateFile, { INFOLENS_BATCH_STATE_PATH: batchStatePath, INFOLENS_APPLICATION_SESSION_ID: sessionId });
-    const created = await request(runtime.message.origin, "/runtime/batches", { method: "POST", body: JSON.stringify({ pluginIds: ["hn", "github-trending", "product-hunt", "zhihu-hot"] }) });
+    const created = await request(runtime.message.origin, "/runtime/batches", { method: "POST", body: JSON.stringify({ pluginIds: ["hn", "github-trending", "juejin", "product-hunt", "zhihu-hot"] }) });
     const finished = await waitForBatch(runtime.message.origin, created.body.batchId);
     assert.equal(finished.status, "succeeded");
     const calls = (await readFile(`${stateFile}.calls`, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
@@ -457,7 +457,7 @@ test("Runtime batches use shared resource permits and recover interrupted work a
       publicPeak = Math.max(publicPeak, publicActive);
     }
     assert.equal(browserPeak, 1);
-    assert.equal(publicPeak, 2);
+    assert.equal(publicPeak, 3);
 
     await writeFile(stateFile, JSON.stringify({ producthunt: "success", delayMs: 5_000 }));
     const active = await request(runtime.message.origin, "/runtime/batches", { method: "POST", body: JSON.stringify({ pluginIds: ["hn", "product-hunt"] }) });

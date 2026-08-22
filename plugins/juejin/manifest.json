@@ -1,0 +1,20 @@
+{
+  "id": "juejin",
+  "name": "Juejin",
+  "version": "0.1.0",
+  "contractVersion": "2",
+  "minHostVersion": "0.2.0",
+  "backend": { "entry": "backend/index.js" },
+  "ui": { "entry": "web/dist/index.html" },
+  "openCliAdapters": {},
+  "openCliCommands": {
+    "hotArticles": {
+      "site": "juejin",
+      "adapter": "builtin",
+      "command": ["juejin", "hot"],
+      "strategy": "PUBLIC",
+      "access": "read",
+      "outputFormat": "json"
+    }
+  }
+}

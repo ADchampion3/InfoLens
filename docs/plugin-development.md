@@ -420,8 +420,9 @@ correctly.
 
 The manifest declares every command the Backend may use. The current bundled
 inventory includes <code>hackernews top</code>,
-<code>github-trending repos</code>, <code>zhihu whoami</code>, and
-<code>zhihu hot</code>; the exact inventory is release-specific. Run
+<code>github-trending repos</code>, <code>juejin hot</code>,
+<code>zhihu whoami</code>, and <code>zhihu hot</code>; the exact inventory is
+release-specific. Run
 <code>adapters list</code> before selecting a built-in command.
 
 ~~~js

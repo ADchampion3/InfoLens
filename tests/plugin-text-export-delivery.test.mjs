@@ -8,6 +8,7 @@ import { openStore as openHn } from "../plugins/hn/backend/history-storage.js";
 import { openStore as openGithub } from "../plugins/github-trending/backend/history-storage.js";
 import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/history-storage.js";
 import { openStore as openProductHunt } from "../plugins/product-hunt/backend/history-storage.js";
+import { openStore as openJuejin } from "../plugins/juejin/backend/history-storage.js";
 
 function installGlobal(name, value) {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
@@ -128,6 +129,7 @@ test("each Bundled Plugin serializer provides all four formats from one business
   const cases = [
     ["hn", openHn, { id: "1", rank: 1, title: "Story", domain: "example.com", points: 2, author: "author", createdAt: "2026-08-01T00:00:00.000Z", comments: 3, url: "https://example.com/1", discussionUrl: "https://news.ycombinator.com/item?id=1" }, "1"],
     ["github-trending", openGithub, { id: "owner/repo", rank: 1, owner: "owner", name: "repo", description: "Description", language: "JavaScript", languageColor: "#f1e05a", stars: 2, forks: 1, starsGained: 1, url: "https://github.com/owner/repo" }, "owner/repo"],
+    ["juejin", openJuejin, { id: "1234567890123456789", category: "backend", rank: 1, title: "Article", brief: "Brief", author: "author", views: 10, likes: 2, comments: 1, hotRank: 5, url: "https://juejin.cn/post/1234567890123456789" }, "1234567890123456789"],
     ["zhihu-hot", openZhihu, { url: "https://www.zhihu.com/question/123/", rank: 1, title: "Question", excerpt: "Excerpt", heat: "100 heat", answers: 2, thumbnailUrl: null }, "https://www.zhihu.com/question/123"],
     ["product-hunt", openProductHunt, { url: "https://www.producthunt.com/products/demo/", rank: 1, name: "Demo", votes: 4 }, "https://www.producthunt.com/products/demo"],
   ];

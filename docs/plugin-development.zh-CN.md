@@ -411,8 +411,9 @@ SDK 还提供 `pluginApiUrl`、`pluginHealthUrl` 和 `pluginWorkspaceUrl`。
 ### Built-in Command
 
 Manifest 必须声明 Backend 可能使用的每个 Command。当前 Bundled Inventory 包含
-`hackernews top`、`github-trending repos`、`zhihu whoami` 和 `zhihu hot`；确切
-Inventory 随 Release 变化。选择 Built-in Command 前运行 `adapters list`。
+`hackernews top`、`github-trending repos`、`juejin hot`、`zhihu whoami` 和
+`zhihu hot`；确切 Inventory 随 Release 变化。选择 Built-in Command 前运行
+`adapters list`。
 
 ```js
 const result = await context.opencli.run(

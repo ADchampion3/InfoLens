@@ -6,7 +6,7 @@ import vm from "node:vm";
 import { test } from "node:test";
 
 const root = path.resolve(import.meta.dirname, "..");
-const workspaces = ["hn", "github-trending", "zhihu-hot", "product-hunt"];
+const workspaces = ["hn", "github-trending", "juejin", "zhihu-hot", "product-hunt"];
 
 function refreshFunction(source) {
   const start = source.indexOf("async function refresh");
@@ -63,7 +63,7 @@ test("workspaces use Plugin-owned export controls and streaming SDK delivery", a
   assert.doesNotMatch(sharedControls, /URL\.createObjectURL/);
   const hostSource = await readFile(path.join(root, "apps/desktop/src/App.tsx"), "utf8");
   assert.match(hostSource, /allow="clipboard-write"/, "Plugin Workspace iframe must grant clipboard write through Permissions Policy");
-  const workspaces = ["hn", "github-trending", "zhihu-hot", "product-hunt"];
+  const workspaces = ["hn", "github-trending", "juejin", "zhihu-hot", "product-hunt"];
   for (const pluginId of workspaces) {
     const source = await readFile(path.join(root, "plugins", pluginId, "web", "dist", "workspace.js"), "utf8");
     assert.doesNotMatch(source, /\bconfirm\(/, `${pluginId} still calls the native confirm() dialog, which Blink blocks in the Electron sandboxed iframe`);
@@ -93,7 +93,7 @@ test("GitHub Trending export controls preview and filter retained snapshots by d
 });
 
 test("non-GitHub workspaces provide internal details and external browser actions", async () => {
-  for (const pluginId of ["hn", "product-hunt", "zhihu-hot"]) {
+  for (const pluginId of ["hn", "juejin", "product-hunt", "zhihu-hot"]) {
     const html = await readFile(path.join(root, "plugins", pluginId, "web", "dist", "index.html"), "utf8");
     const source = await readFile(path.join(root, "plugins", pluginId, "web", "dist", "workspace.js"), "utf8");
     assert.match(html, /id="detail-sheet"/, `${pluginId} has no internal detail view`);

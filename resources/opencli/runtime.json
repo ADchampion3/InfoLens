@@ -9,6 +9,7 @@
   "commands": [
     ["hackernews", "top"],
     ["github-trending", "repos"],
+    ["juejin", "hot"],
     ["zhihu", "whoami"],
     ["zhihu", "hot"]
   ]

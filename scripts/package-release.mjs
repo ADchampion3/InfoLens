@@ -89,7 +89,7 @@ try {
     platform: "win32",
     arch: "x64",
     electronVersion: (await readFile(path.join(electronDist, "version"), "utf8")).trim(),
-    plugins: ["hn", "github-trending", "zhihu-hot", "product-hunt"],
+    plugins: ["hn", "github-trending", "juejin", "zhihu-hot", "product-hunt"],
     executable: "Infolens.exe",
   });
   const releaseManifestPath = path.join(stagingRoot, "release-manifest.json");

@@ -15,6 +15,7 @@ await appendFile(`${stateFile}.calls`,`${JSON.stringify({type:"start",command,at
 if(state.delayMs)await delay(state.delayMs);
 if(command==="hackernews top")process.stdout.write(JSON.stringify([{id:1,rank:1,title:"Public sibling remains available",score:100,author:"tester",comments:12,url:"https://example.com/hn"}]));
 else if(command==="github-trending repos")process.stdout.write(JSON.stringify([{rank:1,repo:"infolens/runtime",description:"Public sibling remains available",language:"JavaScript",stars:100,forks:10,starsSince:5,url:"https://github.com/infolens/runtime"}]));
+else if(command==="juejin hot")process.stdout.write(JSON.stringify([{rank:1,article_id:"1234567890123456789",title:"Runtime Juejin article",brief:"Public Juejin fixture",views:1200,likes:120,comments:12,hot_rank:99,author:"fixture",url:"https://juejin.cn/post/1234567890123456789"}]));
 else if(command==="zhihu whoami")process.stdout.write(JSON.stringify([{logged_in:true,site:"zhihu"}]));
 else if(command==="zhihu hot")process.stdout.write(JSON.stringify([{rank:1,title:"Browser sibling",heat:"1000 heat",answers:12,url:"https://www.zhihu.com/question/10001"}]));
 else if(command==="infolens-producthunt today"){

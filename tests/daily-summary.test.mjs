@@ -14,6 +14,8 @@ import { openStore as openHn } from "../plugins/hn/backend/history-storage.js";
 import { activate as activateHn } from "../plugins/hn/backend/index.js";
 import { openStore as openProductHunt } from "../plugins/product-hunt/backend/history-storage.js";
 import { activate as activateProductHunt } from "../plugins/product-hunt/backend/index.js";
+import { openStore as openJuejin } from "../plugins/juejin/backend/history-storage.js";
+import { activate as activateJuejin } from "../plugins/juejin/backend/index.js";
 import { openStore as openZhihu } from "../plugins/zhihu-hot/backend/history-storage.js";
 import { activate as activateZhihu } from "../plugins/zhihu-hot/backend/index.js";
 import {
@@ -185,6 +187,29 @@ const officialProviders = [
     expectedFields: ["owner", "repository", "stars", "forks", "starsGained", "description", "language", "languageColor"],
   },
   {
+    id: "juejin",
+    filename: "juejin.sqlite",
+    openStore: openJuejin,
+    activate: activateJuejin,
+    identity: "1234567890123456789",
+    makeRecords(label) {
+      return [{
+        id: "1234567890123456789",
+        category: "backend",
+        rank: label === "latest" ? 1 : 9,
+        title: label === "latest" ? "Latest Juejin article" : "Old Juejin article",
+        brief: "Article brief",
+        author: "author",
+        views: 100,
+        likes: 20,
+        comments: 3,
+        hotRank: 99,
+        url: "https://juejin.cn/post/1234567890123456789",
+      }];
+    },
+    expectedFields: ["category", "author", "brief", "views", "likes", "comments", "hotRank"],
+  },
+  {
     id: "zhihu-hot",
     filename: "zhihu-hot.sqlite",
     openStore: openZhihu,
@@ -309,7 +334,7 @@ test("Daily Summary snapshot reader chooses the latest instant inside the local 
   });
 });
 
-test("the four official Plugins expose only their latest current-day business snapshot", async (t) => {
+test("the official Plugins expose only their latest current-day business snapshot", async (t) => {
   for (const definition of officialProviders) {
     await t.test(definition.id, async () => {
       await withTempDirectory(async (directory) => {

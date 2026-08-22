@@ -57,7 +57,7 @@ test("redaction removes authentication material and local browser paths",()=>{
 test("COOKIE collection persists, degrades only Zhihu, and distinguishes dependency states",async()=>{
   const temp=await mkdtemp(path.join(os.tmpdir(),"infolens-browser-collection-runtime-"));const dataRoot=path.join(temp,"data");const stateFile=path.join(temp,"state.json");await writeFile(stateFile,JSON.stringify({zhihu:"success"}));let runtime;
   try{
-    runtime=await startRuntime(dataRoot,stateFile);const ids=runtime.message.plugins.map(({id})=>id).sort();assert.deepEqual(ids,["github-trending","hn","zhihu-hot"]);
+    runtime=await startRuntime(dataRoot,stateFile);const ids=runtime.message.plugins.map(({id})=>id).sort();assert.deepEqual(ids,["github-trending","hn","juejin","zhihu-hot"]);
     let zhihu=await api(runtime.message.origin,"zhihu-hot","summary");assert.equal(zhihu.questions.length,0);assert.equal(zhihu.dependencyState,"unknown");
     zhihu=await api(runtime.message.origin,"zhihu-hot","refresh","POST");assert.equal(zhihu.ok,true);assert.equal(zhihu.questions.length,15);assert.equal(zhihu.dependencyState,"connected");
     const calls=(await readFile(`${stateFile}.calls`,"utf8")).trim().split(/\r?\n/).map(JSON.parse);assert.deepEqual(calls[0],["zhihu","whoami","--window","background","--site-session","ephemeral","--keep-tab","false","-f","json"]);assert.deepEqual(calls[1],["zhihu","hot","--limit=30","--window","background","--site-session","ephemeral","--keep-tab","false","-f","json"]);

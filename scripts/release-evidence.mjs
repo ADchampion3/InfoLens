@@ -3,6 +3,7 @@ import { redactSensitiveValue } from "../packages/plugin-runtime/src/redaction.m
 export const releasePlugins = [
   { id: "hn", name: "Hacker News", strategy: "PUBLIC", command: "hackernews top", field: "stories", rowSelector: ".ledger-row", database: "hacker-news.sqlite" },
   { id: "github-trending", name: "GitHub Trending", strategy: "PUBLIC", command: "github-trending repos", field: "repositories", rowSelector: ".board-card", database: "github-trending.sqlite" },
+  { id: "juejin", name: "Juejin", strategy: "PUBLIC", command: "juejin hot", field: "articles", rowSelector: ".article-card", database: "juejin.sqlite" },
   { id: "zhihu-hot", name: "Zhihu Hot List", strategy: "COOKIE", command: "zhihu whoami + zhihu hot", field: "questions", rowSelector: ".reader-list-item", database: "zhihu-hot.sqlite" },
   { id: "product-hunt", name: "Product Hunt", strategy: "INTERCEPT", command: "infolens-producthunt today", field: "products", rowSelector: ".board-card", database: "product-hunt.sqlite" },
 ];

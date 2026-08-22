@@ -48,10 +48,10 @@ _Avoid_: Permanent OpenCLI limitation
 A provider of external information that a plugin collects from.
 _Avoid_: Plugin, website
 
-The MVP sources are Hacker News, GitHub Trending, Zhihu Hot List, and Product Hunt Today's Top Launches.
+The MVP sources are Hacker News, GitHub Trending, Juejin, Zhihu Hot List, and Product Hunt Today's Top Launches.
 
 **OpenCLI Strategy Mapping**:
-The source-specific OpenCLI strategy declared by a plugin's collection command. In the MVP, Hacker News and GitHub Trending use `PUBLIC`, Zhihu Hot List uses `COOKIE`, and Product Hunt Today's Top Launches uses `INTERCEPT`.
+The source-specific OpenCLI strategy declared by a plugin's collection command. In the MVP, Hacker News, GitHub Trending, and Juejin use `PUBLIC`, Zhihu Hot List uses `COOKIE`, and Product Hunt Today's Top Launches uses `INTERCEPT`.
 _Avoid_: Host routing rule, plugin permission level
 
 **Real Strategy Verification**:

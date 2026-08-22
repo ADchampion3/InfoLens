@@ -27,12 +27,13 @@ Current deployment work and open product decisions are tracked in the
 
 ## What It Includes
 
-The repository ships four bundled plugins:
+The repository ships five bundled plugins:
 
 | Plugin | Collection strategy | Browser Bridge |
 | --- | --- | --- |
 | Hacker News | `PUBLIC` | Not required |
 | GitHub Trending | `PUBLIC` | Not required |
+| Juejin | `PUBLIC` | Not required |
 | Zhihu Hot List | `COOKIE` | Required, with a logged-in Chrome profile |
 | Product Hunt | `INTERCEPT` | Required for live collection |
 

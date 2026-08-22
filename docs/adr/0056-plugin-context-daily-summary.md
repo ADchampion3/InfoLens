@@ -16,7 +16,7 @@ Host Shell renders the aggregate into deterministic Markdown and owns preview fr
 
 ## Consequences
 
-The four official Bundled Plugins can participate without imposing a mandatory contract change on third-party Plugins. A source failure does not hide other sources, and selected missing or unavailable sources remain explicit in the document. The Host Shell has one stable cross-source seam and does not need to know any Plugin Store schema, but each provider must decide which safe business fields it exposes and maintain that adapter as its own store evolves.
+The five official Bundled Plugins can participate without imposing a mandatory contract change on third-party Plugins. A source failure does not hide other sources, and selected missing or unavailable sources remain explicit in the document. The Host Shell has one stable cross-source seam and does not need to know any Plugin Store schema, but each provider must decide which safe business fields it exposes and maintain that adapter as its own store evolves.
 
 This extends [ADR 0023](0023-thin-plugin-sdk.md), [ADR 0052](0052-plugin-owned-text-export-delivery.md), and the Plugin Context vocabulary in `CONTEXT.md`.
 
