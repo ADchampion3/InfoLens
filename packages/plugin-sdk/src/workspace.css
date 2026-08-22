@@ -78,3 +78,22 @@ select:focus-visible { outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
+
+/* Shared finish: browser surfaces, long copy, and narrow host frames. */
+html { scrollbar-color: var(--color-rule-strong) var(--color-paper); }
+body { min-width: 0; }
+::selection { background: var(--color-accent-soft); color: var(--color-ink); }
+.workspace-header > :first-child, .workspace > header > :first-child { min-width: 0; }
+.workspace-title h1, .title h1 { margin: 0; overflow-wrap: anywhere; text-wrap: balance; }
+.workspace-title span, .title span { overflow-wrap: anywhere; }
+.detail-sheet { min-width: 0; max-width: 100%; }
+.detail-head { min-width: 0; }
+.detail-head > :first-child { min-width: 0; }
+.detail-head h2 { overflow-wrap: anywhere; text-wrap: balance; }
+.detail-body { min-width: 0; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.detail-meta > * { min-width: 0; overflow-wrap: anywhere; }
+.detail-description { max-width: 68ch; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 40rem) {
+  .workspace-header, .workspace > header { align-items: flex-start; }
+  .workspace-title, .title { align-items: flex-start; }
+}

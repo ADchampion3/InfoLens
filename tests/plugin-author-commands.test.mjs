@@ -156,6 +156,14 @@ test("init creates a doctor-ready Plugin and text output stays useful for author
     assert.deepEqual(manifest.openCliAdapters, {});
     assert.deepEqual(manifest.openCliCommands, {});
     assert.equal(manifest.ui.entry, "web/dist/index.html");
+    const workspaceHtml = await readFile(path.join(packageRoot, "web/dist/index.html"), "utf8");
+    const workspaceStyles = await readFile(path.join(packageRoot, "web/dist/styles.css"), "utf8");
+    assert.match(workspaceHtml, /plugin-sdk-tokens\.css/);
+    assert.match(workspaceHtml, /plugin-sdk-workspace\.css/);
+    assert.match(workspaceHtml, /class="workspace-header"/);
+    assert.match(workspaceHtml, /aria-busy="true"/);
+    assert.match(workspaceStyles, /var\(--color-paper\)/);
+    assert.match(workspaceStyles, /@media \(max-width: 40rem\)/);
     const packageManifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
     assert.equal(packageManifest.private, true);
     assert.deepEqual(packageManifest.scripts, {

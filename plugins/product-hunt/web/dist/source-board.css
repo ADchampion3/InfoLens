@@ -95,3 +95,14 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.55; }
 @media (max-width: 48rem) { .workspace-main { width: min(92rem, calc(100% - 2 * var(--space-md))); padding-block-start: var(--space-2xl); } .board-toolbar { align-items: start; flex-direction: column; } }
 @media (max-width: 40rem) { .header-inner { align-items: flex-start; flex-direction: column; gap: var(--space-sm); } .header-actions { width: 100%; justify-content: flex-end; } .brand-copy span { max-width: 16ch; } .intro-copy h1 { font-size: clamp(2rem, 12vw, 3.25rem); } .board-grid { grid-template-columns: 1fr; } .board-card--lead, .board-card--wide { grid-column: auto; } .board-card--lead, .board-card--tall { grid-row: auto; } .board-card--lead .card-action h2 { font-size: var(--text-xl); } .sheet, .detail-sheet { width: 100%; } .sheet-head, .detail-head, .sheet form, .detail-body { padding-inline: var(--space-md); } .warning { align-items: flex-start; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 1ms !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; } }
+
+/* Detail view: keep long launch copy readable and contained. */
+.detail-sheet { min-width: 0; max-width: 100%; overflow: hidden; }
+.detail-head { min-width: 0; }
+.detail-head > div:first-child { min-width: 0; }
+.detail-head p { margin: 0 0 var(--space-3xs); color: var(--color-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+.detail-head h2 { text-wrap: balance; }
+.detail-body { min-width: 0; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.detail-meta > * { min-width: 0; overflow-wrap: anywhere; }
+.detail-description { max-width: 65ch; }
+.detail-actions { padding-block-end: max(var(--space-lg), env(safe-area-inset-bottom)); }

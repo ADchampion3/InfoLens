@@ -665,15 +665,33 @@ function initFiles({ id, name, contractVersion, minHostVersion }) {
 <html lang="en">
   <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
     <title>${name}</title>
+    <link rel="stylesheet" href="/runtime/plugin-sdk-tokens.css">
+    <link rel="stylesheet" href="/runtime/plugin-sdk-workspace.css">
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <main id="app" aria-live="polite">
-      <h1>${name}</h1>
-      <p>Loading Plugin API...</p>
-    </main>
+    <div class="workspace">
+      <header class="workspace-header">
+        <div class="workspace-title">
+          <span class="source-mark" aria-hidden="true">${name.slice(0, 2).toUpperCase()}</span>
+          <div><h1>${name}</h1><span>Infolens Plugin Workspace</span></div>
+        </div>
+        <span id="connection" class="connection-state" data-state="loading">Connecting</span>
+      </header>
+      <main class="workspace-main">
+        <section class="workspace-intro" aria-labelledby="workspace-heading">
+          <div><h2 id="workspace-heading">Your information workspace</h2><p>Use this surface to turn retained source data into a focused, reliable workflow.</p></div>
+          <span class="contract-note">Contract v${contractVersion}</span>
+        </section>
+        <section id="app" class="summary-surface" aria-live="polite" aria-busy="true">
+          <span class="summary-mark" aria-hidden="true"></span>
+          <div><h3>Opening Plugin API</h3><p>Loading the workspace summary...</p></div>
+        </section>
+      </main>
+    </div>
     <script type="module" src="./workspace.js"></script>
   </body>
 </html>
@@ -681,41 +699,49 @@ function initFiles({ id, name, contractVersion, minHostVersion }) {
   const workspaceScript = `import { workspaceRuntimeConfig } from "/runtime/plugin-sdk.js";
 
 const app = document.querySelector("#app");
+const connection = document.querySelector("#connection");
 const { apiBaseUrl } = workspaceRuntimeConfig();
 
 try {
   const response = await fetch(new URL("summary", apiBaseUrl));
   if (!response.ok) throw new Error("Plugin API returned " + response.status);
   const summary = await response.json();
+  app.setAttribute("aria-busy", "false");
+  app.dataset.state = "ready";
+  app.querySelector("h3").textContent = "Workspace ready";
   app.querySelector("p").textContent = summary.message ?? "Plugin API is ready";
+  connection.dataset.state = "ready";
+  connection.textContent = "Connected";
 } catch (error) {
+  app.setAttribute("aria-busy", "false");
+  app.dataset.state = "error";
+  app.querySelector("h3").textContent = "Plugin API unavailable";
   app.querySelector("p").textContent = String(error);
+  connection.dataset.state = "error";
+  connection.textContent = "Connection failed";
 }
 `;
-  const styles = `:root {
-  color-scheme: light dark;
-  font-family: system-ui, sans-serif;
-  background: #f6f7f9;
-  color: #1f2933;
-}
-
-body {
-  margin: 0;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-}
-
-main {
-  width: min(32rem, calc(100% - 3rem));
-  padding: 2rem;
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-}
-
-p {
-  color: #52606d;
-}
+  const styles = `:root { font-family: var(--font-body); color: var(--color-ink); background: var(--color-paper); }
+* { box-sizing: border-box; }
+html, body { min-height: 100%; margin: 0; }
+.workspace-title h1 { margin: 0; overflow-wrap: anywhere; font-family: var(--font-display); font-size: var(--text-md); line-height: 1.25; }
+.workspace-title span:last-child { display: block; margin-block-start: var(--space-3xs); color: var(--color-muted); font-size: var(--text-xs); }
+.connection-state { flex: 0 0 auto; padding: var(--space-2xs) var(--space-xs); border: var(--rule-thin) solid var(--color-rule); border-radius: var(--radius-sm); color: var(--color-muted); font-size: var(--text-xs); font-weight: 700; }
+.connection-state[data-state="ready"] { border-color: color-mix(in oklch, var(--color-success) 45%, var(--color-rule)); color: var(--color-success); }
+.connection-state[data-state="error"] { border-color: color-mix(in oklch, var(--color-error) 45%, var(--color-rule)); color: var(--color-error); }
+.workspace-main { width: min(72rem, calc(100% - 2 * var(--space-lg))); margin-inline: auto; padding-block: clamp(var(--space-xl), 6vw, var(--space-3xl)); }
+.workspace-intro { display: flex; align-items: end; justify-content: space-between; gap: var(--space-xl); padding-block-end: var(--space-xl); }
+.workspace-intro h2 { max-width: 18ch; margin: 0; text-wrap: balance; font-family: var(--font-display); font-size: clamp(1.75rem, 4vw, 3rem); font-weight: 600; letter-spacing: -0.035em; line-height: 1.05; }
+.workspace-intro p { max-width: 62ch; margin: var(--space-sm) 0 0; color: var(--color-ink-soft); font-size: var(--text-sm); line-height: 1.65; }
+.contract-note { flex: 0 0 auto; color: var(--color-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+.summary-surface { display: grid; min-height: 12rem; grid-template-columns: auto minmax(0, 1fr); align-content: center; gap: var(--space-md); padding: clamp(var(--space-lg), 4vw, var(--space-2xl)) 0; border-block: var(--rule-thin) solid var(--color-rule); }
+.summary-mark { width: 0.65rem; height: 0.65rem; margin-block-start: 0.45rem; border-radius: 50%; background: var(--color-muted); }
+.summary-surface[data-state="ready"] .summary-mark { background: var(--color-success); }
+.summary-surface[data-state="error"] .summary-mark { background: var(--color-error); }
+.summary-surface h3 { margin: 0; font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.02em; }
+.summary-surface p { max-width: 65ch; margin: var(--space-xs) 0 0; overflow-wrap: anywhere; color: var(--color-muted); font-size: var(--text-sm); line-height: 1.6; }
+::selection { background: var(--color-accent-soft); color: var(--color-ink); }
+@media (max-width: 40rem) { .workspace-main { width: calc(100% - 2 * var(--space-md)); } .workspace-intro { align-items: flex-start; flex-direction: column; gap: var(--space-md); } }
 `;
   return [
     ["manifest.json", `${JSON.stringify(manifest, null, 2)}\n`],
