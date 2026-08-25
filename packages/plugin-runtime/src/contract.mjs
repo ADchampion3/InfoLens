@@ -6,6 +6,7 @@ import { DEFAULT_TARGET_HOST_VERSION, PLUGIN_CONTRACT_VERSION } from "@infolens/
 export const CONTRACT_VERSION = PLUGIN_CONTRACT_VERSION;
 export const HOST_VERSION = DEFAULT_TARGET_HOST_VERSION;
 const SUPPORTED_STRATEGIES = new Set(["PUBLIC", "COOKIE", "INTERCEPT"]);
+const SUPPORTED_CAPABILITIES = new Set(["browser", "clipboard", "file", "notification"]);
 
 export class ContractError extends Error {
   constructor(code, message) {
@@ -54,6 +55,20 @@ export async function validatePluginPackage(packageRoot, runtime, options = {}) 
   reject(semver.gt(manifest.minHostVersion, targetHostVersion), "INCOMPATIBLE_HOST", `plugin requires host >=${manifest.minHostVersion}; current host is ${targetHostVersion}`);
   reject(!manifest.backend || typeof manifest.backend !== "object", "INVALID_MANIFEST", "backend must be an object");
   reject(!manifest.ui || typeof manifest.ui !== "object", "INVALID_MANIFEST", "ui must be an object");
+  if (manifest.capabilities !== undefined) {
+    reject(!manifest.capabilities || typeof manifest.capabilities !== "object" || Array.isArray(manifest.capabilities), "INVALID_CAPABILITIES", "capabilities must be an object");
+    for (const [capability, value] of Object.entries(manifest.capabilities)) {
+      reject(!SUPPORTED_CAPABILITIES.has(capability), "UNKNOWN_CAPABILITY", `capability '${capability}' is not supported`);
+      const validObject = value && typeof value === "object" && !Array.isArray(value) && (value.required === undefined || typeof value.required === "boolean");
+      reject(typeof value !== "boolean" && !validObject, "INVALID_CAPABILITY", `capability '${capability}' must be a boolean or { required: boolean }`);
+    }
+    manifest.capabilities = Object.fromEntries(Object.entries(manifest.capabilities).map(([capability, value]) => [
+      capability,
+      typeof value === "boolean" ? { requested: value, required: false } : { requested: true, required: value.required === true },
+    ]));
+  } else {
+    manifest.capabilities = {};
+  }
 
   const backendPath = resolvePackagePath(packageRoot, manifest.backend.entry, "backend.entry");
   const workspaceEntry = resolvePackagePath(packageRoot, manifest.ui.entry, "ui.entry");

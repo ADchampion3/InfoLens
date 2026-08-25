@@ -1,4 +1,4 @@
-/* Hallmark · prototype token set · genre: modern-minimal · theme: Cobalt · anchor hue: electric cobalt · structures: Workbench / Bento Grid / Long Document · pre-emit critique: P5 H5 E5 S5 R5 V5 */
+/* Hallmark · prototype token set · genre: modern-minimal · tone: utilitarian · theme: Cobalt · design-system: design.md · designed-as-app · values mirror packages/plugin-sdk/src/workspace-tokens.css · pre-emit critique: P5 H5 E5 S5 R5 V5 */
 :root {
   --color-paper: oklch(98.5% 0.004 250);
   --color-surface: oklch(99.5% 0.003 250);
@@ -27,9 +27,9 @@
   --color-transparent: oklch(98.5% 0.004 250 / 0);
   --color-shadow: oklch(14% 0.012 255 / 0.16);
 
-  --font-display: "Space Grotesk", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-body: "Inter", "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --font-display: Bahnschrift, "Arial Narrow", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-body: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace;
 
   --space-2xs: 0.25rem;
   --space-xs: 0.5rem;
@@ -48,10 +48,10 @@
   --text-xl: 1.85rem;
   --text-display: clamp(2rem, 4vw, 3.25rem);
 
-  --radius-xs: 0.25rem;
-  --radius-sm: 0.4rem;
-  --radius-md: 0.65rem;
-  --radius-lg: 1rem;
+  --radius-xs: 0.2rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
   --rule-thin: 1px;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);

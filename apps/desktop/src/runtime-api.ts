@@ -50,6 +50,7 @@ export async function runtimeRequest<T>(runtime: RuntimeInfo, route: string, ini
   const response = await fetch(`${runtime.origin}${route}`, {
     ...init,
     headers,
+    credentials: "include",
   });
   const body = await readJsonResponse<{ error?: string; code?: string } & T>(response, "Plugin services are unavailable.");
   if (!response.ok) throw Object.assign(new Error(body.error ?? "Operation failed"), { code: body.code, body });

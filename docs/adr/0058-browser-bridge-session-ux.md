@@ -1,8 +1,16 @@
 # Browser Bridge Session UX
 
-Status: accepted
+Status: superseded
 
 Supersedes: [ADR 0020 - Plugin-Level Browser Degradation](0020-plugin-level-browser-degradation.md)
+
+Superseded by: [ADR 0061 - Standalone Plugin Runtime Daemon and Client-Independent Lifecycle](0061-standalone-daemon-and-client-independent-lifecycle.md)
+
+ADR 0061 retains this ADR's cached Browser Bridge coordinator, explicit check/reconnect
+operations, serialized browser resource, safe diagnostic parsing, and Plugin-level
+degradation. It supersedes the Host Shell/Electron ownership assumption: the standalone
+daemon owns the coordinator and its lifecycle, while clients call the versioned `/api/v1`
+boundary and may disconnect without stopping the daemon.
 
 ## Context
 
@@ -12,7 +20,7 @@ Browser-dependent Plugins need a connected Browser Bridge and, for some Sources,
 
 Plugin Runtime owns a deep Browser Bridge coordinator behind a small interface: read the cached status, explicitly check, explicitly reconnect, run a best-effort post-failure check, and stop accepting work. The coordinator owns the cache, safe doctor parser, retry policy, daemon repair policy, and shared permit usage. Callers do not parse doctor text or manage daemon lifecycle.
 
-GET `/runtime/browser-status` is a side-effect-free cache read. POST `/runtime/browser-status/check` performs a doctor check. POST `/runtime/browser-status/reconnect` runs `opencli daemon restart` and then checks the result. The initial state and an expired state are `unknown`. Reports are cached in memory for five minutes and are discarded when the Plugin Runtime restarts. Concurrent checks merge into one operation, and all checks, reconnects, and browser-backed collection commands use the serialized `BROWSER` resource.
+GET `/api/v1/browser-status` is a side-effect-free cache read. POST `/api/v1/browser-status/check` performs a doctor check. POST `/api/v1/browser-status/reconnect` runs `opencli daemon restart` and then checks the result. The initial state and an expired state are `unknown`. Reports are cached in memory for five minutes and are discarded when the daemon's Plugin Runtime restarts. Concurrent checks merge into one operation, and all checks, reconnects, and browser-backed collection commands use the serialized `BROWSER` resource.
 
 Automatic repair is deliberately narrow. A check may restart the daemon only for `DAEMON_STOPPED`, `DAEMON_STALE`, or `DAEMON_UNSTABLE`. Extension, profile, login, and browser probe findings remain results with user actions; they do not cause a daemon restart. A daemon finding is repaired before generic retry backoff, and retry waits observe cancellation.
 

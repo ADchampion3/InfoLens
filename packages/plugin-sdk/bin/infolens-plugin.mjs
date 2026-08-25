@@ -491,11 +491,14 @@ async function startDiagnosticRuntime(packageRoot, context, timeoutMs) {
   }
 }
 
-async function readDiagnosticHealth(origin, pluginId, timeoutMs) {
+async function readDiagnosticHealth(origin, pluginId, timeoutMs, runtimeToken) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${origin}/plugins/${encodeURIComponent(pluginId)}/health`, { signal: controller.signal });
+    const response = await fetch(`${origin}/api/v1/plugins/${encodeURIComponent(pluginId)}/health`, {
+      signal: controller.signal,
+      ...(runtimeToken ? { headers: { authorization: `Bearer ${runtimeToken}` } } : {}),
+    });
     let body;
     try { body = await response.json(); } catch { body = {}; }
     return { response, body };
@@ -557,7 +560,7 @@ async function runDoctor(packageRoot, deps, context, timeoutMs) {
   try {
     diagnostic = await startDiagnosticRuntime(packageRoot, context, timeoutMs);
     addCheck(result, "doctor.runtime", "info", "passed", { phase: "runtime-start" });
-    const health = await readDiagnosticHealth(diagnostic.ready.origin, diagnostic.pluginId, timeoutMs);
+    const health = await readDiagnosticHealth(diagnostic.ready.origin, diagnostic.pluginId, timeoutMs, diagnostic.ready.runtimeToken);
     if (!health.response.ok || !["ready", "running"].includes(health.body.state)) {
       setFailure(result, codedError("PLUGIN_HEALTH_FAILED", "Plugin Health did not report a healthy state", "health", "doctor.health"), { phase: "health", checkId: "doctor.health", id: "doctor.health" });
     } else {

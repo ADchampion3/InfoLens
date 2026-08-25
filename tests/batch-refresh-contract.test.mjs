@@ -22,7 +22,7 @@ async function startRuntime(dataRoot, stateFile, extraEnv = {}) {
   const sessionId = extraEnv.INFOLENS_APPLICATION_SESSION_ID ?? "batch-refresh-test-session";
   const child = spawn(process.execPath, [path.join(root, "packages/plugin-runtime/src/server.mjs")], {
     cwd: root,
-    env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_PLUGIN_DATA_ROOT: dataRoot, INFOLENS_BUNDLED_OPENCLI_ROOT: mockOpenCli, INFOLENS_TEST_OPENCLI_STATE: stateFile, INFOLENS_RUNTIME_PORT: "0", INFOLENS_APPLICATION_SESSION_ID: sessionId, ...extraEnv },
+    env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_RUNTIME_PREVIEW: "1", INFOLENS_PLUGIN_DATA_ROOT: dataRoot, INFOLENS_BUNDLED_OPENCLI_ROOT: mockOpenCli, INFOLENS_TEST_OPENCLI_STATE: stateFile, INFOLENS_RUNTIME_PORT: "0", INFOLENS_APPLICATION_SESSION_ID: sessionId, ...extraEnv },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const lines = readline.createInterface({ input: child.stdout });

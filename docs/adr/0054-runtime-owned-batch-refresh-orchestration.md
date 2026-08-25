@@ -1,5 +1,15 @@
 # Runtime-Owned Batch Refresh Orchestration
 
+Status: superseded
+
+Superseded by: [ADR 0061 - Standalone Plugin Runtime Daemon and Client-Independent Lifecycle](0061-standalone-daemon-and-client-independent-lifecycle.md)
+
+ADR 0061 retains the batch target snapshot, per-Plugin evidence, task correlation, result
+normalization, and interruption semantics. It supersedes only the assumption that an
+Electron Application Session owns the Runtime lifetime or can end daemon state by closing
+its window; the standalone daemon owns batch state and marks active work `interrupted` on
+an explicit daemon stop or daemon recovery.
+
 Plugin Runtime owns cross-Plugin batch refresh orchestration for the duration of one Application Session. A Batch stores a fixed target snapshot, per-Plugin item state, operation correlation, and an in-session history of at most five summaries. The Host Shell selects targets, starts a Batch, polls progress, and presents results; it does not invoke Plugin task handlers or own Plugin collection data.
 
 Each executable target is revalidated immediately before it is enqueued through the existing Plugin Task Manager. The existing task queue and OpenCLI resource permits remain authoritative. A target that is already disabled, unavailable, queued, or refreshing is skipped. If a race coalesces the request with an existing refresh, the Batch follows that task's operationId and final RefreshOutcome.

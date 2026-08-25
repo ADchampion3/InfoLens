@@ -12,7 +12,7 @@ const runtimeInfoProxy = runtimeOrigin ? {
   "/runtime-info.json": {
     target: runtimeOrigin,
     changeOrigin: true,
-    rewrite: () => "/runtime/info",
+    rewrite: () => "/api/v1/session/bootstrap",
     ...(applicationSessionId ? { headers: { authorization: `Bearer ${applicationSessionId}` } } : {}),
   },
 } : undefined;

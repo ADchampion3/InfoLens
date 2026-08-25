@@ -98,11 +98,13 @@ the Host at runtime and does not make the package fail.
 
 ## Package Contract
 
-An Infolens plugin is a trusted local package. The Host copies it into its
-managed <code>plugins/</code> directory and loads the Backend in the Plugin
-Runtime. The plugin owns its Backend behavior, persistent data, OpenCLI
-mappings, and static Workspace. The Host owns discovery, lifecycle, task
-scheduling, diagnostics, and the Runtime boundary.
+An Infolens plugin is a trusted local package. The standalone Daemon copies it
+into its managed <code>plugins/</code> directory and loads the Backend in the
+Plugin Runtime. The plugin owns its Backend behavior, persistent data, OpenCLI
+mappings, and static Workspace. The Daemon owns discovery, lifecycle, task
+scheduling, diagnostics, authentication, and the versioned <code>/api/v1</code>
+boundary. Host Web and Electron are clients; they do not load Backend code or
+invoke OpenCLI directly.
 
 The smallest useful package has this shape:
 
@@ -232,6 +234,7 @@ The activation context is:
 | <code>enqueue(name, input, options)</code> | Queues a registered task and returns its result. <code>reason</code> and <code>coalesceKey</code> are supported. |
 | <code>schedule(name, options)</code> | Runs a registered task periodically. Returns a cancellation function. |
 | <code>setHealth(health)</code> | Publishes health state, badge, message, or refresh timestamp. |
+| <code>notify(intent)</code> | Emits a redacted in-app notification intent when the manifest requests the <code>notification</code> capability. |
 | <code>setRefreshOptions(provider)</code> | Publishes validated refresh controls to the Host Workspace. |
 | <code>logger</code> | Async <code>debug</code>, <code>info</code>, <code>warn</code>, and <code>error</code> methods. |
 | <code>opencli.run(key, args, signal)</code> | Runs a manifest-declared OpenCLI command and returns JSON. |
@@ -357,18 +360,19 @@ lowercase letter and may contain letters, numbers, <code>_</code>, or
 
 ## Static Workspace
 
-<code>ui.entry</code> must point to a built static HTML file. The Host serves
+<code>ui.entry</code> must point to a built static HTML file. The Daemon serves
 that file and its local assets below:
 
 ~~~text
 /plugins/&lt;plugin-id&gt;/workspace/
-/plugins/&lt;plugin-id&gt;/api/
-/plugins/&lt;plugin-id&gt;/health
+/api/v1/plugins/&lt;plugin-id&gt;/api/
+/api/v1/plugins/&lt;plugin-id&gt;/health
 ~~~
 
 The Workspace receives query parameters <code>pluginId</code>,
 <code>apiBaseUrl</code>, and <code>theme</code>. Import the browser SDK from
-the Runtime mount:
+the static Runtime support-resource mount. The <code>/runtime/</code> path below
+is not a business API:
 
 ~~~js
 import {
@@ -441,6 +445,14 @@ format option. The command key must exist in <code>openCliCommands</code>.
 <code>INTERCEPT</code> commands use the browser-dependent path and may require
 a logged-in browser bridge during live use. The current contract does not
 accept <code>UI</code> strategy.
+
+The standalone Daemon is the only OpenCLI process boundary. A Backend may call
+only <code>context.opencli.run(commandKey, args, signal)</code> with a key declared
+in its own manifest. The Daemon resolves the pinned executable, the validated
+immutable adapter scope, the resource permit, and JSON output. Backend code must
+not spawn OpenCLI, import private OpenCLI internals, enable user-global adapter
+discovery, accept an arbitrary command path, or expose OpenCLI transport and
+browser-session details to Workspace code.
 
 ### Plugin-provided adapters
 
@@ -625,8 +637,8 @@ generated directory before packaging; <code>pack</code> filters it automatically
 
 <code>preview</code> validates the package, copies a filtered snapshot into
 temporary roots, and starts one isolated Plugin Runtime in the foreground. It
-reports the same Plugin Workspace, Plugin API, and Plugin Health URL shape used
-by the Host. The default command watches the source package and restarts the
+reports the same Plugin Workspace, versioned Plugin API, and Plugin Health URL
+shape used by the Daemon. The default command watches the source package and restarts the
 Runtime from a fresh snapshot after a debounced change while preserving the
 preview session's temporary data and loopback port.
 

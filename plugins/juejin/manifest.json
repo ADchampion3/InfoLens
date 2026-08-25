@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "contractVersion": "2",
   "minHostVersion": "0.2.0",
+  "capabilities": { "clipboard": true, "file": true, "notification": true },
   "backend": { "entry": "backend/index.js" },
   "ui": { "entry": "web/dist/index.html" },
   "openCliAdapters": {},

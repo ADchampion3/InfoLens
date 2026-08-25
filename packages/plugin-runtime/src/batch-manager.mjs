@@ -285,6 +285,11 @@ export class BatchManager {
     await this.persist();
   }
 
+  resumeAfterRestore() {
+    this.stopping = false;
+    this.activeBatchId = undefined;
+  }
+
   async execute(batch) {
     this.setStatus(batch, "running");
     this.emit("running", batch);

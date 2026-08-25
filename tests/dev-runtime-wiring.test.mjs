@@ -51,7 +51,7 @@ test("development Vite serves Runtime info through its configured proxy", async 
   const rendererPort = await freePort();
   const launch = developmentLaunchConfig({ rendererPort, runtimePort });
   const runtime = createHttpServer((request, response) => {
-    if (request.url !== "/runtime/info") {
+    if (request.url !== "/api/v1/session/bootstrap") {
       response.writeHead(404);
       response.end();
       return;

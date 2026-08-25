@@ -2,10 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Infolens is a local-first Electron host for source-oriented information
-plugins. It provides one desktop shell for following several sources while
-letting each plugin own its collection strategy, local data, refresh policy,
-and reading workspace.
+Infolens is a local-first host for source-oriented information plugins. A
+standalone Node daemon owns plugin execution, persistence, scheduling, and the
+loopback API; the Electron application is a thin desktop client that can
+discover and reuse that daemon.
 
 The project is in active development. APIs, package contracts, and user
 interfaces may change between revisions.
@@ -40,9 +40,9 @@ The repository ships five bundled plugins:
 Each plugin has its own backend, SQLite store, refresh behavior, and static
 workspace. The Host Shell does not flatten their records into a shared feed.
 
-The application bundles OpenCLI 1.8.6 and invokes the local runtime. A global
-OpenCLI installation is not required. Browser-backed plugins use the OpenCLI
-Browser Bridge extension and the user's existing Chrome session.
+The daemon bundles OpenCLI 1.8.6 and invokes it locally. A global OpenCLI
+installation is not required. Browser-backed plugins use the OpenCLI Browser
+Bridge extension and the user's existing Chrome session.
 
 ## Requirements
 
@@ -75,15 +75,24 @@ npm start
 ```
 
 The development command starts the Vite renderer, Electron host, and shared
-Plugin Runtime together. Development state is written under the ignored
-`.infolens-data` directory.
+Host Web together. It starts or discovers the standalone daemon. Development
+state is written under the ignored `.infolens-data` directory.
+
+To run the daemon without Electron:
+
+```powershell
+npm run daemon -- start
+npm run daemon -- health
+npm run daemon -- diagnostics --plugin-id hn
+npm run daemon -- stop
+```
 
 ## Repository Layout
 
 | Path | Responsibility |
 | --- | --- |
-| `apps/desktop/` | Electron Main Process and Host Shell |
-| `packages/plugin-runtime/` | Shared Plugin Runtime and Plugin API boundary |
+| `apps/desktop/` | Electron Main Process, thin client, and Host Web |
+| `packages/plugin-runtime/` | Standalone daemon, Plugin Runtime, and API boundary |
 | `packages/plugin-sdk/` | Plugin SDK and Plugin author CLI |
 | `packages/plugin-workspace/` | Shared presentation-only Plugin Workspace UI |
 | `plugins/` | Bundled Plugin packages and their Workspace Bundles |
@@ -96,6 +105,10 @@ Plugin Runtime together. Development state is written under the ignored
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the Electron development session |
+| `npm run daemon -- start` | Start or reuse the standalone daemon |
+| `npm run daemon -- health` | Check daemon readiness |
+| `npm run daemon -- diagnostics --plugin-id <id>` | Print a local Plugin Diagnostic Report |
+| `npm run daemon -- stop` | Stop the standalone daemon |
 | `npm run build` | Verify release metadata and build the renderer |
 | `npm run typecheck` | Type-check the desktop host and Plugin SDK |
 | `npm test` | Build the local package and run the repository test suite |
@@ -142,13 +155,13 @@ it does not close user-owned Chrome tabs when the application exits.
 ## Architecture
 
 ```text
-Electron Main Process
-  Host Shell (React, Vite, TypeScript)
-    Plugin navigation and host settings
-    Plugin workspace frames
+Browser Client / Electron Client
+    Host Web (React, Vite, TypeScript)
+    Plugin navigation and workspace frames
+    Electron OS primitives and daemon discovery
           |
           v
-  Shared Plugin Runtime (Node)
+Standalone Infolens Daemon (Node)
     Plugin backends and task scheduling
     Plugin-scoped HTTP APIs and static workspaces
     Plugin-owned SQLite stores

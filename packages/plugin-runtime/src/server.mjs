@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -20,13 +20,27 @@ import { BatchManager, BATCH_TERMINAL_STATES } from "./batch-manager.mjs";
 import { garbageCollectAdapterStore, preparePluginAdapterScope, removePluginAdapterScope } from "./adapter-scope.mjs";
 import { aggregateDailySummary } from "./daily-summary.mjs";
 import { extractZip, sha256File } from "@infolens/plugin-market/archive";
+import {
+  acquireDaemonLock,
+  daemonPaths,
+  loadDaemonCredentials,
+  removeDaemonDiscovery,
+  rotateDaemonCredentials,
+  writeDaemonDiscovery,
+} from "./daemon-state.mjs";
+import { createBackup, restoreBackup } from "./backup.mjs";
+import { PluginMarketService } from "@infolens/plugin-market";
 
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
   ? path.resolve(process.env.INFOLENS_PROJECT_ROOT)
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const require = createRequire(import.meta.url);
-const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? path.join(projectRoot, "plugins"));
-const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? path.join(projectRoot, ".infolens-data", "plugins"));
+const daemonMode = process.env.INFOLENS_DAEMON_MODE === "1";
+const previewMode = process.env.INFOLENS_RUNTIME_PREVIEW === "1";
+const daemonRoot = path.resolve(process.env.INFOLENS_DAEMON_DATA_ROOT ?? path.join(projectRoot, ".infolens-daemon"));
+const configuredDaemonPaths = daemonPaths(daemonRoot, process.env);
+const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? (daemonMode ? configuredDaemonPaths.pluginsRoot : path.join(projectRoot, "plugins")));
+const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? (daemonMode ? configuredDaemonPaths.pluginDataRoot : path.join(projectRoot, ".infolens-data", "plugins")));
 const diagnosticMode = process.env.INFOLENS_RUNTIME_DIAGNOSTIC === "1";
 const diagnosticPluginId = process.env.INFOLENS_DIAGNOSTIC_PLUGIN_ID;
 const diagnosticKeepAlive = diagnosticMode ? setInterval(() => {}, 1_000) : undefined;
@@ -40,11 +54,25 @@ const pluginWorkspaceRoot = path.dirname(pluginWorkspaceHistoryEntry);
 const pluginWorkspaceHistoryStyles = path.join(pluginWorkspaceRoot, "history.css");
 const pluginSdkTokenEntry = path.join(pluginSdkRoot, "workspace-tokens.css");
 const pluginSdkWorkspaceStyles = path.join(pluginSdkRoot, "workspace.css");
-const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? path.join(path.dirname(dataRoot), "host-state.json"));
-const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? path.join(path.dirname(dataRoot), "opencli-adapters"));
-const batchStatePath = process.env.INFOLENS_BATCH_STATE_PATH ? path.resolve(process.env.INFOLENS_BATCH_STATE_PATH) : undefined;
-const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID?.trim();
+const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? (daemonMode ? configuredDaemonPaths.hostStatePath : path.join(path.dirname(dataRoot), "host-state.json")));
+const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? (daemonMode ? configuredDaemonPaths.adapterRegistryRoot : path.join(path.dirname(dataRoot), "opencli-adapters")));
+const batchStatePath = process.env.INFOLENS_BATCH_STATE_PATH
+  ? path.resolve(process.env.INFOLENS_BATCH_STATE_PATH)
+  : (daemonMode ? configuredDaemonPaths.batchStatePath : undefined);
+const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID?.trim() || (daemonMode ? randomUUID() : undefined);
 if (!applicationSessionId) throw new Error("INFOLENS_APPLICATION_SESSION_ID is required");
+const hostWebRoot = path.resolve(process.env.INFOLENS_DAEMON_HOST_WEB_ROOT ?? path.join(projectRoot, "apps", "desktop", "dist"));
+let daemonCredentials;
+let daemonBearerToken;
+let daemonBootstrapToken;
+let daemonLock;
+let daemonDiscovery;
+if (daemonMode) {
+  daemonCredentials = await loadDaemonCredentials(configuredDaemonPaths);
+  daemonBearerToken = daemonCredentials.bearerToken;
+  daemonBootstrapToken = process.env.INFOLENS_DAEMON_BOOTSTRAP_TOKEN || randomUUID();
+  daemonLock = await acquireDaemonLock(configuredDaemonPaths, { sessionId: applicationSessionId });
+}
 const publicRuntimePaths = new Set([
   "/runtime/plugin-sdk.js",
   "/runtime/plugin-workspace-history.js",
@@ -93,12 +121,81 @@ const compatiblePlugins = [];
 const rejectedPlugins = [];
 const installingPluginIds = new Set();
 const statusEvents = [];
+const browserSessions = new Map();
+const eventStreams = new Set();
 const taskQueue = new SharedTaskQueue();
 let browserBridge;
 let eventSequence = 0;
+const idempotentOperations = new Map();
+const IDEMPOTENCY_RETENTION_MS = 10 * 60 * 1000;
+const OPERATION_RECORD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const OPERATION_RECORD_LIMIT = 1_000;
+const operationRecordsPath = daemonMode ? path.join(configuredDaemonPaths.root, "operation-records.json") : undefined;
+const persistedOperationRecords = new Map();
+let operationRecordsWrite = Promise.resolve();
 const hostState = new HostStateStore(hostStatePath);
 await hostState.load();
 let batchManager;
+let marketService;
+
+async function loadOperationRecords() {
+  if (!operationRecordsPath) return;
+  try {
+    const value = JSON.parse(await readFile(operationRecordsPath, "utf8"));
+    const now = Date.now();
+    for (const record of Array.isArray(value?.operations) ? value.operations : []) {
+      if (typeof record?.operationId !== "string" || typeof record.signature !== "string" || typeof record.completedAt !== "string") continue;
+      const completedAt = Date.parse(record.completedAt);
+      if (Number.isFinite(completedAt) && now - completedAt > OPERATION_RECORD_RETENTION_MS) continue;
+      if (!record.result && !record.error) continue;
+      persistedOperationRecords.set(record.operationId, {
+        signature: record.signature,
+        completedAt: record.completedAt,
+        ...(record.result ? { result: record.result } : {}),
+        ...(record.error ? { error: record.error } : {}),
+      });
+    }
+    while (persistedOperationRecords.size > OPERATION_RECORD_LIMIT) persistedOperationRecords.delete(persistedOperationRecords.keys().next().value);
+  } catch (error) {
+    if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+  }
+}
+
+function jsonSnapshot(value) {
+  if (isDownloadableResponse(value)) return undefined;
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded === undefined ? undefined : JSON.parse(encoded);
+  } catch { return undefined; }
+}
+
+async function persistOperationRecord(operationId, signature, result, error) {
+  if (!operationRecordsPath) return;
+  const snapshot = jsonSnapshot(result);
+  const failure = error ? errorDetails(error) : undefined;
+  if (snapshot === undefined && !failure) return;
+  persistedOperationRecords.set(operationId, {
+    signature,
+    completedAt: new Date().toISOString(),
+    ...(snapshot !== undefined ? { result: snapshot } : {}),
+    ...(failure ? { error: failure } : {}),
+  });
+  while (persistedOperationRecords.size > OPERATION_RECORD_LIMIT) persistedOperationRecords.delete(persistedOperationRecords.keys().next().value);
+  const operations = [...persistedOperationRecords.entries()].map(([id, record]) => ({ operationId: id, ...record }));
+  operationRecordsWrite = operationRecordsWrite.catch(() => {}).then(async () => {
+    await mkdir(path.dirname(operationRecordsPath), { recursive: true });
+    const temporary = `${operationRecordsPath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify({ version: 1, operations }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      await rename(temporary, operationRecordsPath);
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  });
+  await operationRecordsWrite;
+}
+
+await loadOperationRecords();
 
 function errorDetails(error) {
   return {
@@ -162,6 +259,10 @@ function emitStatus(type, pluginId, details = {}) {
   statusEvents.push(event);
   if (statusEvents.length > 200) statusEvents.shift();
   process.stdout.write(`${JSON.stringify(event)}\n`);
+  for (const stream of eventStreams) {
+    try { stream.write(`event: status\ndata: ${JSON.stringify(event)}\n\n`); }
+    catch { eventStreams.delete(stream); }
+  }
   return event;
 }
 
@@ -176,8 +277,30 @@ function emitBatchEvent(event, details = {}) {
   statusEvents.push(value);
   if (statusEvents.length > 200) statusEvents.shift();
   process.stdout.write(`${JSON.stringify(value)}\n`);
+  for (const stream of eventStreams) {
+    try { stream.write(`event: batch\ndata: ${JSON.stringify(value)}\n\n`); }
+    catch { eventStreams.delete(stream); }
+  }
   const { batchId, operationId, ...fields } = value;
   void runtimeLogger.info(`batch-${event}`, { ...fields, batchId, operationId }).catch(() => {});
+  return value;
+}
+
+function emitDaemonEvent(event, details = {}) {
+  const value = {
+    type: "daemon",
+    event,
+    sequence: ++eventSequence,
+    timestamp: new Date().toISOString(),
+    ...redactSensitiveValue(details),
+  };
+  statusEvents.push(value);
+  if (statusEvents.length > 200) statusEvents.shift();
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+  for (const stream of eventStreams) {
+    try { stream.write(`event: daemon\ndata: ${JSON.stringify(value)}\n\n`); }
+    catch { eventStreams.delete(stream); }
+  }
   return value;
 }
 
@@ -190,13 +313,59 @@ function json(response, status, body) {
 function runtimeInfoPayload(origin) {
   return {
     type: "runtime-ready",
+    apiVersion: "v1",
     origin,
-    ...(applicationSessionId ? { runtimeToken: applicationSessionId } : {}),
-    plugins: compatiblePlugins.filter((plugin) => !plugin.deactivated).map((plugin) => publicCompatiblePlugin(plugin, origin)),
+    ...(daemonMode ? { daemon: { state: "ready", loopback: true } } : { runtimeToken: applicationSessionId }),
+    plugins: compatiblePlugins.filter((plugin) => !plugin.unloaded).map((plugin) => publicCompatiblePlugin(plugin, origin)),
     rejectedPlugins,
     hostState: hostState.snapshot(),
     activeBatch: batchManager.active(),
   };
+}
+
+function runtimeBootstrapPayload(origin) {
+  return {
+    type: "runtime-ready",
+    apiVersion: "v1",
+    origin,
+    ...(daemonMode ? { daemon: { state: "ready", loopback: true } } : { runtimeToken: applicationSessionId }),
+  };
+}
+
+function requestOperationId(request) {
+  const value = request.headers["x-infolens-operation-id"];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+async function runIdempotentOperation(operationId, signature, action) {
+  if (!operationId) return action();
+  const existing = idempotentOperations.get(operationId);
+  if (existing) {
+    if (existing.signature !== signature) throw new ContractError("OPERATION_ID_REUSED", "Operation ID was already used for a different command");
+    return existing.promise;
+  }
+  const persisted = persistedOperationRecords.get(operationId);
+  if (persisted) {
+    if (persisted.signature !== signature) throw new ContractError("OPERATION_ID_REUSED", "Operation ID was already used for a different command");
+    if (persisted.error) {
+      const error = new Error(persisted.error.message);
+      error.code = persisted.error.code;
+      throw error;
+    }
+    return structuredClone(persisted.result);
+  }
+  const promise = Promise.resolve().then(action);
+  idempotentOperations.set(operationId, { signature, promise });
+  void promise.then(
+    (result) => persistOperationRecord(operationId, signature, result).catch(() => {}),
+    (error) => persistOperationRecord(operationId, signature, undefined, error).catch(() => {}),
+  );
+  const forget = () => {
+    const current = idempotentOperations.get(operationId);
+    if (current?.promise === promise) idempotentOperations.delete(operationId);
+  };
+  void promise.then(() => setTimeout(forget, IDEMPOTENCY_RETENTION_MS).unref?.(), () => setTimeout(forget, IDEMPOTENCY_RETENTION_MS).unref?.());
+  return promise;
 }
 
 function configuredCorsOrigins() {
@@ -215,11 +384,12 @@ function configuredCorsOrigins() {
 const corsOrigins = configuredCorsOrigins();
 
 function setCorsHeaders(request, response, pathname) {
-  if (!pathname.startsWith("/runtime/")) return;
+  if (!pathname.startsWith("/runtime/") && !pathname.startsWith("/api/v1/")) return;
   const origin = request.headers.origin;
   if (typeof origin !== "string" || !corsOrigins.has(origin)) return;
   response.setHeader("access-control-allow-origin", origin);
-  response.setHeader("access-control-allow-headers", "authorization, content-type, x-infolens-operation-id");
+  response.setHeader("access-control-allow-credentials", "true");
+  response.setHeader("access-control-allow-headers", "authorization, content-type, x-infolens-operation-id, x-infolens-bootstrap");
   response.setHeader("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
   response.setHeader("vary", "Origin");
 }
@@ -228,13 +398,64 @@ function hasRuntimeAuthorization(request) {
   return request.headers.authorization === `Bearer ${applicationSessionId}`;
 }
 
+function cookieValue(request, name) {
+  const header = typeof request.headers.cookie === "string" ? request.headers.cookie : "";
+  for (const part of header.split(";")) {
+    const [key, ...value] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(value.join("="));
+  }
+  return undefined;
+}
+
+function sessionIsValid(request) {
+  if (!daemonMode) return false;
+  const value = cookieValue(request, "infolens_session");
+  const session = value ? browserSessions.get(value) : undefined;
+  if (!session || session.expiresAt <= Date.now()) {
+    if (value) browserSessions.delete(value);
+    return false;
+  }
+  session.expiresAt = Date.now() + 30 * 60 * 1000;
+  return true;
+}
+
+function hasApiAuthorization(request) {
+  if (daemonMode) {
+    if (request.headers.authorization === `Bearer ${daemonBearerToken}`) return true;
+    return sessionIsValid(request);
+  }
+  return hasRuntimeAuthorization(request);
+}
+
+function issueBrowserSession(response) {
+  const value = randomUUID();
+  browserSessions.set(value, { createdAt: Date.now(), expiresAt: Date.now() + 30 * 60 * 1000 });
+  response.setHeader("set-cookie", `infolens_session=${encodeURIComponent(value)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800`);
+  return { expiresInSeconds: 1800 };
+}
+
 function requiresRuntimeAuthorization(pathname) {
   return pathname.startsWith("/runtime/") && !publicRuntimePaths.has(pathname);
+}
+
+function requiresApiAuthorization(pathname) {
+  if (!daemonMode || !pathname.startsWith("/api/v1/")) return false;
+  return ![
+    "/api/v1/health",
+    "/api/v1/readiness",
+    "/api/v1/session/bootstrap",
+    "/api/v1/auth/session",
+  ].includes(pathname);
 }
 
 function rejectRuntimeAuthorization(response) {
   response.setHeader("www-authenticate", "Bearer");
   json(response, 401, { error: "Runtime authorization required", code: "RUNTIME_UNAUTHORIZED" });
+}
+
+function rejectApiAuthorization(response) {
+  response.setHeader("www-authenticate", "Bearer");
+  json(response, 401, { error: "Daemon authentication required", code: "DAEMON_UNAUTHORIZED" });
 }
 
 function isDownloadableResponse(value) {
@@ -374,6 +595,9 @@ function contentType(filePath) {
   if (extension === ".js" || extension === ".mjs") return "text/javascript; charset=utf-8";
   if (extension === ".json") return "application/json; charset=utf-8";
   if (extension === ".png") return "image/png";
+  if (extension === ".svg") return "image/svg+xml";
+  if (extension === ".woff") return "font/woff";
+  if (extension === ".woff2") return "font/woff2";
   return "application/octet-stream";
 }
 
@@ -496,6 +720,7 @@ async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticM
       }
     }
     if (type === "task-cancelled" && !refreshOutcome) setPluginStatus(plugin, "cancelled", { outcome: details.outcome });
+    if (type === "task-interrupted") setPluginStatus(plugin, "interrupted", { outcome: "runtime-restarted" });
     const logLevel = type === "task-failed" || refreshOutcome?.status === "failed" ? "error" : "info";
     const entry = await logger[logLevel](type, safeDetails);
     if (refreshOutcome) {
@@ -511,7 +736,7 @@ async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticM
       setPluginStatus(plugin, "running");
     }
     emitStatus(type, manifest.id, { ...safeDetails, logId: entry.id });
-  }, { diagnostic, registrations: plugin.registrations });
+  }, { diagnostic, registrations: plugin.registrations, statePath: daemonMode ? path.join(configuredDaemonPaths.taskRecordsRoot, `${manifest.id}.json`) : undefined });
   plugin.taskManager = taskManager;
   activePlugins.push(plugin);
   await logger.info("plugin-activation-started", { operationId: activationOperationId });
@@ -548,6 +773,24 @@ async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticM
       if (!health || typeof health.state !== "string") throw new TypeError("Health must include a state");
       setPluginStatus(plugin, health.state, health);
       emitStatus("health-changed", manifest.id, { state: health.state });
+    },
+    notify(intent = {}) {
+      if (manifest.capabilities.notification?.requested !== true) {
+        throw new ContractError("CAPABILITY_NOT_GRANTED", "Plugin notification capability was not requested");
+      }
+      const title = typeof intent.title === "string" ? intent.title.trim() : "";
+      const message = typeof intent.message === "string" ? intent.message.trim() : "";
+      if (!title || !message) throw new ContractError("INVALID_NOTIFICATION", "Notification intent requires title and message");
+      const notification = {
+        notificationId: randomUUID(),
+        pluginId: manifest.id,
+        title: redactSensitiveText(title).slice(0, 160),
+        message: redactSensitiveText(message).slice(0, 1_000),
+        ...(typeof intent.level === "string" && ["info", "success", "warning", "error"].includes(intent.level) ? { level: intent.level } : {}),
+      };
+      emitDaemonEvent("notification-intent", notification);
+      void logger.info("notification-intent", notification).catch(() => {});
+      return { ok: true, notificationId: notification.notificationId };
     },
     setRefreshOptions(provider) {
       if (typeof provider !== "function") throw new TypeError("Refresh options provider must be a function");
@@ -595,6 +838,7 @@ async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticM
   };
 
   try {
+    await taskManager.load();
     if (plugin.diagnostic) {
       plugin.diagnostic.phase = "backend-import";
       process.stdout.write(`${JSON.stringify({ type: "diagnostic-phase", pluginId: manifest.id, phase: "backend-import" })}\n`);
@@ -723,8 +967,10 @@ function publicPlugin(plugin, origin) {
     state: plugin.status.state,
     failure: statusSnapshot?.failure,
     workspaceUrl: `${origin}/plugins/${id}/workspace/`,
-    apiBaseUrl: `${origin}/plugins/${id}/api/`,
+    apiBaseUrl: `${origin}/api/v1/plugins/${id}/api/`,
+    healthUrl: `${origin}/api/v1/plugins/${id}/health`,
     packagePath: plugin.packageRoot,
+    capabilities: publicCapabilities(plugin.manifest),
     enabled: true,
     ...(provenance ? { origin: provenance.origin, releaseStatus: provenance.releaseStatus, provenance } : {}),
     browserDependent,
@@ -771,9 +1017,16 @@ function publicCompatiblePlugin(descriptor, origin) {
     ...(provenance ? { origin: provenance.origin, releaseStatus: provenance.releaseStatus, provenance } : {}),
     browserDependent,
     ...(browserDependent ? { dependencyState: "unknown", dependencyWarning: true } : { dependencyState: "not-required" }),
-    workspaceUrl: `${origin}/plugins/${id}/workspace/`, apiBaseUrl: `${origin}/plugins/${id}/api/`,
+    workspaceUrl: `${origin}/plugins/${id}/workspace/`,
+    apiBaseUrl: `${origin}/api/v1/plugins/${id}/api/`,
+    healthUrl: `${origin}/api/v1/plugins/${id}/health`,
+    capabilities: publicCapabilities(manifest),
     statusSnapshot: hostState.snapshot().statusSnapshots[id],
   };
+}
+
+function publicCapabilities(manifest) {
+  return Object.fromEntries(Object.entries(manifest.capabilities ?? {}).map(([name, value]) => [name, { ...value, granted: value.requested === true }]));
 }
 
 function findPlugin(id) {
@@ -864,16 +1117,45 @@ batchManager = new BatchManager({
   getTarget: batchTarget,
   enqueueTarget: enqueueBatchTarget,
   statePath: batchStatePath,
-  sessionId: applicationSessionId,
+  sessionId: daemonMode ? undefined : applicationSessionId,
   onEvent: (event, details) => emitBatchEvent(event, details),
 });
 
-async function deactivatePlugin(plugin) {
+async function initializeMarketService() {
+  if (!daemonMode) return;
+  const marketRoot = path.join(configuredDaemonPaths.root, "market");
+  const registryUrl = process.env.INFOLENS_MARKET_REGISTRY_URL
+    || (process.env.INFOLENS_TEST_CONTROL === "1" ? process.env.INFOLENS_TEST_MARKET_REGISTRY_URL : undefined);
+  marketService = new PluginMarketService({
+    ...(registryUrl ? { registryUrl } : {}),
+    cachePath: path.join(marketRoot, "catalog.json"),
+    tempRoot: path.join(marketRoot, "installations"),
+    hostVersion: DEFAULT_TARGET_HOST_VERSION,
+    contractVersion: String(PLUGIN_CONTRACT_VERSION),
+    logger: (entry) => runtimeLogger.info(entry.event ?? "market-operation", entry),
+    reconcileProvenance: (index) => reconcileMarketProvenance(index?.releases),
+    runtimeClient: ({ archivePath, expectedSha256, observedSha256, release, operationId, signal }) => installArchive({
+      archivePath,
+      expectedSha256,
+      observedSha256,
+      release,
+      operationId,
+      signal,
+      origin: "market",
+    }),
+  });
+  try { await marketService.initialize(); }
+  catch (error) {
+    await runtimeLogger.warn("market-service-initialization-failed", errorDetails(error));
+  }
+}
+
+async function deactivatePlugin(plugin, options = {}) {
   if (plugin.diagnostic) {
     plugin.diagnostic.phase = "cleanup";
     process.stdout.write(`${JSON.stringify({ type: "diagnostic-phase", pluginId: plugin.manifest.id, phase: "cleanup" })}\n`);
   }
-  await plugin.taskManager.stop();
+  if (!options.skipTaskStop) await plugin.taskManager.stop(options);
   plugin.routes.clear();
   let cleanup;
   try {
@@ -911,12 +1193,13 @@ async function setPluginEnabled(id, enabled) {
   const descriptor = findCompatible(id);
   if (!descriptor) throw new ContractError("PLUGIN_NOT_FOUND", `plugin '${id}' is not installed and compatible`);
   const active = findPlugin(id);
-  descriptor.deactivated = false;
+  descriptor.deactivated = !enabled;
+  descriptor.unloaded = false;
   if (enabled && !active) await activatePlugin(descriptor.validated, descriptor.packageRoot);
   if (!enabled && active) await deactivatePlugin(active);
   await hostState.update((state) => ({
     ...state,
-    enabledPluginIds: enabled ? [...state.enabledPluginIds, id] : state.enabledPluginIds.filter((pluginId) => pluginId !== id),
+    enabledPluginIds: enabled ? [...new Set([...state.enabledPluginIds, id])] : state.enabledPluginIds.filter((pluginId) => pluginId !== id),
     statusSnapshots: {
       ...state.statusSnapshots,
       [id]: enabled
@@ -1202,15 +1485,401 @@ async function serveWorkspace(response, plugin, relativePath) {
   }
 }
 
+function canonicalPathname(pathname) {
+  if (!pathname.startsWith("/api/v1/")) return pathname;
+  const suffix = pathname.slice("/api/v1".length);
+  const simple = new Map([
+    ["/info", "/runtime/info"],
+    ["/tasks", "/runtime/tasks"],
+    ["/events", "/runtime/events"],
+    ["/daily-summary", "/runtime/daily-summary"],
+    ["/host/state", "/runtime/host-state"],
+    ["/browser-status", "/runtime/browser-status"],
+    ["/browser-status/check", "/runtime/browser-status/check"],
+    ["/browser-status/reconnect", "/runtime/browser-status/reconnect"],
+    ["/batches", "/runtime/batches"],
+    ["/batches/active", "/runtime/batches/active"],
+    ["/batches/targets", "/runtime/batches/targets"],
+    ["/batch-refresh", "/runtime/batch-refresh"],
+    ["/batch-refresh/targets", "/runtime/batch-refresh/targets"],
+    ["/plugins/install", "/runtime/plugins/install"],
+    ["/plugins/install-archive", "/runtime/plugins/install-archive"],
+    ["/plugins/install-market", "/runtime/plugins/install-market"],
+    ["/plugins/reconcile-market", "/runtime/plugins/reconcile-market"],
+  ]);
+  if (simple.has(suffix)) return simple.get(suffix);
+  const batch = suffix.match(/^\/(?:batches|batch-refresh)\/([^/]+)(\/retry)?$/);
+  if (batch) return `/runtime/batches/${batch[1]}${batch[2] ?? ""}`;
+  const plugin = suffix.match(/^\/plugins\/([^/]+)\/(health|api|workspace)(?:\/(.*))?$/);
+  if (plugin) return `/plugins/${plugin[1]}/${plugin[2]}${plugin[3] === undefined ? "" : `/${plugin[3]}`}`;
+  const pluginAdmin = suffix.match(/^\/plugins\/([^/]+)(?:\/(enabled|diagnostics|remove))?$/);
+  if (pluginAdmin) {
+    if (pluginAdmin[2] === "enabled") return `/runtime/plugins/${pluginAdmin[1]}/enabled`;
+    if (pluginAdmin[2] === "diagnostics") return `/runtime/plugins/${pluginAdmin[1]}/diagnostics`;
+    if (pluginAdmin[2] === "remove") return `/runtime/plugins/${pluginAdmin[1]}/remove`;
+    return `/runtime/plugins/${pluginAdmin[1]}`;
+  }
+  return pathname;
+}
+
+function daemonReadiness() {
+  const plugins = compatiblePlugins.map((descriptor) => {
+    const plugin = findPlugin(descriptor.validated.manifest.id);
+    return {
+      id: descriptor.validated.manifest.id,
+      name: descriptor.validated.manifest.name,
+      state: plugin?.status.state ?? "disabled",
+      enabled: Boolean(plugin),
+      ...(plugin?.status.failure ? { failure: plugin.status.failure } : {}),
+    };
+  });
+  for (const rejected of rejectedPlugins) plugins.push({ id: rejected.id ?? rejected.package, name: rejected.name ?? rejected.package, state: "unavailable", enabled: false, failure: { code: rejected.code, message: rejected.message } });
+  const unavailable = plugins.filter((plugin) => ["failed", "unavailable"].includes(plugin.state));
+  return {
+    state: "ready",
+    daemon: { state: "ready", loopback: true, version: String(DEFAULT_TARGET_HOST_VERSION) },
+    pluginCount: plugins.length,
+    unavailableCount: unavailable.length,
+    plugins,
+  };
+}
+
+async function serveHostWeb(response, relativePath) {
+  const requested = relativePath && relativePath !== "/" ? relativePath : "/index.html";
+  const candidate = path.resolve(hostWebRoot, `.${requested.startsWith("/") ? requested : `/${requested}`}`);
+  const relative = path.relative(hostWebRoot, candidate);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    json(response, 403, { error: "Host Web path is outside the Web bundle", code: "WEB_PATH_FORBIDDEN" });
+    return;
+  }
+  try {
+    const data = await readFile(candidate);
+    response.writeHead(200, { "content-type": contentType(candidate), "cache-control": "no-store", "x-content-type-options": "nosniff" });
+    response.end(data);
+  } catch (error) {
+    if (!path.extname(candidate)) {
+      try {
+        const fallback = path.join(hostWebRoot, "index.html");
+        response.writeHead(200, { "content-type": contentType(fallback), "cache-control": "no-store" });
+        response.end(await readFile(fallback));
+        return;
+      } catch {}
+    }
+    json(response, error?.code === "ENOENT" ? 404 : 500, { error: "Host Web asset not found", code: "WEB_ASSET_NOT_FOUND" });
+  }
+}
+
+async function readOperationalLogEntries({ filters = {}, cursor, limit = 200 } = {}) {
+  const sources = [
+    { source: "runtime", filePath: path.join(dataRoot, "_runtime", "logs", "runtime.log") },
+    ...(daemonMode ? [{ source: "host", filePath: path.join(configuredDaemonPaths.root, "logs", "host.log") }] : []),
+  ];
+  try {
+    for (const entry of await readdir(dataRoot, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name !== "_runtime") sources.push({ source: `plugin:${entry.name}`, filePath: path.join(dataRoot, entry.name, "logs", "plugin.log") });
+    }
+  } catch {}
+  const entries = [];
+  for (const source of sources) {
+    let value;
+    try { value = await readFile(source.filePath, "utf8"); } catch { continue; }
+    for (const line of value.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        entries.push({
+          id: String(parsed.id ?? randomUUID()),
+          timestamp: String(parsed.timestamp ?? new Date(0).toISOString()),
+          level: ["debug", "info", "warn", "error"].includes(parsed.level) ? parsed.level : "info",
+          source: source.source,
+          message: redactSensitiveText(String(parsed.message ?? "")),
+          ...(parsed.code ? { code: String(parsed.code) } : {}),
+          sessionId: String(parsed.sessionId ?? "daemon"),
+          ...(parsed.operationId ? { operationId: String(parsed.operationId) } : {}),
+          ...(parsed.batchId ? { batchId: String(parsed.batchId) } : {}),
+        });
+      } catch {}
+    }
+  }
+  const normalizedSources = new Set(Array.isArray(filters.sources) ? filters.sources.map(String) : []);
+  const normalizedLevels = new Set(Array.isArray(filters.levels) ? filters.levels.map(String) : []);
+  const keyword = typeof filters.keyword === "string" ? filters.keyword.toLowerCase() : "";
+  const filtered = entries
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp) || right.id.localeCompare(left.id))
+    .filter((entry) => !normalizedSources.size || normalizedSources.has(entry.source))
+    .filter((entry) => !normalizedLevels.size || normalizedLevels.has(entry.level))
+    .filter((entry) => !filters.from || entry.timestamp >= String(filters.from))
+    .filter((entry) => !filters.to || entry.timestamp <= String(filters.to))
+    .filter((entry) => !keyword || `${entry.message} ${entry.code ?? ""}`.toLowerCase().includes(keyword))
+    .filter((entry) => !filters.operationId || entry.operationId === String(filters.operationId))
+    .filter((entry) => !filters.batchId || entry.batchId === String(filters.batchId));
+  let start = 0;
+  if (typeof cursor === "string" && cursor) {
+    try {
+      const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+      const index = filtered.findIndex((entry) => entry.id === decoded.id && entry.timestamp === decoded.timestamp);
+      if (index < 0) throw new Error("cursor not found");
+      start = index + 1;
+    } catch (error) {
+      const failure = new Error("Log cursor is invalid");
+      failure.code = "INVALID_LOG_CURSOR";
+      throw failure;
+    }
+  }
+  const pageSize = Math.min(200, Math.max(1, Number(limit) || 200));
+  const page = filtered.slice(start, start + pageSize);
+  const last = page.at(-1);
+  return {
+    entries: page,
+    ...(start + page.length < filtered.length && last ? { nextCursor: Buffer.from(JSON.stringify({ id: last.id, timestamp: last.timestamp }), "utf8").toString("base64url") } : {}),
+  };
+}
+
 await batchManager.load();
 await discoverPlugins();
+await initializeMarketService();
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
-  setCorsHeaders(request, response, url.pathname);
+  const requestedPathname = url.pathname;
+  setCorsHeaders(request, response, requestedPathname);
   if (request.method === "OPTIONS") { response.writeHead(204); response.end(); return; }
+  if (!previewMode && requestedPathname.startsWith("/runtime/") && !publicRuntimePaths.has(requestedPathname)) {
+    json(response, 404, { error: "Use the versioned daemon API", code: "API_VERSION_REQUIRED" });
+    return;
+  }
+  if (!previewMode && /^\/plugins\/[^/]+\/(?:api|health)(?:\/|$)/u.test(requestedPathname)) {
+    json(response, 404, { error: "Use the versioned daemon Plugin API", code: "API_VERSION_REQUIRED" });
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/health" && request.method === "GET") {
+    json(response, 200, daemonReadiness());
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/readiness" && request.method === "GET") {
+    json(response, 200, daemonReadiness());
+    return;
+  }
+  if (["/api/v1/session/bootstrap", "/api/v1/auth/session"].includes(requestedPathname) && ["GET", "POST"].includes(request.method ?? "GET")) {
+    if (daemonMode) {
+      const suppliedBootstrap = request.headers["x-infolens-bootstrap"];
+      if (suppliedBootstrap && suppliedBootstrap !== daemonBootstrapToken) {
+        json(response, 401, { error: "Daemon bootstrap token is invalid", code: "DAEMON_BOOTSTRAP_INVALID" });
+        return;
+      }
+      const session = issueBrowserSession(response);
+      json(response, 200, { ok: true, authenticated: true, session, ...runtimeBootstrapPayload(`http://${request.headers.host}`) });
+      return;
+    }
+    json(response, 200, runtimeBootstrapPayload(`http://${request.headers.host}`));
+    return;
+  }
+  if (requiresApiAuthorization(requestedPathname) && !hasApiAuthorization(request)) {
+    rejectApiAuthorization(response);
+    return;
+  }
+  if (daemonMode && requestedPathname.startsWith("/plugins/") && !hasApiAuthorization(request)) {
+    rejectApiAuthorization(response);
+    return;
+  }
   if (requiresRuntimeAuthorization(url.pathname) && !hasRuntimeAuthorization(request)) {
     rejectRuntimeAuthorization(response);
+    return;
+  }
+  url.pathname = canonicalPathname(requestedPathname);
+
+  if (daemonMode && requestedPathname === "/api/v1/plugins" && request.method === "GET") {
+    const info = runtimeInfoPayload(`http://${request.headers.host}`);
+    json(response, 200, { plugins: info.plugins, rejectedPlugins: info.rejectedPlugins, hostState: info.hostState });
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/host/state" && request.method === "GET") {
+    json(response, 200, hostState.snapshot());
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/events" && request.method === "GET") {
+    response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-store",
+      "connection": "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    response.write(`event: snapshot\ndata: ${JSON.stringify({ events: statusEvents.slice(-50), readiness: daemonReadiness() })}\n\n`);
+    eventStreams.add(response);
+    const close = () => eventStreams.delete(response);
+    request.once("close", close);
+    response.once("close", close);
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/logs" && request.method === "GET") {
+    try {
+      const filters = {
+        sources: url.searchParams.getAll("source"),
+        levels: url.searchParams.getAll("level"),
+        from: url.searchParams.get("from") ?? "",
+        to: url.searchParams.get("to") ?? "",
+        keyword: url.searchParams.get("keyword") ?? "",
+        operationId: url.searchParams.get("operationId") ?? "",
+        batchId: url.searchParams.get("batchId") ?? "",
+      };
+      json(response, 200, await readOperationalLogEntries({ filters, cursor: url.searchParams.get("cursor") ?? undefined, limit: url.searchParams.get("limit") ?? undefined }));
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, 400, { error: failure.message, code: failure.code });
+    }
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/admin/backup" && request.method === "POST") {
+    try {
+      const body = await readJsonBody(request);
+      const destination = path.resolve(body.destination || path.join(configuredDaemonPaths.backupRoot, `infolens-backup-${new Date().toISOString().replace(/[:.]/gu, "-")}.json`));
+      const result = await createBackup({
+        paths: configuredDaemonPaths,
+        outputPath: destination,
+        metadata: { hostVersion: DEFAULT_TARGET_HOST_VERSION, pluginIds: compatiblePlugins.map((plugin) => plugin.validated.manifest.id) },
+      });
+      await runtimeLogger.info("backup-created", { fileCount: result.fileCount });
+      json(response, 201, result);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, 400, { error: failure.message, code: failure.code === "PLUGIN_ERROR" ? "BACKUP_FAILED" : failure.code });
+    }
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/admin/restore" && request.method === "POST") {
+    let restoreQuiesced = false;
+    const previousEnabledPluginIds = new Set(hostState.snapshot().enabledPluginIds);
+    try {
+      const body = await readJsonBody(request);
+      const source = body.source || body.sourcePath;
+      if (typeof source !== "string" || !path.isAbsolute(source)) throw Object.assign(new Error("Restore requires an absolute backup path"), { code: "BACKUP_SOURCE_INVALID" });
+      await restoreBackup({ paths: configuredDaemonPaths, sourcePath: source, validateOnly: true });
+      await hostState.flush();
+      await batchManager.interruptActive("BACKUP_RESTORE");
+      restoreQuiesced = true;
+      for (const plugin of [...activePlugins]) await deactivatePlugin(plugin, { preserveInterrupted: daemonMode });
+      const result = await restoreBackup({ paths: configuredDaemonPaths, sourcePath: source });
+      await hostState.load();
+      await batchManager.load();
+      batchManager.resumeAfterRestore();
+      const enabledPluginIds = new Set(hostState.snapshot().enabledPluginIds);
+      for (const descriptor of compatiblePlugins) {
+        const id = descriptor.validated.manifest.id;
+        descriptor.deactivated = !enabledPluginIds.has(id);
+        descriptor.unloaded = false;
+        if (enabledPluginIds.has(id) && !findPlugin(id)) await activatePlugin(descriptor.validated, descriptor.packageRoot);
+      }
+      await runtimeLogger.info("backup-restored", { fileCount: result.fileCount });
+      json(response, 200, result);
+    } catch (error) {
+      if (restoreQuiesced) {
+        try {
+          await hostState.load();
+          await batchManager.load();
+          batchManager.resumeAfterRestore();
+          for (const descriptor of compatiblePlugins) {
+            const id = descriptor.validated.manifest.id;
+            descriptor.deactivated = !previousEnabledPluginIds.has(id);
+            descriptor.unloaded = false;
+            if (previousEnabledPluginIds.has(id) && !findPlugin(id)) await activatePlugin(descriptor.validated, descriptor.packageRoot);
+          }
+        } catch (recoveryError) {
+          await runtimeLogger.error("backup-restore-recovery-failed", errorDetails(recoveryError)).catch(() => {});
+        }
+      }
+      const failure = errorDetails(error);
+      json(response, 400, { error: failure.message, code: failure.code === "PLUGIN_ERROR" ? "RESTORE_FAILED" : failure.code });
+    }
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/admin/credentials/reset" && request.method === "POST") {
+    const next = await rotateDaemonCredentials(configuredDaemonPaths);
+    daemonCredentials = next;
+    daemonBearerToken = next.bearerToken;
+    json(response, 200, { ok: true, rotatedAt: next.rotatedAt, bearerToken: next.bearerToken });
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/admin/shutdown" && request.method === "POST") {
+    json(response, 202, { ok: true, state: "stopping" });
+    setTimeout(() => { void shutdown("ADMIN_STOP"); }, 0).unref?.();
+    return;
+  }
+
+  if (daemonMode && requestedPathname === "/api/v1/market/catalog" && request.method === "GET") {
+    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
+    json(response, 200, marketService.catalog(url.searchParams.get("query") ?? ""));
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/market/refresh" && request.method === "POST") {
+    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
+    try {
+      const result = await marketService.refreshCatalog();
+      emitDaemonEvent("market-catalog-refreshed", { cachedAt: result.cachedAt });
+      json(response, 200, result);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, 502, { error: failure.message, code: failure.code });
+    }
+    return;
+  }
+  const marketOperationMatch = requestedPathname.match(/^\/api\/v1\/market\/operations\/([^/]+)(?:\/(cancel|retry))?$/);
+  if (daemonMode && marketOperationMatch && request.method === "GET" && !marketOperationMatch[2]) {
+    const operation = marketService?.operation(decodeURIComponent(marketOperationMatch[1]));
+    if (!operation) { json(response, 404, { error: "Market operation not found", code: "MARKET_OPERATION_NOT_FOUND" }); return; }
+    json(response, 200, operation);
+    return;
+  }
+  if (daemonMode && marketOperationMatch && marketOperationMatch[2] === "cancel" && request.method === "POST") {
+    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
+    json(response, 200, { ok: true, canceled: marketService.cancel(decodeURIComponent(marketOperationMatch[1])) });
+    return;
+  }
+  if (daemonMode && marketOperationMatch && marketOperationMatch[2] === "retry" && request.method === "POST") {
+    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
+    const operationId = decodeURIComponent(marketOperationMatch[1]);
+    const requestContext = requestAbortContext(request, response);
+    try {
+      const result = await marketService.retry(operationId, {
+        signal: requestContext.signal,
+        onProgress: (operation) => emitDaemonEvent("market-progress", operation),
+      });
+      json(response, 201, result);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, 400, { error: failure.message, code: failure.code, ...(error?.operationId ? { operationId: error.operationId } : {}) });
+    } finally { requestContext.cleanup(); }
+    return;
+  }
+  if (daemonMode && requestedPathname === "/api/v1/market/install" && request.method === "POST") {
+    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
+    const operationId = requestOperationId(request) || randomUUID();
+    const requestContext = requestAbortContext(request, response);
+    try {
+      const body = await readJsonBody(request);
+      const signature = `POST ${requestedPathname}:${JSON.stringify({ pluginId: String(body.pluginId ?? ""), version: String(body.version ?? "") })}`;
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        try {
+          const installed = await marketService.install(String(body.pluginId ?? ""), String(body.version ?? ""), {
+            operationId,
+            signal: requestContext.signal,
+            onProgress: (operation) => emitDaemonEvent("market-progress", operation),
+          });
+          return { status: 201, body: installed };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return { status: 400, body: { error: failure.message, code: failure.code, operationId: error?.operationId ?? operationId } };
+        }
+      });
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
+    } finally { requestContext.cleanup(); }
+    return;
+  }
+
+  if (daemonMode && request.method === "GET" && !requestedPathname.startsWith("/api/v1/") && requestedPathname !== "/runtime/info" && !requestedPathname.startsWith("/runtime/") && !requestedPathname.startsWith("/plugins/")) {
+    await serveHostWeb(response, requestedPathname);
     return;
   }
   if (url.pathname === "/runtime/plugin-sdk.js" && request.method === "GET") {
@@ -1269,7 +1938,9 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (url.pathname === "/runtime/tasks") {
-    json(response, 200, taskQueue.snapshot());
+    const snapshot = taskQueue.snapshot();
+    snapshot.tasks.records = activePlugins.flatMap((plugin) => plugin.taskManager.snapshot());
+    json(response, 200, snapshot);
     return;
   }
   if (url.pathname === "/runtime/daily-summary" && request.method === "GET") {
@@ -1293,14 +1964,28 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (["/runtime/batches", "/runtime/batch-refresh"].includes(url.pathname) && request.method === "POST") {
+    const operationId = requestOperationId(request) || randomUUID();
     try {
       const body = await readJsonBody(request);
       const selections = body.targets ?? body.pluginIds;
-      const result = await batchManager.create(selections);
-      json(response, result.reused ? 200 : 202, { ...result.batch, batch: result.batch, reused: result.reused });
+      const signature = `POST ${url.pathname}:${JSON.stringify(selections ?? null)}`;
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        try {
+          const created = await batchManager.create(selections);
+          const payload = { ...created.batch, batch: created.batch, reused: created.reused, operationId };
+          return { status: created.reused ? 200 : 202, body: payload };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return {
+            status: ["BATCH_ACTIVE", "RUNTIME_STOPPING"].includes(failure.code) ? 409 : 400,
+            body: { error: failure.message, code: failure.code, operationId },
+          };
+        }
+      });
+      json(response, result.status, result.body);
     } catch (error) {
       const failure = errorDetails(error);
-      json(response, ["BATCH_ACTIVE", "RUNTIME_STOPPING"].includes(failure.code) ? 409 : 400, { error: failure.message, code: failure.code });
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
     }
     return;
   }
@@ -1365,52 +2050,80 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (url.pathname === "/runtime/plugins/install" && request.method === "POST") {
-    const operationId = request.headers["x-infolens-operation-id"] || randomUUID();
-    await runtimeLogger.info("plugin-install-started", { operationId });
+    const operationId = requestOperationId(request) || randomUUID();
     try {
-      const id = await installPlugin((await readJsonBody(request)).sourcePath);
-      const entry = await runtimeLogger.info("plugin-install-completed", { operationId, pluginId: id });
-      json(response, 201, { ok: true, pluginId: id, logId: entry.id, operationId });
+      const body = await readJsonBody(request);
+      const signature = `POST ${url.pathname}:${JSON.stringify({ sourcePath: String(body.sourcePath ?? "") })}`;
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        await runtimeLogger.info("plugin-install-started", { operationId });
+        try {
+          const id = await installPlugin(body.sourcePath);
+          const entry = await runtimeLogger.info("plugin-install-completed", { operationId, pluginId: id });
+          return { status: 201, body: { ok: true, pluginId: id, logId: entry.id, operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          const entry = await runtimeLogger.error("plugin-install-failed", { ...failure, operationId });
+          return { status: failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : 400, body: { error: failure.message, code: failure.code, logId: entry.id, operationId } };
+        }
+      });
+      json(response, result.status, result.body);
     } catch (error) {
       const failure = errorDetails(error);
-      const entry = await runtimeLogger.error("plugin-install-failed", { ...failure, operationId });
-      json(response, failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : 400, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
     }
     return;
   }
   if (url.pathname === "/runtime/plugins/install-archive" && request.method === "POST") {
-    const operationId = request.headers["x-infolens-operation-id"] || randomUUID();
-    await runtimeLogger.info("plugin-import-started", { operationId });
+    const operationId = requestOperationId(request) || randomUUID();
     const requestContext = requestAbortContext(request, response);
     try {
       const body = await readJsonBody(request);
-      const id = await installLocalArchive(body.archivePath, { operationId, signal: requestContext.signal });
-      const entry = await runtimeLogger.info("plugin-import-completed", { operationId, pluginId: id });
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, 201, { ok: true, pluginId: id, logId: entry.id, operationId });
+      const signature = `POST ${url.pathname}:${JSON.stringify({ archivePath: String(body.archivePath ?? "") })}`;
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        await runtimeLogger.info("plugin-import-started", { operationId });
+        try {
+          const id = await installLocalArchive(body.archivePath, { operationId, signal: requestContext.signal });
+          const entry = await runtimeLogger.info("plugin-import-completed", { operationId, pluginId: id });
+          return { status: 201, body: { ok: true, pluginId: id, logId: entry.id, operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          const entry = await runtimeLogger.error("plugin-import-failed", { ...failure, operationId });
+          const status = failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : String(failure.code).startsWith("ARCHIVE_") ? 422 : 400;
+          return { status, body: { error: failure.message, code: failure.code, logId: entry.id, operationId } };
+        }
+      });
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, result.status, result.body);
     } catch (error) {
       const failure = errorDetails(error);
-      const entry = await runtimeLogger.error("plugin-import-failed", { ...failure, operationId });
-      const status = failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : String(failure.code).startsWith("ARCHIVE_") ? 422 : 400;
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, status, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
     } finally {
       requestContext.cleanup();
     }
     return;
   }
   if (url.pathname === "/runtime/plugins/install-market" && request.method === "POST") {
-    const operationId = request.headers["x-infolens-operation-id"] || randomUUID();
-    await runtimeLogger.info("market-install-started", { operationId });
+    const operationId = requestOperationId(request) || randomUUID();
     const requestContext = requestAbortContext(request, response);
     try {
       const body = await readJsonBody(request);
-      const id = await installMarketPlugin({ ...body, operationId, signal: requestContext.signal });
-      const entry = await runtimeLogger.info("market-install-completed", { operationId, pluginId: id });
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, 201, { ok: true, pluginId: id, logId: entry.id, operationId });
+      const signature = `POST ${url.pathname}:${JSON.stringify(body)}`;
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        await runtimeLogger.info("market-install-started", { operationId });
+        try {
+          const id = await installMarketPlugin({ ...body, operationId, signal: requestContext.signal });
+          const entry = await runtimeLogger.info("market-install-completed", { operationId, pluginId: id });
+          return { status: 201, body: { ok: true, pluginId: id, logId: entry.id, operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          const entry = await runtimeLogger.error("market-install-failed", { ...failure, operationId });
+          const status = ["DUPLICATE_PLUGIN_ID", "MARKET_BUNDLED_CONFLICT"].includes(failure.code) ? 409 : ["MARKET_DIGEST_MISMATCH", "ARCHIVE_INVALID", "ARCHIVE_PATH_TRAVERSAL", "ARCHIVE_SYMLINK", "ARCHIVE_DUPLICATE_ENTRY"].includes(failure.code) ? 422 : 400;
+          return { status, body: { error: failure.message, code: failure.code, logId: entry.id, operationId } };
+        }
+      });
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, result.status, result.body);
     } catch (error) {
       const failure = errorDetails(error);
-      const entry = await runtimeLogger.error("market-install-failed", { ...failure, operationId });
-      const status = ["DUPLICATE_PLUGIN_ID", "MARKET_BUNDLED_CONFLICT"].includes(failure.code) ? 409 : ["MARKET_DIGEST_MISMATCH", "ARCHIVE_INVALID", "ARCHIVE_PATH_TRAVERSAL", "ARCHIVE_SYMLINK", "ARCHIVE_DUPLICATE_ENTRY"].includes(failure.code) ? 422 : 400;
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, status, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+      if (!requestContext.signal.aborted && !response.destroyed) json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
     } finally {
       requestContext.cleanup();
     }
@@ -1418,8 +2131,25 @@ const server = createServer(async (request, response) => {
   }
   const enabledMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)\/enabled$/);
   if (enabledMatch && request.method === "POST") {
-    try { await setPluginEnabled(decodeURIComponent(enabledMatch[1]), Boolean((await readJsonBody(request)).enabled)); json(response, 200, { ok: true }); }
-    catch (error) { const failure = errorDetails(error); json(response, 400, { error: failure.message, code: failure.code }); }
+    const operationId = requestOperationId(request) || randomUUID();
+    try {
+      const body = await readJsonBody(request);
+      const enabled = Boolean(body.enabled);
+      const signature = `POST ${url.pathname}:${JSON.stringify({ enabled })}`;
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        try {
+          await setPluginEnabled(decodeURIComponent(enabledMatch[1]), enabled);
+          return { status: 200, body: { ok: true, operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return { status: 400, body: { error: failure.message, code: failure.code, operationId } };
+        }
+      });
+      json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
+    }
     return;
   }
   const diagnosticsMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)\/diagnostics$/);
@@ -1431,27 +2161,44 @@ const server = createServer(async (request, response) => {
   const removalMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)\/remove$/);
   if (removalMatch && request.method === "DELETE") {
     const pluginId = decodeURIComponent(removalMatch[1]);
-    const operationId = request.headers["x-infolens-operation-id"] || randomUUID();
-    await runtimeLogger.info("plugin-removal-started", { operationId, pluginId });
+    const operationId = requestOperationId(request) || randomUUID();
     try {
-      await removePlugin(pluginId);
-      const entry = await runtimeLogger.info("plugin-removal-completed", { operationId, pluginId });
-      json(response, 200, { ok: true, pluginId, logId: entry.id, operationId });
+      const result = await runIdempotentOperation(operationId, `DELETE ${url.pathname}`, async () => {
+        await runtimeLogger.info("plugin-removal-started", { operationId, pluginId });
+        try {
+          await removePlugin(pluginId);
+          const entry = await runtimeLogger.info("plugin-removal-completed", { operationId, pluginId });
+          return { status: 200, body: { ok: true, pluginId, logId: entry.id, operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          const entry = await runtimeLogger.error("plugin-removal-failed", { ...failure, operationId, pluginId });
+          return { status: failure.code === "RUNTIME_RESTART_REQUIRED" ? 503 : 404, body: { error: failure.message, code: failure.code, logId: entry.id, operationId } };
+        }
+      });
+      json(response, result.status, result.body);
     } catch (error) {
       const failure = errorDetails(error);
-      const entry = await runtimeLogger.error("plugin-removal-failed", { ...failure, operationId, pluginId });
-      json(response, failure.code === "RUNTIME_RESTART_REQUIRED" ? 503 : 404, { error: failure.message, code: failure.code, logId: entry.id, operationId });
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 404, { error: failure.message, code: failure.code, operationId });
     }
     return;
   }
   const deactivateMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)$/);
   if (deactivateMatch && request.method === "DELETE") {
-    const plugin = findPlugin(decodeURIComponent(deactivateMatch[1]));
-    if (!plugin) { json(response, 404, { error: "Plugin not found" }); return; }
-    await deactivatePlugin(plugin);
-    const descriptor = findCompatible(decodeURIComponent(deactivateMatch[1]));
-    if (descriptor) descriptor.deactivated = true;
-    json(response, 200, { ok: true, pluginId: deactivateMatch[1] });
+    const operationId = requestOperationId(request) || randomUUID();
+    try {
+      const result = await runIdempotentOperation(operationId, `DELETE ${url.pathname}`, async () => {
+        const plugin = findPlugin(decodeURIComponent(deactivateMatch[1]));
+        if (!plugin) return { status: 404, body: { error: "Plugin not found", code: "PLUGIN_NOT_FOUND", operationId } };
+        await deactivatePlugin(plugin);
+        const descriptor = findCompatible(decodeURIComponent(deactivateMatch[1]));
+        if (descriptor) { descriptor.deactivated = false; descriptor.unloaded = true; }
+        return { status: 200, body: { ok: true, pluginId: deactivateMatch[1], operationId } };
+      });
+      json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
+    }
     return;
   }
   if (url.pathname === "/runtime/info") {
@@ -1504,13 +2251,18 @@ const server = createServer(async (request, response) => {
 
   const requestContext = requestAbortContext(request, response);
   try {
-    const body = await handler({ method: request.method, url, headers: request.headers, signal: requestContext.signal });
+    const operationId = ["GET", "HEAD"].includes(request.method ?? "GET") ? undefined : requestOperationId(request);
+    const body = await runIdempotentOperation(operationId, `${request.method ?? "GET"} ${requestedPathname}${url.search}`, () => handler({ method: request.method, url, headers: request.headers, signal: requestContext.signal }));
     if (requestContext.signal.aborted || response.destroyed) return;
     if (isDownloadableResponse(body)) await download(response, body, requestContext.signal);
     else json(response, 200, body);
   } catch (error) {
     if (requestContext.signal.aborted || response.destroyed || response.headersSent) return;
     const failure = errorDetails(error);
+    if (failure.code === "OPERATION_ID_REUSED") {
+      json(response, 409, { error: failure.message, code: failure.code });
+      return;
+    }
     if (error?.logId && error?.operationId) {
       const correlatedFailure = { ...failure, logId: error.logId, operationId: error.operationId, timestamp: error.timestamp };
       setPluginStatus(plugin, "failed", { failure: correlatedFailure });
@@ -1533,8 +2285,22 @@ server.listen(port, "127.0.0.1", () => {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Runtime did not bind a TCP port");
   const origin = `http://127.0.0.1:${address.port}`;
-  runtimeLogger.info("runtime-started", { origin }).catch((error) => process.stderr.write(`[runtime-log] ${error.message}\n`));
-  process.stdout.write(`${JSON.stringify(runtimeInfoPayload(origin))}\n`);
+  void (async () => {
+    if (daemonMode) {
+      daemonDiscovery = await writeDaemonDiscovery(configuredDaemonPaths, {
+        origin,
+        port: address.port,
+        sessionId: applicationSessionId,
+        apiVersion: "v1",
+        bootstrap: { path: "/api/v1/session/bootstrap", method: "POST", token: daemonBootstrapToken },
+      });
+    }
+    await runtimeLogger.info("runtime-started", { origin });
+    process.stdout.write(`${JSON.stringify(runtimeInfoPayload(origin))}\n`);
+  })().catch((error) => {
+    process.stderr.write(`[runtime-startup] ${error.message}\n`);
+    void shutdown("STARTUP_FAILED");
+  });
 });
 
 let stopping = false;
@@ -1589,17 +2355,27 @@ async function shutdown(reason = "RUNTIME_RESTARTED") {
   if (stopping) return;
   stopping = true;
   process.stdin.pause();
+  process.stdin.removeAllListeners("data");
+  process.stdin.destroy?.();
   const diagnosticPlugin = diagnosticMode ? activePlugins.find((plugin) => plugin.manifest.id === diagnosticPluginId) : undefined;
   await batchManager.interruptActive(reason);
   browserBridge.stop();
+  for (const plugin of [...activePlugins]) await plugin.taskManager.stop({ preserveInterrupted: daemonMode });
   taskQueue.stop();
+  for (const stream of eventStreams) stream.destroy();
+  eventStreams.clear();
   await new Promise((resolve) => server.close(resolve));
-  for (const plugin of [...activePlugins]) await deactivatePlugin(plugin);
+  for (const plugin of [...activePlugins]) await deactivatePlugin(plugin, { skipTaskStop: true });
   if (diagnosticMode) process.stdout.write(`${JSON.stringify(diagnosticResult(diagnosticPlugin))}\n`);
   if (diagnosticKeepAlive) clearInterval(diagnosticKeepAlive);
   await runtimeLogger.info("runtime-stopped");
   await runtimeLogger.flush();
-  process.exit(0);
+  browserSessions.clear();
+  if (daemonMode) {
+    await removeDaemonDiscovery(configuredDaemonPaths, { sessionId: applicationSessionId });
+    await daemonLock?.release();
+  }
+  process.exitCode = 0;
 }
 
 process.on("SIGINT", shutdown);

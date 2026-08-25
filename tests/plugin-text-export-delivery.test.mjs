@@ -16,7 +16,7 @@ function installGlobal(name, value) {
   return () => descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete globalThis[name];
 }
 
-function workspaceLocation(apiBaseUrl = "http://127.0.0.1:1234/plugins/demo/api/") {
+function workspaceLocation(apiBaseUrl = "http://127.0.0.1:1234/api/v1/plugins/demo/api/") {
   return { origin: "http://127.0.0.1:1234", search: `?pluginId=demo&apiBaseUrl=${encodeURIComponent(apiBaseUrl)}` };
 }
 
@@ -42,11 +42,11 @@ test("SDK export helpers stay inside the calling Plugin API and stream clipboard
   globalThis.fetch = async () => new Response("标题\n第二行", { headers: { "content-type": "text/plain; charset=utf-8" } });
   try {
     assert.deepEqual(await downloadExport("/export?format=text"), { initiated: true });
-    assert.deepEqual(clicks, ["http://127.0.0.1:1234/plugins/demo/api/export?format=text"]);
-    assert.deepEqual(await downloadExport("/plugins/demo/api/export?format=text"), { initiated: true });
+    assert.deepEqual(clicks, ["http://127.0.0.1:1234/api/v1/plugins/demo/api/export?format=text"]);
+    assert.deepEqual(await downloadExport("/api/v1/plugins/demo/api/export?format=text"), { initiated: true });
     assert.deepEqual(clicks, [
-      "http://127.0.0.1:1234/plugins/demo/api/export?format=text",
-      "http://127.0.0.1:1234/plugins/demo/api/export?format=text",
+      "http://127.0.0.1:1234/api/v1/plugins/demo/api/export?format=text",
+      "http://127.0.0.1:1234/api/v1/plugins/demo/api/export?format=text",
     ]);
     assert.deepEqual(await copyDownloadable("export?format=text"), { copied: true });
     assert.deepEqual(writes, ["标题\n第二行"]);

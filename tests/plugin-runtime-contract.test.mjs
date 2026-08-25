@@ -32,6 +32,7 @@ function startRuntime({ pluginsRoot, dataRoot }) {
     env: {
       ...process.env,
       INFOLENS_PROJECT_ROOT: projectRoot,
+      INFOLENS_RUNTIME_PREVIEW: "1",
       INFOLENS_PLUGINS_ROOT: pluginsRoot,
       INFOLENS_PLUGIN_DATA_ROOT: dataRoot,
       INFOLENS_BUNDLED_OPENCLI_ROOT: path.join(fixturesRoot, "opencli"),
@@ -70,10 +71,10 @@ async function stopRuntime(child) {
   await exited;
 }
 
-test("SDK workspace URL helpers retain the Runtime-owned plugin boundary", () => {
-  assert.equal(pluginHealthUrl("http://127.0.0.1:1234", "demo"), "http://127.0.0.1:1234/plugins/demo/health");
+test("SDK workspace URL helpers use the versioned Plugin API boundary", () => {
+  assert.equal(pluginHealthUrl("http://127.0.0.1:1234", "demo"), "http://127.0.0.1:1234/api/v1/plugins/demo/health");
   assert.equal(pluginWorkspaceUrl("http://127.0.0.1:1234", "demo"), "http://127.0.0.1:1234/plugins/demo/workspace/");
-  assert.equal(pluginApiUrl("http://127.0.0.1:1234", "demo", "/items"), "http://127.0.0.1:1234/plugins/demo/api/items");
+  assert.equal(pluginApiUrl("http://127.0.0.1:1234", "demo", "/items"), "http://127.0.0.1:1234/api/v1/plugins/demo/api/items");
   assert.deepEqual(healthResponse("refreshing", { badge: "2" }), { state: "refreshing", badge: "2" });
 });
 

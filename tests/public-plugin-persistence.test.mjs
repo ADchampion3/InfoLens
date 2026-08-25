@@ -28,7 +28,7 @@ test("production distribution pins official OpenCLI and its two built-in PUBLIC 
 });
 
 async function startRuntime(dataRoot, stateFile) {
-  const child = spawn(process.execPath, [path.join(root, "packages/plugin-runtime/src/server.mjs")], { cwd: root, env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_PLUGIN_DATA_ROOT: dataRoot, INFOLENS_BUNDLED_OPENCLI_ROOT: mockOpenCli, INFOLENS_TEST_OPENCLI_STATE: stateFile, INFOLENS_RUNTIME_PORT: "0", INFOLENS_APPLICATION_SESSION_ID: "public-plugin-persistence-test-session" }, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [path.join(root, "packages/plugin-runtime/src/server.mjs")], { cwd: root, env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_RUNTIME_PREVIEW: "1", INFOLENS_PLUGIN_DATA_ROOT: dataRoot, INFOLENS_BUNDLED_OPENCLI_ROOT: mockOpenCli, INFOLENS_TEST_OPENCLI_STATE: stateFile, INFOLENS_RUNTIME_PORT: "0", INFOLENS_APPLICATION_SESSION_ID: "public-plugin-persistence-test-session" }, stdio: ["pipe", "pipe", "pipe"] });
   const lines = readline.createInterface({ input: child.stdout });
   return new Promise((resolve, reject) => {
     const errors=[]; child.stderr.on("data",chunk=>errors.push(chunk)); child.once("error",reject);

@@ -2,9 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Infolens 是一个 local-first 的 Electron 信息插件 Host。它提供统一的桌面
-Shell，用于跟踪多个信息源，同时让每个 Plugin 自己负责采集策略、本地数据、
-刷新策略和阅读工作区。
+Infolens 是一个 local-first 应用，核心是独立运行的 Infolens Daemon。它提供统一的
+Host Web Shell，用于跟踪多个信息源，同时让每个 Plugin 自己负责采集策略、本地数据、
+刷新策略和阅读工作区。Host Web 可以在普通浏览器或 Electron 中运行；Electron 只是
+连接 Daemon 的 Thin Client，不拥有 Daemon 生命周期。
 
 项目仍在积极开发中。不同版本之间可能会调整 API、包契约和用户界面。
 
@@ -32,8 +33,10 @@ Shell，用于跟踪多个信息源，同时让每个 Plugin 自己负责采集�
 每个 Plugin 都拥有自己的 Backend、SQLite Store、刷新行为和静态 Plugin
 Workspace。Host Shell 不会把它们的记录合并成一个共享信息流。
 
-应用内置 OpenCLI 1.8.6 并调用本地运行时，不需要全局安装 OpenCLI。浏览器依赖型
-Plugin 使用 OpenCLI Browser Bridge 扩展和用户现有的 Chrome Session。
+Daemon 内置 OpenCLI 1.8.6 并调用本地运行时，不需要全局安装 OpenCLI。Plugin Backend
+只能通过 Manifest 声明的 `context.opencli.run(commandKey, args, signal)` 请求采集；
+不能直接启动 OpenCLI、使用全局 Adapter Discovery 或传入任意 Command Path。浏览器
+依赖型 Plugin 使用 OpenCLI Browser Bridge 扩展和用户现有的 Chrome Session。
 
 ## 环境要求
 
@@ -57,8 +60,13 @@ npm run dev
 OpenCLI Distribution 安装到 `resources/opencli`，然后应用仓库中经过版本检查的
 Overrides。
 
-`npm run dev` 会同时启动 Vite Renderer、Electron Host 和共享 Plugin Runtime。
-开发状态写入被忽略的 `.infolens-data` 目录。
+`npm run dev` 会启动 Vite Renderer、Electron Thin Client，并让它启动或发现独立的
+Plugin Runtime Daemon。Daemon 状态写入被忽略的 `.infolens-data` 目录；关闭 Electron
+窗口只会断开客户端，不会通过窗口生命周期停止 Daemon。需要直接运行 Daemon 时使用：
+
+```powershell
+npm run daemon
+```
 
 要构建并启动本地生产 Renderer：
 
@@ -71,8 +79,8 @@ npm start
 
 | 路径 | 职责 |
 | --- | --- |
-| `apps/desktop/` | Electron Main Process 和 Host Shell |
-| `packages/plugin-runtime/` | 共享 Plugin Runtime 和 Plugin API 边界 |
+| `apps/desktop/` | Electron Thin Client、Host Web 入口和 OS Integration |
+| `packages/plugin-runtime/` | Standalone Daemon、Plugin Runtime 和 `/api/v1` 边界 |
 | `packages/plugin-sdk/` | Plugin SDK 和 Plugin 作者 CLI |
 | `packages/plugin-workspace/` | 仅负责展示的共享 Plugin Workspace UI |
 | `plugins/` | Bundled Plugin 包和它们的 Workspace Bundle |
@@ -84,7 +92,11 @@ npm start
 
 | 命令 | 用途 |
 | --- | --- |
-| `npm run dev` | 启动 Electron 开发会话 |
+| `npm run dev` | 启动 Electron Thin Client 和它连接的 Daemon 开发会话 |
+| `npm run daemon -- start` | 启动或复用 Standalone Plugin Runtime Daemon |
+| `npm run daemon -- health` | 检查 Daemon Readiness |
+| `npm run daemon -- diagnostics --plugin-id <id>` | 输出本地 Plugin Diagnostic Report |
+| `npm run daemon -- stop` | 停止 Standalone Plugin Runtime Daemon |
 | `npm run build` | 验证发布元数据并构建 Renderer |
 | `npm run typecheck` | 检查 Desktop Host 和 Plugin SDK 的类型 |
 | `npm test` | 构建本地包并运行仓库测试套件 |
@@ -113,8 +125,9 @@ node --test tests/browser-bridge.test.mjs tests/opencli-adapter.test.mjs
 
 ## Browser Bridge
 
-Host Shell 启动时不会主动探测 Browser Bridge。需要恢复浏览器依赖型流程时，打开
-Settings 读取缓存状态，然后使用 `Check connection` 或 `Reconnect`。
+Host Web 启动时不会主动探测 Browser Bridge。需要恢复浏览器依赖型流程时，打开
+Settings 读取缓存状态，然后使用 `Check connection` 或 `Reconnect`；这些操作通过
+Daemon 的 `/api/v1` 边界执行。
 
 浏览器依赖型采集只影响需要它的 Plugin。Bridge 不可用或站点未登录不会导致公共信息源
 Plugin 不可用；刷新失败后，已经保留的 Plugin 内容仍可阅读。
@@ -125,16 +138,16 @@ Session Lease；应用退出时不会关闭用户自己拥有的 Chrome Tab。
 ## 架构
 
 ```text
-Electron Main Process
-  Host Shell (React, Vite, TypeScript)
+Browser Client / Electron Client
+  Host Web Shell (React, Vite, TypeScript)
     Plugin navigation and host settings
     Plugin workspace frames
           |
           v
-  Shared Plugin Runtime (Node)
-    Plugin backends and task scheduling
-    Plugin-scoped HTTP APIs and static workspaces
-    Plugin-owned SQLite stores
+  Standalone Infolens Daemon (Node)
+    Plugin discovery, Host State, and lifecycle
+    Plugin backends, tasks, batches, and diagnostics
+    Plugin-scoped APIs under /api/v1 and static workspaces
     Bundled OpenCLI process boundary
           |
           v
@@ -160,8 +173,10 @@ Electron Main Process
 
 ## Plugin 开发
 
-Plugin 是受信任的本地包。Plugin Backend 是由共享 Plugin Runtime 加载的普通
-Node.js 代码；当前包模型不是安全 Sandbox，也不是权限系统。
+Plugin 是受信任的本地包。Plugin Backend 是由 Standalone Daemon 的 Plugin Runtime
+加载的普通 Node.js 代码；当前包模型不是安全 Sandbox，也不是权限系统。Daemon 负责
+Discovery、Lifecycle、Task Scheduling、Diagnostics 和 `/api/v1` Business Boundary；
+Host Web 与 Electron 不直接加载 Backend，也不直接调用 OpenCLI。
 
 包契约要求 Manifest、Backend Entry 和构建后的静态 Workspace。每一个 OpenCLI
 Command 都必须在 Manifest 中声明。Provided Adapter 会在打包时复制并验证；Adapter

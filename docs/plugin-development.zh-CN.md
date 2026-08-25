@@ -121,10 +121,11 @@ Workspace Diagnosis 报告为 `WORKSPACE_DYNAMIC_REFERENCE` Warning。这是预�
 
 ## Package Contract
 
-Infolens Plugin 是受信任的本地 Package。Host 会将它复制到受管理的 `plugins/` 目录，
-并在 Plugin Runtime 中加载 Backend。Plugin 负责自己的 Backend 行为、持久化数据、
-OpenCLI Mapping 和静态 Workspace；Host 负责发现、生命周期、Task 调度、诊断和
-Runtime Boundary。
+Infolens Plugin 是受信任的本地 Package。Standalone Daemon 会将它复制到受管理的
+`plugins/` 目录，并在 Plugin Runtime 中加载 Backend。Plugin 负责自己的 Backend 行为、
+持久化数据、OpenCLI Mapping 和静态 Workspace；Daemon 负责 Discovery、Lifecycle、
+Task 调度、Diagnostics、Authentication 和版本化的 `/api/v1` Boundary。Host Web 与
+Electron 是 Client，不会直接加载 Backend 或调用 OpenCLI。
 
 最小可用 Package 的结构如下：
 
@@ -356,16 +357,16 @@ context.setRefreshOptions(() => ({
 
 ## 静态 Workspace
 
-`ui.entry` 必须指向构建后的静态 HTML 文件。Host 会提供该文件及其本地资源：
+`ui.entry` 必须指向构建后的静态 HTML 文件。Daemon 会提供该文件及其本地资源：
 
 ```text
 /plugins/<plugin-id>/workspace/
-/plugins/<plugin-id>/api/
-/plugins/<plugin-id>/health
+/api/v1/plugins/<plugin-id>/api/
+/api/v1/plugins/<plugin-id>/health
 ```
 
-Workspace 会收到 `pluginId`、`apiBaseUrl` 和 `theme` Query Parameter。请从 Runtime
-Mount 导入浏览器 SDK：
+Workspace 会收到 `pluginId`、`apiBaseUrl` 和 `theme` Query Parameter。请从静态 Runtime
+Support Resource Mount 导入浏览器 SDK。下面的 `/runtime/` Path 不是 Business API：
 
 ```js
 import {
@@ -429,6 +430,13 @@ Runtime 会追加 `-f json` 并禁用用户全局 OpenCLI Discovery。不要传�
 `PUBLIC` Command 使用公共 Request Pool。`COOKIE` 和 `INTERCEPT` Command 使用浏览器
 依赖型路径，实时运行时可能需要已登录的 Browser Bridge。当前 Contract 不接受
 `UI` Strategy。
+
+Standalone Daemon 是唯一的 OpenCLI Process Boundary。Backend 只能用自己 Manifest 中
+声明的 Command Key 调用 `context.opencli.run(commandKey, args, signal)`。Daemon 负责
+解析固定 Executable、经过验证的不可变 Adapter Scope、Resource Permit 和 JSON Output。
+Backend 不能启动 OpenCLI、导入私有 OpenCLI Internals、启用用户全局 Adapter Discovery、
+接受任意 Command Path，也不能向 Workspace Code 暴露 OpenCLI Transport 或 Browser Session
+Details。
 
 ### Plugin 提供的 OpenCLI Adapter
 
@@ -590,8 +598,8 @@ Workspace、监视文件或提供 Hot Reload。打包前删除生成目录；`pa
 ### preview
 
 `preview` 验证 Package，把过滤后的 Snapshot 复制到临时根目录，然后以前台方式启动
-一个隔离的 Plugin Runtime。它报告与 Host 使用的相同 Plugin Workspace、Plugin API
-和 Plugin Health URL 形状。默认命令会监视源 Package，发生变化后 Debounce，再从
+一个隔离的 Plugin Runtime。它报告与 Daemon 使用的相同 Plugin Workspace、版本化
+Plugin API 和 Plugin Health URL 形状。默认命令会监视源 Package，发生变化后 Debounce，再从
 全新 Snapshot 重启 Runtime，同时保留 Preview Session 的临时数据和 Loopback Port。
 
 ```powershell

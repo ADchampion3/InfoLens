@@ -79,23 +79,23 @@ The `pluginId` and `apiBaseUrl` values the host supplies in a workspace iframe U
 _Avoid_: Business RPC, host data API
 
 **Plugin API**:
-The HTTP routes a plugin backend module registers below its own `/plugins/<pluginId>/api/` prefix in the shared Plugin Runtime, exclusively for that plugin workspace.
+The HTTP routes a plugin backend module registers below its own `/api/v1/plugins/<pluginId>/api/` prefix in the standalone Plugin Runtime daemon, exclusively for that plugin workspace.
 _Avoid_: Host RPC, cross-plugin business API
 
 **Plugin Runtime**:
-The one Node child process managed by the Electron host that loads enabled plugin backend modules, dispatches plugin-scoped routes, schedules tasks, and invokes OpenCLI.
-_Avoid_: Electron main process, one process per plugin
+The one standalone Node daemon process that loads enabled plugin backend modules, dispatches plugin-scoped routes, schedules tasks, and invokes OpenCLI. Host Web and Electron clients connect to it over its loopback API.
+_Avoid_: Electron main process, one process per plugin, client-owned runtime
 
 **Plugin Backend Module**:
 The backend entry loaded by Plugin Runtime for one plugin. It registers its own routes and task handlers and owns source-specific persistence.
 _Avoid_: Independent backend process, host business logic
 
 **Plugin Activation Context**:
-The single interface Plugin Runtime passes to a backend module's `activate(context)` function. It provides plugin-scoped routes, tasks, scheduling, declared OpenCLI command execution, data-directory access, and logging.
+The single interface Plugin Runtime passes to a backend module's `activate(context)` function. It provides plugin-scoped routes, tasks, scheduling, declared OpenCLI command execution, data-directory access, notifications, and logging.
 _Avoid_: Direct process control, independent HTTP server, arbitrary OpenCLI command runner
 
 **Plugin Health**:
-The backend-module readiness signal returned from `GET /plugins/<pluginId>/health` in Plugin Runtime.
+The backend-module readiness signal returned from authenticated `GET /api/v1/plugins/<pluginId>/health` in the Plugin Runtime daemon.
 _Avoid_: Authenticated handshake, host RPC
 
 **Plugin Task**:
@@ -103,7 +103,7 @@ An in-memory scheduled request containing plugin ID, task name, input, and trigg
 _Avoid_: Serialized crawler code, separate task-transfer protocol
 
 **Enabled Plugin**:
-A compatible discovered plugin that the host starts for the current application session. A compatible plugin with no prior host state is enabled by default; installation enables it immediately.
+A compatible discovered plugin that the daemon starts for its current lifetime. A compatible plugin with no prior host state is enabled by default; installation enables it immediately.
 _Avoid_: Selected plugin, visible workspace
 
 **Plugin Directory**:
@@ -151,7 +151,7 @@ A future machine-consumable semantic representation that a Plugin provides to th
 _Avoid_: Export file, parsed Plugin Export, final prompt
 
 **Host Shell**:
-The Electron-owned React navigation and lifecycle surface surrounding a plugin workspace.
+The React navigation and lifecycle surface surrounding a plugin workspace, served by Host Web and optionally opened by the Electron thin client.
 _Avoid_: Shared content workspace, plugin UI
 
 **Host State**:
@@ -203,8 +203,8 @@ The initial refresh policy for a newly installed plugin, requiring an explicit u
 _Avoid_: Automatic first-run collection
 
 **Application Session**:
-The period from starting Infolens until the main window closes and the shared Plugin Runtime stops.
-_Avoid_: Tray-resident background service, persistent daemon
+The period from starting one desktop client until that client closes. The standalone daemon may continue running after the client exits.
+_Avoid_: Daemon lifetime, persistent user session
 
 **Collection Snapshot**:
 The recorded result of one plugin attempt to collect updates, whether successful, failed, or uncertain.

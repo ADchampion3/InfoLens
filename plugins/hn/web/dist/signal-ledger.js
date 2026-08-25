@@ -13,31 +13,27 @@ document.body.innerHTML = `
       <div class="header-inner">
         <div class="brand-lockup">
           <span class="source-mark" aria-hidden="true">HN</span>
-          <div class="brand-copy"><strong>Hacker News</strong><span>Top Stories / Signal Ledger</span></div>
+          <div class="brand-copy"><strong>Hacker News</strong><span>Top Stories · 信号台账</span></div>
         </div>
         <div class="header-actions">
-          <button id="refresh" class="icon-button" type="button" aria-label="Refresh Hacker News" title="Refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg></button>
-          <button id="settings" class="icon-button" type="button" aria-label="Open refresh settings" title="Refresh settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l-2.83 2.83a1.7 1.7 0 0 0-1.88-.34A1.7 1.7 0 0 0 14 20.9h-4A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-2.83-2.83A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14v-4A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l2.83-2.83A1.7 1.7 0 0 0 9 4.63 1.7 1.7 0 0 0 10 3.08h4A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l2.83 2.83A1.7 1.7 0 0 0 19.37 9 1.7 1.7 0 0 0 20.92 10v4A1.7 1.7 0 0 0 19.4 15Z"/></svg></button>
+          <button id="refresh" class="icon-button" type="button" aria-label="刷新 Hacker News" title="刷新"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg></button>
+          <button id="settings" class="icon-button" type="button" aria-label="打开刷新设置" title="刷新设置"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l-2.83 2.83a1.7 1.7 0 0 0-1.88-.34A1.7 1.7 0 0 0 14 20.9h-4A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-2.83-2.83A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14v-4A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l2.83-2.83A1.7 1.7 0 0 0 9 4.63 1.7 1.7 0 0 0 10 3.08h4A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l2.83 2.83A1.7 1.7 0 0 0 19.37 9 1.7 1.7 0 0 0 20.92 10v4A1.7 1.7 0 0 0 19.4 15Z"/></svg></button>
         </div>
       </div>
     </header>
+    <div class="status-strip" role="status" aria-live="polite"><span id="status-dot" class="status-dot"></span><strong id="status-label">正在读取保留内容</strong><span id="status-detail"></span></div>
+    <div id="warning" class="warning" role="alert" hidden><span><strong>刷新失败。</strong> 当前继续显示上次成功保留的内容。</span><button id="retry" type="button" class="text-button">重试</button></div>
     <main class="workspace-main">
-      <section class="intro-row" aria-labelledby="workspace-title">
-        <div class="intro-copy"><p class="eyebrow">SIGNAL LEDGER / HACKER NEWS</p><h1 id="workspace-title">把热点变成可回看的工作清单。</h1><p class="intro-lede">按排名、来源和阅读状态保留 Top Stories。每一行都可以打开原文或讨论，并在下次刷新后继续追踪。</p></div>
-        <div class="view-model-note"><span class="note-label">VIEW MODEL</span><strong>ranked stories</strong><span>read state · source links · retained snapshots</span></div>
-      </section>
-      <div class="prototype-status" role="status" aria-live="polite"><span id="status-dot" class="status-dot"></span><strong id="status-label">正在读取保留内容</strong><span id="status-detail"></span></div>
-      <div id="warning" class="warning" role="alert" hidden><span><strong>刷新失败。</strong> 当前继续显示上次成功保留的内容。</span><button id="retry" type="button" class="text-button">重试</button></div>
-      <section class="section-head"><div><p class="section-kicker">01 / COLLECTION</p><h2>Top Stories</h2></div><div class="section-summary"><strong id="story-count">—</strong><span>stories retained</span></div></section>
+      <section class="section-head"><h2>Top Stories</h2><p class="section-count"><strong id="story-count">—</strong> 条已保留</p></section>
       <div class="ledger-layout">
-        <aside class="filter-rail" aria-label="Story filters"><span class="rail-label">FILTER</span><button class="filter-button is-active" data-filter="all" type="button">All stories <span id="all-count">—</span></button><button class="filter-button" data-filter="unread" type="button">Unread <span id="unread-count">—</span></button><p class="rail-note">The Plugin owns this view model. Filters stay local to the Workspace.</p></aside>
+        <aside class="filter-rail" aria-label="故事筛选"><span class="rail-label">筛选</span><button class="filter-button is-active" data-filter="all" type="button">全部 <span id="all-count">—</span></button><button class="filter-button" data-filter="unread" type="button">未读 <span id="unread-count">—</span></button><p class="rail-note">视图模型由插件持有，筛选只保存在工作区本地。</p></aside>
         <div class="ledger-column"><ol id="story-list" class="ledger-list" aria-live="polite"><li class="loading-row">正在读取保留内容…</li></ol><section id="empty" class="state-panel" hidden><span class="state-mark" aria-hidden="true">HN</span><h2 id="empty-title">还没有保留内容</h2><p id="empty-copy">首次刷新后，内容会保存在此设备上。</p><button id="empty-refresh" class="button button--primary" type="button">立即刷新</button></section></div>
       </div>
     </main>
   </div>
   <div id="scrim" class="scrim" hidden></div>
-  <aside id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden><header class="sheet-head"><div><p class="sheet-kicker">WORKSPACE SETTINGS</p><h2 id="sheet-title">刷新与历史</h2></div><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></header><form id="settings-form"><fieldset><legend>刷新策略</legend><label><input type="radio" name="policy" value="manual"><span>仅手动</span></label><label><input type="radio" name="policy" value="disabled"><span>停用刷新</span></label><label><input type="radio" name="policy" value="fixed"><span>固定间隔</span></label></fieldset><label class="select-field" for="interval">刷新间隔</label><select id="interval" name="intervalMinutes"><option value="15">每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440">每天</option></select><label class="select-field" for="retention">历史保留</label><select id="retention" name="retentionDays"><option value="7">7 天</option><option value="30">30 天</option><option value="90">90 天</option></select><div class="sheet-actions"><button id="cancel-settings" class="button" type="button">取消</button><button class="button button--primary" type="submit">保存</button></div></form></aside>
-  <aside id="detail-sheet" class="detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title" hidden><header class="detail-head"><div><p id="detail-context" class="sheet-kicker">Hacker News</p><h2 id="detail-title">Story</h2></div><button id="close-detail" class="icon-button" type="button" aria-label="关闭详情">×</button></header><div class="detail-body"><div id="detail-meta" class="detail-meta"></div><p id="detail-description" class="detail-description"></p><div class="detail-actions"><button id="detail-open" class="button button--primary" type="button">打开原文</button><button id="detail-discussion" class="button" type="button">打开讨论</button></div></div></aside>
+  <aside id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden><header class="sheet-head"><div><h2 id="sheet-title">刷新与历史</h2></div><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></header><form id="settings-form"><fieldset><legend>刷新策略</legend><label><input type="radio" name="policy" value="manual"><span>仅手动</span></label><label><input type="radio" name="policy" value="disabled"><span>停用刷新</span></label><label><input type="radio" name="policy" value="fixed"><span>固定间隔</span></label></fieldset><label class="select-field" for="interval">刷新间隔</label><select id="interval" name="intervalMinutes"><option value="15">每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440">每天</option></select><label class="select-field" for="retention">历史保留</label><select id="retention" name="retentionDays"><option value="7">7 天</option><option value="30">30 天</option><option value="90">90 天</option></select><div class="sheet-actions"><button id="cancel-settings" class="button" type="button">取消</button><button class="button button--primary" type="submit">保存</button></div></form></aside>
+  <aside id="detail-sheet" class="detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title" hidden><header class="detail-head"><div><p id="detail-context">Hacker News</p><h2 id="detail-title">Story</h2></div><button id="close-detail" class="icon-button" type="button" aria-label="关闭详情">×</button></header><div class="detail-body"><div id="detail-meta" class="detail-meta"></div><p id="detail-description" class="detail-description"></p><div class="detail-actions"><button id="detail-open" class="button button--primary" type="button">打开原文</button><button id="detail-discussion" class="button" type="button">打开讨论</button></div></div></aside>
 `;
 
 document.querySelector(".brand-copy span").id = "refresh-time";
@@ -83,15 +79,15 @@ function formatTime(value) {
 
 function showDetail(story, readOnly = false) {
   detailTrigger = document.activeElement;
-  $("#detail-context").textContent = readOnly ? "Hacker News / History" : "Hacker News";
+  $("#detail-context").textContent = readOnly ? "Hacker News · 历史快照" : "Hacker News";
   $("#detail-title").textContent = story.title;
   $("#detail-meta").replaceChildren(...[
     story.domain || "news.ycombinator.com",
-    `${story.points} points`,
-    `by ${story.author}`,
-    `${story.comments} comments`,
+    `${story.points} 分`,
+    story.author,
+    `${story.comments} 评论`,
   ].map((value) => { const item = document.createElement("span"); item.textContent = value; return item; }));
-  $("#detail-description").textContent = story.createdAt ? `Collected ${new Date(story.createdAt).toLocaleString("zh-CN")}.` : "Retained story record.";
+  $("#detail-description").textContent = story.createdAt ? `采集于 ${new Date(story.createdAt).toLocaleString("zh-CN")}。` : "已保留的故事记录。";
   $("#detail-open").onclick = () => window.open(story.url, "_blank", "noopener");
   $("#detail-discussion").hidden = !story.discussionUrl;
   $("#detail-discussion").onclick = () => window.open(story.discussionUrl, "_blank", "noopener");
@@ -135,12 +131,12 @@ function storyRow(story, readOnly = false) {
   domain.textContent = story.domain || "news.ycombinator.com";
   const meta = document.createElement("div");
   meta.className = "row-meta";
-  meta.textContent = `${story.points} points · by ${story.author} · ${story.read ? "已读" : "未读"}`;
+  meta.textContent = `${story.points} 分 · ${story.author} · ${story.read ? "已读" : "未读"}`;
   content.append(title, domain, meta);
   const comments = document.createElement("button");
   comments.className = "row-affordance";
   comments.type = "button";
-  comments.textContent = `${story.comments} comments`;
+  comments.textContent = `${story.comments} 评论`;
   comments.onclick = () => window.open(story.discussionUrl, "_blank", "noopener");
   item.append(rank, content, comments);
   return item;

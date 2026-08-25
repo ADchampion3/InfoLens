@@ -10,7 +10,7 @@ const root = path.resolve(import.meta.dirname, "..");
 async function startRuntime() {
   const child = spawn(process.execPath, [path.join(root, "packages/plugin-runtime/src/server.mjs")], {
     cwd: root,
-    env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_RUNTIME_PORT: "0", INFOLENS_APPLICATION_SESSION_ID: "plugin-sdk-browser-route-test-session" },
+    env: { ...process.env, INFOLENS_PROJECT_ROOT: root, INFOLENS_RUNTIME_PREVIEW: "1", INFOLENS_RUNTIME_PORT: "0", INFOLENS_APPLICATION_SESSION_ID: "plugin-sdk-browser-route-test-session" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const lines = readline.createInterface({ input: child.stdout });

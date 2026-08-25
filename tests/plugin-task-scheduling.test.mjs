@@ -43,8 +43,30 @@ test("task failures release permits and leave sibling plugins operational",async
   const queue=new SharedTaskQueue({publicLimit:1});const failing=queue.submit({pluginId:"failing",resource:"PUBLIC",run:async()=>{throw new Error("source failed")}});const sibling=queue.submit({pluginId:"sibling",resource:"PUBLIC",run:async()=>"healthy"});await assert.rejects(failing,/source failed/);assert.equal(await sibling,"healthy");assert.deepEqual(queue.snapshot().active,{PUBLIC:0,BROWSER:0});
 });
 
+test("plugin task records distinguish failed results from interrupted shutdowns", async () => {
+  const failedQueue = new SharedTaskQueue();
+  const failed = new PluginTaskManager("failed-result", failedQueue, async () => {});
+  failed.register("refresh", async () => ({ ok: false, message: "source unavailable" }));
+  await failed.enqueue("refresh");
+  assert.equal(failed.snapshot()[0].state, "failed");
+  assert.equal(failed.snapshot()[0].failure.message, "source unavailable");
+
+  const interruptedQueue = new SharedTaskQueue();
+  const interrupted = new PluginTaskManager("interrupted", interruptedQueue, async () => {});
+  interrupted.register("refresh", async (_input, { signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  }));
+  const running = interrupted.enqueue("refresh");
+  await tick();
+  const stopping = interrupted.stop({ preserveInterrupted: true });
+  await assert.rejects(running, (error) => error.code === "TASK_CANCELLED");
+  await stopping;
+  assert.equal(interrupted.snapshot()[0].state, "interrupted");
+  assert.equal(interrupted.snapshot()[0].outcome.code, "RUNTIME_RESTARTED");
+});
+
 async function startRuntime(dataRoot,stateFile){
-  const child=spawn(process.execPath,[path.join(root,"packages/plugin-runtime/src/server.mjs")],{cwd:root,env:{...process.env,INFOLENS_PROJECT_ROOT:root,INFOLENS_PLUGIN_DATA_ROOT:dataRoot,INFOLENS_BUNDLED_OPENCLI_ROOT:mockOpenCli,INFOLENS_TEST_OPENCLI_STATE:stateFile,INFOLENS_RUNTIME_PORT:"0",INFOLENS_APPLICATION_SESSION_ID:RUNTIME_TOKEN},stdio:["pipe","pipe","pipe"]});
+  const child=spawn(process.execPath,[path.join(root,"packages/plugin-runtime/src/server.mjs")],{cwd:root,env:{...process.env,INFOLENS_PROJECT_ROOT:root,INFOLENS_RUNTIME_PREVIEW:"1",INFOLENS_PLUGIN_DATA_ROOT:dataRoot,INFOLENS_BUNDLED_OPENCLI_ROOT:mockOpenCli,INFOLENS_TEST_OPENCLI_STATE:stateFile,INFOLENS_RUNTIME_PORT:"0",INFOLENS_APPLICATION_SESSION_ID:RUNTIME_TOKEN},stdio:["pipe","pipe","pipe"]});
   const lines=readline.createInterface({input:child.stdout});return new Promise((resolve,reject)=>{const errors=[];child.stderr.on("data",(chunk)=>errors.push(chunk));child.once("error",reject);const timeout=setTimeout(()=>reject(new Error(`Runtime start timed out: ${Buffer.concat(errors).toString()}`)),5000);lines.on("line",(line)=>{const message=JSON.parse(line);if(message.type==="runtime-ready"){clearTimeout(timeout);resolve({child,message})}})});
 }
 async function stopRuntime(child){if(child.exitCode!==null)return;child.stdin.write("shutdown\n");await new Promise((resolve)=>child.once("exit",resolve))}

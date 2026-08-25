@@ -44,14 +44,14 @@ function workspaceApiUrl(route) {
   try { base = new URL(apiBaseUrl); } catch { throw new TypeError("Plugin API base URL is invalid"); }
   const workspaceOrigin = globalThis.location?.origin;
   if (workspaceOrigin && workspaceOrigin !== "null" && base.origin !== workspaceOrigin) throw new TypeError("Plugin API base URL must share the Workspace origin");
-  const expectedPath = `/plugins/${encodeURIComponent(pluginId)}/api/`;
+  const expectedPath = `/api/v1/plugins/${encodeURIComponent(pluginId)}/api/`;
   const basePath = base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`;
   if (basePath !== expectedPath) throw new TypeError("Plugin API base URL is outside the calling Plugin boundary");
 
   const rawRoute = String(route);
   let target;
   try {
-    if (/^\/plugins\//i.test(rawRoute)) target = new URL(rawRoute, base);
+    if (/^\/api\/v1\//i.test(rawRoute) || /^\/plugins\//i.test(rawRoute)) target = new URL(rawRoute, base);
     else if (/^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(rawRoute) || /^[a-z][a-z\d+.-]*:/i.test(rawRoute)) target = new URL(rawRoute);
     else target = new URL(rawRoute.replace(/^\/+/, ""), base);
   } catch { throw new TypeError("Plugin export route is invalid"); }
@@ -179,7 +179,7 @@ export async function copyDownloadable(route) {
 }
 
 export function pluginHealthUrl(origin, pluginId) {
-  return joinUrl(origin, `/plugins/${encodeURIComponent(pluginId)}/health`);
+  return joinUrl(origin, `/api/v1/plugins/${encodeURIComponent(pluginId)}/health`);
 }
 
 export function pluginWorkspaceUrl(origin, pluginId) {
@@ -188,7 +188,7 @@ export function pluginWorkspaceUrl(origin, pluginId) {
 
 export function pluginApiUrl(origin, pluginId, route = "") {
   const suffix = route.replace(/^\/+/, "");
-  return joinUrl(origin, `/plugins/${encodeURIComponent(pluginId)}/api/${suffix}`);
+  return joinUrl(origin, `/api/v1/plugins/${encodeURIComponent(pluginId)}/api/${suffix}`);
 }
 
 export function workspaceRuntimeConfig(location = globalThis.location) {
@@ -198,7 +198,21 @@ export function workspaceRuntimeConfig(location = globalThis.location) {
   if (!pluginId || !apiBaseUrl) {
     throw new Error("Workspace runtime configuration requires pluginId and apiBaseUrl");
   }
-  return { pluginId, apiBaseUrl };
+  let capabilities = {};
+  const encodedCapabilities = parameters.get("capabilities");
+  if (encodedCapabilities) {
+    try {
+      const value = JSON.parse(encodedCapabilities);
+      if (value && typeof value === "object" && !Array.isArray(value)) capabilities = value;
+    } catch {}
+  }
+  return { pluginId, apiBaseUrl, capabilities };
+}
+
+export function workspaceCapability(name, location = globalThis.location) {
+  if (typeof name !== "string" || !name.trim()) throw new TypeError("Capability name is required");
+  const value = workspaceRuntimeConfig(location).capabilities?.[name];
+  return value && typeof value === "object" ? value : { granted: false, requested: false, required: false };
 }
 
 export function workspaceTheme(location = globalThis.location) {

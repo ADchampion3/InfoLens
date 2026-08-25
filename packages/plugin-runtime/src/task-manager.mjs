@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { redactSensitiveText } from "./redaction.mjs";
 
 export class TaskCancelledError extends Error {
   constructor(message, outcome = "uncertain") {
@@ -146,7 +149,7 @@ export class SharedTaskQueue {
 }
 
 export class PluginTaskManager {
-  constructor(pluginId, queue, onEvent, { diagnostic = false, registrations = { tasks: [], schedules: [] } } = {}) {
+  constructor(pluginId, queue, onEvent, { diagnostic = false, registrations = { tasks: [], schedules: [] }, statePath } = {}) {
     this.pluginId = pluginId;
     this.queue = queue;
     this.onEvent = onEvent;
@@ -156,7 +159,77 @@ export class PluginTaskManager {
     this.handlers = new Map();
     this.pending = new Map();
     this.schedules = new Set();
+    this.records = [];
+    this.interruptedOperations = new Set();
+    this.statePath = statePath;
+    this.writes = Promise.resolve();
     this.stopped = false;
+  }
+
+  async load() {
+    if (!this.statePath) return;
+    try {
+      const value = JSON.parse(await readFile(this.statePath, "utf8"));
+      this.records = (Array.isArray(value.records) ? value.records.map((record) => normalizeTaskRecord(record, this.pluginId)).filter(Boolean) : []).slice(-200);
+      let changed = false;
+      for (const record of this.records) {
+        if (!["queued", "running"].includes(record.state)) continue;
+        const timestamp = new Date().toISOString();
+        record.state = "interrupted";
+        record.completedAt = timestamp;
+        record.updatedAt = timestamp;
+        record.outcome = { status: "interrupted", code: "RUNTIME_RESTARTED", message: "Plugin Runtime restarted before the task completed", timestamp };
+        this.interruptedOperations.add(record.operationId);
+        changed = true;
+      }
+      if (changed) await this.persist();
+    } catch (error) {
+      if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+    }
+  }
+
+  async persist() {
+    if (!this.statePath) return;
+    const value = JSON.stringify({ version: 1, pluginId: this.pluginId, records: this.records.slice(-200) }, null, 2);
+    this.writes = this.writes.then(async () => {
+      await mkdir(path.dirname(this.statePath), { recursive: true });
+      const temporary = `${this.statePath}.${process.pid}.${randomUUID()}.tmp`;
+      await writeFile(temporary, `${value}\n`, "utf8");
+      try { await rename(temporary, this.statePath); }
+      finally { await rm(temporary, { force: true }); }
+    });
+    await this.writes;
+  }
+
+  recordEvent(type, details = {}) {
+    const operationId = details.operationId;
+    if (!operationId) return;
+    const current = this.records.find((record) => record.operationId === operationId);
+    if (!current) return;
+    const timestamp = new Date().toISOString();
+    if (this.interruptedOperations.has(operationId) && !["task-interrupted"].includes(type)) {
+      current.updatedAt = timestamp;
+      void this.persist();
+      return;
+    }
+    if (type === "task-started") { current.state = "running"; current.startedAt ??= timestamp; current.attempts = current.attempts ?? 1; }
+    if (type === "task-retrying") { current.state = "running"; current.attempts = (current.attempts ?? 1) + 1; current.lastRetryAt = timestamp; }
+    if (type === "task-completed") {
+      const failed = details.result?.ok === false;
+      current.state = failed ? "failed" : "succeeded";
+      current.completedAt = timestamp;
+      if (failed) current.failure = {
+        code: typeof details.result?.code === "string" ? details.result.code : "REFRESH_FAILED",
+        message: redactSensitiveText(String(details.result?.message ?? details.result?.lastError ?? "Plugin task returned ok:false")),
+      };
+    }
+    if (type === "task-failed") { current.state = "failed"; current.completedAt = timestamp; current.failure = errorDetails(details.error); }
+    if (type === "task-cancelled") { current.state = "canceled"; current.completedAt = timestamp; current.outcome = details.outcome ?? "uncertain"; }
+    if (type === "task-interrupted") { current.state = "interrupted"; current.completedAt = timestamp; current.outcome = { status: "interrupted", code: "RUNTIME_RESTARTED", message: "Plugin Runtime restarted before the task completed", timestamp }; }
+    if (type === "task-coalesced") current.coalesced = true;
+    current.updatedAt = timestamp;
+    this.records = this.records.slice(-200);
+    void this.persist();
   }
 
   register(name, handler) {
@@ -197,6 +270,9 @@ export class PluginTaskManager {
     const key = `${name}:${options.coalesceKey ?? "default"}`;
     if (this.pending.has(key)) {
       const pending = this.pending.get(key);
+      const record = this.records.find((entry) => entry.operationId === pending.operationId);
+      if (record) record.coalesced = true;
+      void this.persist();
       void this.onEvent("task-coalesced", {
         task: name,
         reason: options.reason ?? "manual",
@@ -210,15 +286,32 @@ export class PluginTaskManager {
     const operationId = options.operationId ?? randomUUID();
     const correlation = { task: name, operationId, ...(options.batchId ? { batchId: options.batchId } : {}) };
     const queuedDetails = { ...correlation, reason };
+    this.records.push({ pluginId: this.pluginId, task: name, operationId, state: "queued", reason, createdAt: new Date().toISOString(), ...(options.batchId ? { batchId: options.batchId } : {}) });
+    void this.persist();
     void this.onEvent("task-queued", queuedDetails);
+    const retry = normalizeRetryOptions(options.retry);
     const execution = this.queue.submitTask({ pluginId: this.pluginId, run: async (signal) => {
+      this.recordEvent("task-started", queuedDetails);
       await this.onEvent("task-started", queuedDetails);
-      return handler(input, { signal, reason });
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          const result = await handler(input, { signal, reason, attempt });
+          if (!retry || result?.retryable !== true || attempt >= retry.maxAttempts) return result;
+          await this.retryDelay(retry, attempt, signal, queuedDetails);
+        } catch (error) {
+          if (!retry || error?.retryable !== true || attempt >= retry.maxAttempts) throw error;
+          await this.retryDelay(retry, attempt, signal, queuedDetails);
+        }
+      }
     } });
     const promise = execution.then(
-      async (result) => { await this.onEvent("task-completed", { ...correlation, result }); return result; },
+      async (result) => { this.recordEvent("task-completed", { ...correlation, result }); await this.onEvent("task-completed", { ...correlation, result }); return result; },
       async (error) => {
-        await this.onEvent(error?.code === "TASK_CANCELLED" ? "task-cancelled" : "task-failed", { ...correlation, error, outcome: error?.outcome });
+        const event = this.interruptedOperations.has(operationId)
+          ? "task-interrupted"
+          : error?.code === "TASK_CANCELLED" ? "task-cancelled" : "task-failed";
+        this.recordEvent(event, { ...correlation, error, outcome: error?.outcome });
+        await this.onEvent(event, { ...correlation, error, outcome: error?.outcome });
         throw error;
       },
     ).finally(() => this.pending.delete(key));
@@ -248,7 +341,7 @@ export class PluginTaskManager {
       ...(options.reason ? { reason: options.reason } : {}),
     });
     if (this.diagnostic) return () => {};
-    const enqueue = () => this.enqueue(name, options.input, { reason: options.reason ?? "schedule", coalesceKey: options.coalesceKey }).catch(() => {});
+    const enqueue = () => this.enqueue(name, options.input, { reason: options.reason ?? "schedule", coalesceKey: options.coalesceKey, retry: options.retry }).catch(() => {});
     const timer = setInterval(enqueue, options.intervalMs);
     timer.unref?.();
     this.schedules.add(timer);
@@ -256,15 +349,106 @@ export class PluginTaskManager {
     return () => { clearInterval(timer); this.schedules.delete(timer); };
   }
 
-  async stop() {
+  markInterrupted() {
+    const timestamp = new Date().toISOString();
+    for (const record of this.records) {
+      if (!(["queued", "running"].includes(record.state))) continue;
+      record.state = "interrupted";
+      record.completedAt = timestamp;
+      record.updatedAt = timestamp;
+      record.outcome = { status: "interrupted", code: "RUNTIME_RESTARTED", message: "Plugin Runtime stopped before the task completed", timestamp };
+      this.interruptedOperations.add(record.operationId);
+    }
+  }
+
+  async stop({ preserveInterrupted = false } = {}) {
     this.stopped = true;
     for (const timer of this.schedules) clearInterval(timer);
     this.schedules.clear();
+    if (preserveInterrupted) this.markInterrupted();
     this.queue.cancelPlugin(this.pluginId);
     await Promise.allSettled([...this.pending.values()].map(({ promise }) => promise));
+    if (preserveInterrupted) this.markInterrupted();
+    await this.persist();
+  }
+
+  async retryDelay(retry, attempt, signal, details) {
+    const delay = Math.min(retry.maxBackoffMs, retry.backoffMs * (retry.backoffMultiplier ** (attempt - 1)));
+    this.recordEvent("task-retrying", details);
+    await this.onEvent("task-retrying", { ...details, attempt, delayMs: delay });
+    if (!delay) return;
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      let timer;
+      const cleanup = () => {
+        signal.removeEventListener("abort", cancel);
+        clearTimeout(timer);
+      };
+      const cancel = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new TaskCancelledError("Plugin task retry was cancelled"));
+      };
+      const complete = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      timer = setTimeout(complete, delay);
+      if (signal.aborted) cancel();
+      else signal.addEventListener("abort", cancel, { once: true });
+    });
   }
 
   diagnosticSnapshot() {
     return { registrations: this.registrations, violations: [...this.diagnosticViolations] };
   }
+
+  snapshot() {
+    return this.records.map((record) => structuredClone(record)).reverse();
+  }
+}
+
+function normalizeRetryOptions(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const maxAttempts = Math.min(8, Math.max(1, Number(value.maxAttempts) || 1));
+  if (maxAttempts <= 1) return undefined;
+  return {
+    maxAttempts,
+    backoffMs: Math.max(0, Number(value.backoffMs) || 0),
+    maxBackoffMs: Math.max(0, Number(value.maxBackoffMs) || 30_000),
+    backoffMultiplier: Math.min(10, Math.max(1, Number(value.backoffMultiplier) || 2)),
+  };
+}
+
+function errorDetails(error) {
+  if (!error) return undefined;
+  return {
+    code: typeof error.code === "string" ? error.code : "PLUGIN_ERROR",
+    message: redactSensitiveText(String(error.message ?? error)),
+  };
+}
+
+function normalizeTaskRecord(value, pluginId) {
+  if (!value || typeof value !== "object" || value.pluginId !== pluginId || typeof value.task !== "string" || typeof value.operationId !== "string") return undefined;
+  const states = new Set(["queued", "running", "succeeded", "failed", "canceled", "interrupted"]);
+  if (!states.has(value.state)) return undefined;
+  return {
+    pluginId,
+    task: value.task,
+    operationId: value.operationId,
+    state: value.state,
+    ...(typeof value.reason === "string" ? { reason: value.reason.slice(0, 120) } : {}),
+    ...(typeof value.batchId === "string" ? { batchId: value.batchId } : {}),
+    ...(typeof value.createdAt === "string" ? { createdAt: value.createdAt } : { createdAt: new Date().toISOString() }),
+    ...(typeof value.startedAt === "string" ? { startedAt: value.startedAt } : {}),
+    ...(typeof value.completedAt === "string" ? { completedAt: value.completedAt } : {}),
+    ...(Number.isInteger(value.attempts) && value.attempts > 0 ? { attempts: value.attempts } : {}),
+    ...(value.coalesced === true ? { coalesced: true } : {}),
+    ...(value.failure && typeof value.failure === "object" ? { failure: errorDetails(value.failure) } : {}),
+    ...(value.outcome !== undefined ? { outcome: value.outcome } : {}),
+    ...(typeof value.updatedAt === "string" ? { updatedAt: value.updatedAt } : {}),
+  };
 }

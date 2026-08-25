@@ -8,6 +8,7 @@ coverage/
 .infolens-live/
 .infolens-dev/
 .hallmark/
+.impeccable/
 .scratch/
 release/
 .agents/*

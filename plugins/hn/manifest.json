@@ -5,6 +5,7 @@
   "icon": "web/dist/icon.png",
   "contractVersion": "2",
   "minHostVersion": "0.2.0",
+  "capabilities": { "clipboard": true, "file": true, "notification": true },
   "backend": {
     "entry": "backend/index.js"
   },

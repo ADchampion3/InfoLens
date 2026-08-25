@@ -64,7 +64,7 @@ export function OverviewView({ runtime, onOpenPlugin, onOpenBatch, onOpenDailySu
   useEffect(() => {
     let active = true;
     setSummaryState("loading");
-    runtimeRequest<DailySummaryAggregate>(runtime, "/runtime/daily-summary")
+    runtimeRequest<DailySummaryAggregate>(runtime, "/api/v1/daily-summary")
       .then((next) => { if (active) { setSummary(next); setSummaryState("ready"); } })
       .catch(() => { if (active) setSummaryState("error"); });
     return () => { active = false; };
@@ -74,7 +74,7 @@ export function OverviewView({ runtime, onOpenPlugin, onOpenBatch, onOpenDailySu
     if (!browserDependent.length) return;
     let active = true;
     setBridgeState("loading");
-    runtimeRequest<BrowserStatus>(runtime, "/runtime/browser-status")
+    runtimeRequest<BrowserStatus>(runtime, "/api/v1/browser-status")
       .then((next) => { if (active) { setBridge(next); setBridgeState("ready"); } })
       .catch(() => { if (active) setBridgeState("error"); });
     return () => { active = false; };

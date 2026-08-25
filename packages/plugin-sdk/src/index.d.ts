@@ -1,4 +1,6 @@
 export type OpenCliStrategy = "PUBLIC" | "COOKIE" | "INTERCEPT";
+export type PluginCapabilityName = "browser" | "clipboard" | "file" | "notification";
+export interface PluginCapabilityRequest { requested: boolean; required: boolean; granted?: boolean; }
 
 export interface OpenCliCommandMapping {
   adapter: "builtin" | string;
@@ -24,6 +26,7 @@ export interface PluginManifest {
   minHostVersion: string;
   backend: { entry: string };
   ui: { entry: string };
+  capabilities?: Partial<Record<PluginCapabilityName, boolean | { required?: boolean }>>;
   openCliAdapters: Record<string, OpenCliAdapterDeclaration>;
   openCliCommands: Record<string, OpenCliCommandMapping>;
 }
@@ -35,6 +38,12 @@ export interface PluginHealth {
   message?: string;
   dependencyState?: "connected" | "disconnected" | "login-required" | "unknown" | "not-required";
   dependencyWarning?: boolean;
+}
+
+export interface NotificationIntent {
+  title: string;
+  message: string;
+  level?: "info" | "success" | "warning" | "error";
 }
 
 export interface PluginLogger {
@@ -99,6 +108,7 @@ export interface PluginActivationContext {
   enqueue<Input = unknown, Output = unknown>(name: string, input: Input, options?: TaskOptions): Promise<Output>;
   schedule<Input = unknown>(name: string, options: ScheduleOptions<Input>): () => void;
   setHealth(health: PluginHealth): void;
+  notify(intent: NotificationIntent): { ok: true; notificationId: string };
   setRefreshOptions(provider: () => RefreshOptions): void;
   registerDailySummaryProvider(provider: DailySummaryProvider): void;
   readonly logger: PluginLogger;
@@ -171,7 +181,8 @@ export function copyDownloadable(route: string | URL): Promise<{ copied: true }>
 export function pluginHealthUrl(origin: string, pluginId: string): string;
 export function pluginWorkspaceUrl(origin: string, pluginId: string): string;
 export function pluginApiUrl(origin: string, pluginId: string, route?: string): string;
-export function workspaceRuntimeConfig(location?: Pick<Location, "search">): { pluginId: string; apiBaseUrl: string };
+export function workspaceRuntimeConfig(location?: Pick<Location, "search">): { pluginId: string; apiBaseUrl: string; capabilities: Record<string, PluginCapabilityRequest> };
+export function workspaceCapability(name: string, location?: Pick<Location, "search">): PluginCapabilityRequest;
 export type WorkspaceTheme = "light" | "dark";
 export function workspaceTheme(location?: Pick<Location, "search">): WorkspaceTheme;
 export function observeWorkspaceTheme(listener: (theme: WorkspaceTheme) => void, target?: Pick<Window, "addEventListener" | "removeEventListener">): () => void;

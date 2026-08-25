@@ -59,6 +59,7 @@ function startRuntime(temporaryRoot, environment = {}) {
     env: {
       ...process.env,
       INFOLENS_PROJECT_ROOT: root,
+      INFOLENS_RUNTIME_PREVIEW: "1",
       INFOLENS_PLUGINS_ROOT: path.join(temporaryRoot, "managed-plugins"),
       INFOLENS_PLUGIN_DATA_ROOT: path.join(temporaryRoot, "data", "plugins"),
       INFOLENS_HOST_STATE_PATH: path.join(temporaryRoot, "data", "host-state.json"),

@@ -34,20 +34,16 @@ function previewOrigin() {
 }
 
 async function getRuntimeInfo(): Promise<RuntimeInfo> {
-  if (window.infolens) {
-    const info = await window.infolens.getRuntimeInfo();
-    if (info) return info;
-    throw new Error("Plugin services are unavailable.");
-  }
-  const origin = previewOrigin();
-  const headers = new Headers();
-  if (origin && import.meta.env.VITE_INFOLENS_RUNTIME_TOKEN) {
-    headers.set("authorization", `Bearer ${import.meta.env.VITE_INFOLENS_RUNTIME_TOKEN}`);
-  }
-  const response = await fetch(origin ? `${origin}/runtime/info` : "/runtime-info.json", { headers });
-  const body = await readJsonResponse<RuntimeInfo>(response, "Plugin services are unavailable.");
+  const hostInfo = window.infolens ? await window.infolens.getRuntimeInfo() : undefined;
+  const origin = hostInfo?.origin ?? previewOrigin() ?? window.location.origin;
+  if (!origin || origin === "null") throw new Error("Plugin services are unavailable.");
+  const response = await fetch(`${origin}/api/v1/session/bootstrap`, { credentials: "include" });
+  const body = await readJsonResponse<{ origin: string }>(response, "Plugin services are unavailable.");
   if (!response.ok) throw new Error("Plugin services are unavailable.");
-  return body;
+  const infoResponse = await fetch(`${body.origin ?? origin}/api/v1/info`, { credentials: "include" });
+  const info = await readJsonResponse<RuntimeInfo>(infoResponse, "Plugin services are unavailable.");
+  if (!infoResponse.ok) throw new Error("Plugin services are unavailable.");
+  return info;
 }
 
 function browserStatusFromError(error: unknown): BrowserStatus | undefined {
@@ -69,7 +65,7 @@ const ERROR_GUIDANCE: Record<string, { explanation: string; action: string }> = 
   RUNTIME_RESTART_REQUIRED: { explanation: "Plugin Runtime could not finish the lifecycle operation safely.", action: "Allow Plugin Runtime to restart, then retry." },
 };
 
-function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: LogFilters; setFilters: (filters: LogFilters) => void; focusEntryId?: string; onNotice: (message: string) => void }) {
+function LogsView({ runtime, filters, setFilters, focusEntryId, onNotice }: { runtime?: RuntimeInfo; filters: LogFilters; setFilters: (filters: LogFilters) => void; focusEntryId?: string; onNotice: (message: string) => void }) {
   const { t, locale } = useLanguage();
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>();
@@ -94,6 +90,18 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
     operationId: filters.operationId,
     batchId: filters.batchId,
   }), [filters]);
+  const requestLogs = (cursor?: string) => {
+    if (!runtime) return Promise.reject(new Error("Plugin services are unavailable."));
+    const params = new URLSearchParams({ limit: "200" });
+    for (const source of requestFilters.sources) params.append("source", source);
+    for (const level of requestFilters.levels) params.append("level", level);
+    for (const [key, value] of Object.entries(requestFilters)) {
+      if (key === "sources" || key === "levels" || !value) continue;
+      params.set(key, String(value));
+    }
+    if (cursor) params.set("cursor", cursor);
+    return runtimeRequest<LogPage>(runtime, `/api/v1/logs?${params.toString()}`);
+  };
 
   useEffect(() => { entriesRef.current = entries; }, [entries]);
   useEffect(() => {
@@ -106,7 +114,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
     let active = true;
     setLoading(true);
     setError(undefined);
-    if (!window.infolens) {
+    if (!runtime) {
       setEntries([]);
       setCursor(null);
       setLoading(false);
@@ -115,7 +123,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
     pendingIdsRef.current.clear();
     setPendingCount(0);
     atNewestRef.current = true;
-    window.infolens.queryLogs({ filters: requestFilters }).then((page) => {
+    requestLogs().then((page) => {
       if (!active) return;
       setEntries(page.entries);
       setCursor(page.nextCursor);
@@ -125,7 +133,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
 
     const timer = window.setInterval(async () => {
       try {
-        const page = await window.infolens!.queryLogs({ filters: requestFilters });
+        const page = await requestLogs();
         if (!active) return;
         setLiveError(undefined);
         const visibleIds = new Set(entriesRef.current.map((entry) => entry.id));
@@ -147,12 +155,12 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
       }
     }, 2_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [requestFilters]);
+  }, [requestFilters, runtime?.origin]);
 
   const showNewest = async () => {
-    if (!window.infolens) return;
+    if (!runtime) return;
     try {
-      const page = await window.infolens.queryLogs({ filters: requestFilters });
+      const page = await requestLogs();
       setEntries(page.entries);
       setCursor(page.nextCursor);
       pendingIdsRef.current.clear();
@@ -166,11 +174,11 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
   };
 
   const loadOlder = async () => {
-    if (!window.infolens || !cursor) return;
+    if (!runtime || !cursor) return;
     setLoadingOlder(true);
     setError(undefined);
     try {
-      const page = await window.infolens.queryLogs({ filters: requestFilters, cursor });
+      const page = await requestLogs(cursor);
       setEntries((current) => [...current, ...page.entries]);
       setCursor(page.nextCursor);
     } catch (reason) {
@@ -191,6 +199,25 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
       onNotice(reason instanceof Error ? reason.message : t("Logs could not be shared."));
     } finally { setSharing(false); }
   };
+  const copyFiltered = async () => {
+    const page = await requestLogs();
+    const text = page.entries.map((entry) => JSON.stringify(entry)).join("\n");
+    if (window.infolens) await window.infolens.copyText(text);
+    else await navigator.clipboard.writeText(text);
+    return { count: page.entries.length };
+  };
+  const exportFiltered = async () => {
+    const page = await requestLogs();
+    const text = page.entries.map((entry) => JSON.stringify(entry)).join("\n");
+    const filename = `infolens-logs-${new Date().toISOString().slice(0, 10)}.jsonl`;
+    if (window.infolens) return { ...(await window.infolens.downloadText({ filename, text })), count: page.entries.length };
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([text], { type: "application/jsonl" }));
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    return { canceled: false, count: page.entries.length };
+  };
   const sources = [...new Set(["host", "runtime", ...filters.sources, ...entries.map((entry) => entry.source)])].sort();
 
   return (
@@ -204,7 +231,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
         <label className="log-search">{t("Keyword")}<input aria-label={t("Keyword")} type="search" value={filters.keyword} onChange={(event) => setFilters({ ...filters, keyword: event.target.value })} placeholder={t("Search messages")} /></label>
         <label className="operation-search">{t("Batch ID")}<input aria-label={t("Batch ID")} value={filters.batchId} onChange={(event) => setFilters({ ...filters, batchId: event.target.value })} /></label>
         <label className="operation-search">{t("Operation ID")}<input aria-label={t("Operation ID")} value={filters.operationId} onChange={(event) => setFilters({ ...filters, operationId: event.target.value })} /></label>
-        <div className="log-share-actions"><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.copyFilteredLogs(requestFilters), (count) => t("{count} filtered log entries copied", { count }))}><Copy size={15} />{t("Copy filtered")}</button><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.exportFilteredLogs(requestFilters), (count) => t("{count} log entries exported", { count }))}><Download size={15} />{t("Export JSONL")}</button></div>
+        <div className="log-share-actions"><button type="button" disabled={sharing || !runtime} onClick={() => share(copyFiltered, (count) => t("{count} filtered log entries copied", { count }))}><Copy size={15} />{t("Copy filtered")}</button><button type="button" disabled={sharing || !runtime} onClick={() => share(exportFiltered, (count) => t("{count} log entries exported", { count }))}><Download size={15} />{t("Export JSONL")}</button></div>
       </div>
       {pendingCount > 0 && <button className="new-logs-button" type="button" aria-label={`${pendingCount} ${t("new")} ${t("Logs")}; move to newest`} onClick={showNewest}>{pendingCount} {t("new")} {t(pendingCount === 1 ? "entry" : "entries")}</button>}
       {liveError && <div className="live-log-status" role="status">{t("Live updates paused: {value}", { value: liveError })}</div>}
@@ -224,7 +251,7 @@ function LogsView({ filters, setFilters, focusEntryId, onNotice }: { filters: Lo
                 <span className="log-source">{entry.source}</span>
                 <span className="log-message">{entry.message}</span>
               </button>
-              {expanded === entry.id && <div className="log-details"><dl><dt>ID</dt><dd>{entry.id}</dd><dt>{t("Canonical timestamp")}</dt><dd>{entry.timestamp}</dd><dt>{t("Severity")}</dt><dd>{t(entry.level)}</dd><dt>{t("Source")}</dt><dd>{entry.source}</dd><dt>{t("Session ID")}</dt><dd>{entry.sessionId}</dd>{entry.batchId && <><dt>{t("Batch ID")}</dt><dd className="operation-value"><span>{entry.batchId}</span><button type="button" onClick={() => setFilters({ ...filters, batchId: entry.batchId! })}>{t("Filter this Batch")}</button></dd></>}{entry.code && <><dt>{t("Code")}</dt><dd>{entry.code}</dd></>}{entry.operationId && <><dt>{t("Operation ID")}</dt><dd className="operation-value"><span>{entry.operationId}</span><button type="button" onClick={() => setFilters({ ...filters, operationId: entry.operationId! })}>{t("Filter this operation")}</button></dd></>}<dt>{t("Message")}</dt><dd>{entry.message}</dd></dl><div className="log-entry-actions"><button type="button" disabled={sharing || !window.infolens} onClick={() => share(() => window.infolens!.copyLogEntry(entry.id), () => t("Log entry copied"))}><Copy size={15} />{t("Copy entry")}</button></div>{entry.code && ERROR_GUIDANCE[entry.code] && <div className="log-guidance"><strong>{t(ERROR_GUIDANCE[entry.code].explanation)}</strong><span>{t(ERROR_GUIDANCE[entry.code].action)}</span></div>}</div>}
+              {expanded === entry.id && <div className="log-details"><dl><dt>ID</dt><dd>{entry.id}</dd><dt>{t("Canonical timestamp")}</dt><dd>{entry.timestamp}</dd><dt>{t("Severity")}</dt><dd>{t(entry.level)}</dd><dt>{t("Source")}</dt><dd>{entry.source}</dd><dt>{t("Session ID")}</dt><dd>{entry.sessionId}</dd>{entry.batchId && <><dt>{t("Batch ID")}</dt><dd className="operation-value"><span>{entry.batchId}</span><button type="button" onClick={() => setFilters({ ...filters, batchId: entry.batchId! })}>{t("Filter this Batch")}</button></dd></>}{entry.code && <><dt>{t("Code")}</dt><dd>{entry.code}</dd></>}{entry.operationId && <><dt>{t("Operation ID")}</dt><dd className="operation-value"><span>{entry.operationId}</span><button type="button" onClick={() => setFilters({ ...filters, operationId: entry.operationId! })}>{t("Filter this operation")}</button></dd></>}<dt>{t("Message")}</dt><dd>{entry.message}</dd></dl><div className="log-entry-actions"><button type="button" disabled={sharing || !runtime} onClick={() => share(async () => { if (window.infolens) await window.infolens.copyText(entry.message); else await navigator.clipboard.writeText(entry.message); return { count: 1 }; }, () => t("Log entry copied"))}><Copy size={15} />{t("Copy entry")}</button></div>{entry.code && ERROR_GUIDANCE[entry.code] && <div className="log-guidance"><strong>{t(ERROR_GUIDANCE[entry.code].explanation)}</strong><span>{t(ERROR_GUIDANCE[entry.code].action)}</span></div>}</div>}
             </div>
           ))}
           <div className="log-history-state">{cursor ? <button type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? t("Loading...") : t("Load older")}</button> : <span>{t("End of retained history")}</span>}</div>
@@ -287,7 +314,7 @@ function DailySummaryView({
     setLoading(true);
     setError(undefined);
     try {
-      const next = await runtimeRequest<DailySummaryAggregate>(runtime, "/runtime/daily-summary");
+      const next = await runtimeRequest<DailySummaryAggregate>(runtime, "/api/v1/daily-summary");
       const nextSelection = selectedPluginIds === undefined ? defaultDailySummarySelection(next) : preserveDailySummarySelection(next, selectedPluginIds);
       applyAggregate(next, nextSelection);
     } catch (reason) {
@@ -319,7 +346,7 @@ function DailySummaryView({
     setLoading(true);
     setError(undefined);
     try {
-      const next = await runtimeRequest<DailySummaryAggregate>(runtime, "/runtime/daily-summary");
+      const next = await runtimeRequest<DailySummaryAggregate>(runtime, "/api/v1/daily-summary");
       const nextSelection = preserveDailySummarySelection(next, selection);
       if (!nextSelection.size) {
         applyAggregate(next, nextSelection);
@@ -539,12 +566,12 @@ function BatchRefreshView({
   const runtimeOrigin = runtime.origin;
 
   const fetchTargets = async () => {
-    const response = await runtimeRequest<{ targets: BatchTarget[] }>(runtime, "/runtime/batches/targets");
+    const response = await runtimeRequest<{ targets: BatchTarget[] }>(runtime, "/api/v1/batches/targets");
     setTargets(response.targets);
   };
 
   const fetchHistory = async () => {
-    const response = await runtimeRequest<{ activeBatch?: BatchSummary; batches: BatchSummary[] }>(runtime, "/runtime/batches");
+    const response = await runtimeRequest<{ activeBatch?: BatchSummary; batches: BatchSummary[] }>(runtime, "/api/v1/batches");
     setHistory(response.batches);
     if (!initialBatchId && response.activeBatch) {
       setBatch(response.activeBatch);
@@ -553,7 +580,7 @@ function BatchRefreshView({
   };
 
   const fetchBatch = async (batchId: string) => {
-    const result = await runtimeRequest<BatchSummary>(runtime, `/runtime/batches/${encodeURIComponent(batchId)}`);
+    const result = await runtimeRequest<BatchSummary>(runtime, `/api/v1/batches/${encodeURIComponent(batchId)}`);
     setBatch(result);
   };
 
@@ -617,7 +644,7 @@ function BatchRefreshView({
         const refreshInput = target ? refreshInputFor(target, refreshInputs[pluginId]) : undefined;
         return { pluginId, ...(refreshInput ? { refreshInput } : {}) };
       });
-      const result = await runtimeRequest<BatchSummary & { batch?: BatchSummary }>(runtime, "/runtime/batches", {
+      const result = await runtimeRequest<BatchSummary & { batch?: BatchSummary }>(runtime, "/api/v1/batches", {
         method: "POST",
         body: JSON.stringify({ targets: selections }),
       });
@@ -635,7 +662,7 @@ function BatchRefreshView({
     if (!batch || !batchTerminal(batch) || !batch.counts.failed) return;
     setSubmitting(true);
     try {
-      const result = await runtimeRequest<BatchSummary & { batch?: BatchSummary }>(runtime, `/runtime/batches/${encodeURIComponent(batch.batchId)}/retry`, { method: "POST" });
+      const result = await runtimeRequest<BatchSummary & { batch?: BatchSummary }>(runtime, `/api/v1/batches/${encodeURIComponent(batch.batchId)}/retry`, { method: "POST" });
       const created = result.batch ?? result;
       setBatch(created);
       onBatchIdChange(created.batchId);
@@ -771,7 +798,7 @@ export function App() {
   useEffect(() => {
     if (status !== "ready" || !runtime || view.kind !== "settings" || !runtime.plugins.some((plugin) => plugin.browserDependent)) return;
     let active = true;
-    runtimeRequest<BrowserStatus>(runtime, "/runtime/browser-status")
+    runtimeRequest<BrowserStatus>(runtime, "/api/v1/browser-status")
       .then((next) => { if (active) setBrowserStatus(next); })
       .catch(() => {});
     return () => { active = false; };
@@ -787,11 +814,24 @@ export function App() {
   }, [status]);
 
   useEffect(() => {
+    if (status !== "ready" || !runtime?.daemon) return;
+    const source = new EventSource(`${runtime.origin}/api/v1/events`, { withCredentials: true });
+    const onDaemonEvent = (event: MessageEvent<string>) => {
+      try {
+        const value = JSON.parse(event.data) as { event?: string; title?: string; message?: string };
+        if (value.event === "notification-intent" && value.title && value.message) showNotice(`${value.title}: ${value.message}`);
+      } catch {}
+    };
+    source.addEventListener("daemon", onDaemonEvent);
+    return () => { source.removeEventListener("daemon", onDaemonEvent); source.close(); };
+  }, [status, runtime?.origin]);
+
+  useEffect(() => {
     if (status !== "ready" || !runtime) return;
     let active = true;
     const checkBatches = async () => {
       try {
-        const response = await runtimeRequest<{ activeBatch?: BatchSummary; batches: BatchSummary[] }>(runtime, "/runtime/batches");
+        const response = await runtimeRequest<{ activeBatch?: BatchSummary; batches: BatchSummary[] }>(runtime, "/api/v1/batches");
         if (!active) return;
         const batches = new Map(response.batches.map((batch) => [batch.batchId, batch]));
         if (response.activeBatch) batches.set(response.activeBatch.batchId, response.activeBatch);
@@ -823,19 +863,17 @@ export function App() {
     }
   }), []);
 
-  useEffect(() => window.infolens?.onMarketProgress((operation) => setMarketOperation(operation)), []);
-
   useEffect(() => {
-    if (view.kind !== "market" || !window.infolens) return;
+    if (view.kind !== "market" || !runtime) return;
     let active = true;
     setMarketLoading(true);
-    window.infolens.getMarketCatalog().then((catalog) => {
+    runtimeRequest<MarketCatalog>(runtime, "/api/v1/market/catalog").then((catalog) => {
       if (active) setMarketCatalog(catalog);
     }).catch((error) => {
       if (active) showNotice(error instanceof Error ? error.message : t("Market catalog is unavailable."));
     }).finally(() => { if (active) setMarketLoading(false); });
     return () => { active = false; };
-  }, [view.kind]);
+  }, [view.kind, runtime?.origin]);
 
   const { theme, actualTheme, changeTheme } = useTheme(runtime, setRuntime, iframeRef, view);
 
@@ -861,20 +899,20 @@ export function App() {
   const managed = runtime?.plugins.find((plugin) => plugin.id === managedKey);
   const rejected = runtime?.rejectedPlugins.find((plugin) => plugin.package === managedKey);
   const workspaceSrc = selected
-    ? `${selected.workspaceUrl}?pluginId=${encodeURIComponent(selected.id)}&apiBaseUrl=${encodeURIComponent(selected.apiBaseUrl)}&theme=${actualTheme}`
+    ? `${selected.workspaceUrl}?pluginId=${encodeURIComponent(selected.id)}&apiBaseUrl=${encodeURIComponent(selected.apiBaseUrl)}&capabilities=${encodeURIComponent(JSON.stringify(selected.capabilities ?? {}))}&theme=${actualTheme}`
     : undefined;
 
   const selectPlugin = async (plugin: RuntimePlugin) => {
     setView({ kind: "plugin", id: plugin.id });
     if (available(plugin) && runtime) {
-      await runtimeRequest(runtime, "/runtime/host-state", { method: "PATCH", body: JSON.stringify({ lastSelection: plugin.id }) }).catch(() => {});
+      await runtimeRequest(runtime, "/api/v1/host/state", { method: "PATCH", body: JSON.stringify({ lastSelection: plugin.id }) }).catch(() => {});
     }
   };
 
   const openBatchRefresh = async () => {
     if (!runtime) return;
     try {
-      const result = await runtimeRequest<{ activeBatch?: BatchSummary }>(runtime, "/runtime/batches");
+      const result = await runtimeRequest<{ activeBatch?: BatchSummary }>(runtime, "/api/v1/batches");
       if (result.activeBatch) observeBatch(result.activeBatch.batchId);
       setBatchId(result.activeBatch?.batchId);
       setView({ kind: "batch" });
@@ -893,7 +931,7 @@ export function App() {
     const sourcePath = window.infolens ? await window.infolens.selectPluginFolder() : window.prompt(t("Plugin folder path"));
     if (!sourcePath) return;
     await mutate(async () => {
-      const result = await runtimeRequest<{ pluginId: string }>(runtime, "/runtime/plugins/install", { method: "POST", body: JSON.stringify({ sourcePath }) });
+      const result = await runtimeRequest<{ pluginId: string }>(runtime, "/api/v1/plugins/install", { method: "POST", body: JSON.stringify({ sourcePath }) });
       setManagedKey(result.pluginId);
       setView({ kind: "plugins" });
     }, t("Plugin folder installed and enabled"));
@@ -904,42 +942,46 @@ export function App() {
     const archivePath = window.infolens ? await window.infolens.selectPluginArchive() : window.prompt(t("Plugin ZIP path"));
     if (!archivePath) return;
     await mutate(async () => {
-      const result = await runtimeRequest<{ pluginId: string }>(runtime, "/runtime/plugins/install-archive", { method: "POST", body: JSON.stringify({ archivePath }) });
+      const result = await runtimeRequest<{ pluginId: string }>(runtime, "/api/v1/plugins/install-archive", { method: "POST", body: JSON.stringify({ archivePath }) });
       setManagedKey(result.pluginId);
       setView({ kind: "plugins" });
     }, t("Plugin ZIP imported and enabled"));
   };
 
   const refreshMarket = async () => {
-    if (!window.infolens) return;
+    if (!runtime) return;
     setMarketRefreshing(true);
-    try { setMarketCatalog(await window.infolens.refreshMarketCatalog()); showNotice(t("Market catalog refreshed")); }
+    try {
+      await runtimeRequest(runtime, "/api/v1/market/refresh", { method: "POST" });
+      setMarketCatalog(await runtimeRequest<MarketCatalog>(runtime, "/api/v1/market/catalog"));
+      showNotice(t("Market catalog refreshed"));
+    }
     catch (error) {
-      await window.infolens.getMarketCatalog().then(setMarketCatalog).catch(() => {});
+      await runtimeRequest<MarketCatalog>(runtime, "/api/v1/market/catalog").then(setMarketCatalog).catch(() => {});
       showNotice(error instanceof Error ? error.message : t("Market refresh failed."));
     }
     finally { setMarketRefreshing(false); }
   };
 
   const installMarket = async (release: MarketRelease) => {
-    if (!window.infolens) return;
+    if (!runtime) return;
     try {
-      const result = await window.infolens.installMarketPlugin({ pluginId: release.pluginId, version: release.version });
-      setMarketOperation(await window.infolens.getMarketOperation(result.operationId));
+      const result = await runtimeRequest<{ operationId: string }>(runtime, "/api/v1/market/install", { method: "POST", body: JSON.stringify({ pluginId: release.pluginId, version: release.version }) });
+      setMarketOperation(await runtimeRequest<MarketOperation>(runtime, `/api/v1/market/operations/${encodeURIComponent(result.operationId)}`));
       await refreshInfo();
       showNotice(t("{name} installed and enabled", { name: release.name }));
     } catch (error) { showNotice(error instanceof Error ? error.message : t("Market installation failed.")); }
   };
 
   const cancelMarket = () => {
-    if (marketOperation && window.infolens) void window.infolens.cancelMarketInstall(marketOperation.operationId);
+    if (marketOperation && runtime) void runtimeRequest(runtime, `/api/v1/market/operations/${encodeURIComponent(marketOperation.operationId)}/cancel`, { method: "POST" });
   };
 
   const retryMarket = async () => {
-    if (!marketOperation || !window.infolens) return;
+    if (!marketOperation || !runtime) return;
     try {
-      const result = await window.infolens.retryMarketInstall(marketOperation.operationId);
-      setMarketOperation(await window.infolens.getMarketOperation(result.operationId));
+      const result = await runtimeRequest<{ operationId: string }>(runtime, `/api/v1/market/operations/${encodeURIComponent(marketOperation.operationId)}/retry`, { method: "POST" });
+      setMarketOperation(await runtimeRequest<MarketOperation>(runtime, `/api/v1/market/operations/${encodeURIComponent(result.operationId)}`));
       await refreshInfo();
       showNotice(t("{name} installed and enabled", { name: marketOperation.pluginId }));
     } catch (error) { showNotice(error instanceof Error ? error.message : t("Market retry failed.")); }
@@ -949,7 +991,7 @@ export function App() {
     if (!runtime) return;
     setBrowserAction("check");
     try {
-      setBrowserStatus(await runtimeRequest<BrowserStatus>(runtime, "/runtime/browser-status/check", { method: "POST" }));
+      setBrowserStatus(await runtimeRequest<BrowserStatus>(runtime, "/api/v1/browser-status/check", { method: "POST" }));
     } catch (error) {
       const failedStatus = browserStatusFromError(error);
       if (failedStatus) setBrowserStatus(failedStatus);
@@ -963,7 +1005,7 @@ export function App() {
     if (!runtime) return;
     setBrowserAction("reconnect");
     try {
-      setBrowserStatus(await runtimeRequest<BrowserStatus>(runtime, "/runtime/browser-status/reconnect", { method: "POST" }));
+      setBrowserStatus(await runtimeRequest<BrowserStatus>(runtime, "/api/v1/browser-status/reconnect", { method: "POST" }));
     } catch (error) {
       const failedStatus = browserStatusFromError(error);
       if (failedStatus) setBrowserStatus(failedStatus);
@@ -1042,11 +1084,11 @@ export function App() {
 
       <main className="main-area">
         {runtimeRestarting && <div className="restart-bar" role="status"><LoaderCircle className="spinner" size={15} /> {t("Restarting plugin services...")}</div>}
-        {view.kind === "logs" && <LogsView filters={logFilters} setFilters={setLogFilters} focusEntryId={focusedLogId} onNotice={showNotice} />}
+        {view.kind === "logs" && <LogsView runtime={runtime} filters={logFilters} setFilters={setLogFilters} focusEntryId={focusedLogId} onNotice={showNotice} />}
         {view.kind !== "logs" && status === "loading" && <div className="system-state" role="status"><LoaderCircle className="spinner" size={24} /><p>{message}</p></div>}
         {view.kind !== "logs" && status === "error" && <div className="system-state system-state--error" role="alert"><h1>{t("Plugin services unavailable")}</h1><p>{message}</p></div>}
         {status === "ready" && view.kind === "plugin" && selected && selected.state === "disabled" && (
-          <div className="system-state"><CircleOff size={28} /><h1>{selected.name} {t("is disabled")}</h1><button className="primary-button" onClick={() => runtime && mutate(() => runtimeRequest(runtime, `/runtime/plugins/${selected.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: true }) }), t("{name} enabled", { name: selected.name }))}>{t("Enable in Plugins")}</button></div>
+          <div className="system-state"><CircleOff size={28} /><h1>{selected.name} {t("is disabled")}</h1><button className="primary-button" onClick={() => runtime && mutate(() => runtimeRequest(runtime, `/api/v1/plugins/${selected.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: true }) }), t("{name} enabled", { name: selected.name }))}>{t("Enable in Plugins")}</button></div>
         )}
         {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? t("Plugin")} ${t("workspace")}`} allow="clipboard-write" />}
         {status === "ready" && view.kind === "overview" && runtime && <OverviewView runtime={runtime} onOpenPlugin={(plugin) => void selectPlugin(plugin)} onOpenBatch={() => void openBatchRefresh()} onOpenDailySummary={() => setView({ kind: "daily-summary" })} onOpenSettings={() => setView({ kind: "settings" })} />}
@@ -1063,7 +1105,7 @@ export function App() {
               </div>
               <div className="package-detail">
                 {managed?.provenance && <div className="package-provenance"><strong>{t("Origin")}: {managed.origin ?? managed.provenance.origin}</strong>{managed.releaseStatus && <span>{t("Release status")}: {t(managed.releaseStatus)}</span>}{managed.provenance.publisher && <span>{t("Publisher")}: {managed.provenance.publisher}</span>}{managed.provenance.expectedSha256 && <span className="path-value">SHA-256: {managed.provenance.expectedSha256}</span>}</div>}
-                {managed && <><div className="detail-title"><span className="detail-title-copy"><h2>{managed.name}</h2><p>{managed.id} · {managed.version}</p></span><label className="toggle"><input type="checkbox" checked={managed.enabled} onChange={(event) => mutate(() => runtimeRequest(runtime, `/runtime/plugins/${managed.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: event.target.checked }) }), event.target.checked ? t("{name} enabled", { name: managed.name }) : t("{name} disabled", { name: managed.name }))} /><span />{t("Enabled")}</label></div><dl className="package-facts"><dt>{t("State")}</dt><dd>{t(managed.state)}</dd><dt>{t("Package")}</dt><dd className="path-value">{managed.packagePath}</dd><dt>{t("Last successful refresh")}</dt><dd>{managed.statusSnapshot?.lastSuccessfulRefreshAt ?? t("Not yet recorded")}</dd>{managed.statusSnapshot?.failure && <><dt>{t("Latest failure")}</dt><dd className="failure-summary"><span>{managed.statusSnapshot.failure.code}: {managed.statusSnapshot.failure.message}</span><button type="button" onClick={() => openFailureLogs(managed.id, managed.statusSnapshot!.failure!)}>{t("View matching logs")}</button></dd></>}</dl><div className="detail-actions"><button onClick={() => mutate(async () => { const value = await runtimeRequest<{ diagnostics: string }>(runtime, `/runtime/plugins/${managed.id}/diagnostics`); if (window.infolens) await window.infolens.copyText(value.diagnostics); else await navigator.clipboard.writeText(value.diagnostics); }, t("Diagnostics copied"))}><Copy size={16} />{t("Copy diagnostics")}</button><button className="danger-button" onClick={() => setRemoveKey(managed.id)}><Trash2 size={16} />{t("Remove plugin")}</button></div></>}
+                {managed && <><div className="detail-title"><span className="detail-title-copy"><h2>{managed.name}</h2><p>{managed.id} · {managed.version}</p></span><label className="toggle"><input type="checkbox" checked={managed.enabled} onChange={(event) => mutate(() => runtimeRequest(runtime, `/api/v1/plugins/${managed.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: event.target.checked }) }), event.target.checked ? t("{name} enabled", { name: managed.name }) : t("{name} disabled", { name: managed.name }))} /><span />{t("Enabled")}</label></div><dl className="package-facts"><dt>{t("State")}</dt><dd>{t(managed.state)}</dd><dt>{t("Package")}</dt><dd className="path-value">{managed.packagePath}</dd><dt>{t("Last successful refresh")}</dt><dd>{managed.statusSnapshot?.lastSuccessfulRefreshAt ?? t("Not yet recorded")}</dd>{managed.statusSnapshot?.failure && <><dt>{t("Latest failure")}</dt><dd className="failure-summary"><span>{managed.statusSnapshot.failure.code}: {managed.statusSnapshot.failure.message}</span><button type="button" onClick={() => openFailureLogs(managed.id, managed.statusSnapshot!.failure!)}>{t("View matching logs")}</button></dd></>}</dl><div className="detail-actions"><button onClick={() => mutate(async () => { const value = await runtimeRequest<{ diagnostics: string }>(runtime, `/api/v1/plugins/${managed.id}/diagnostics`); if (window.infolens) await window.infolens.copyText(value.diagnostics); else await navigator.clipboard.writeText(value.diagnostics); }, t("Diagnostics copied"))}><Copy size={16} />{t("Copy diagnostics")}</button><button className="danger-button" onClick={() => setRemoveKey(managed.id)}><Trash2 size={16} />{t("Remove plugin")}</button></div></>}
                 {rejected && <><div className="detail-title"><span className="detail-title-copy"><h2>{rejected.name ?? rejected.package}</h2><p>{rejected.version ?? t("Invalid package")}</p></span><span className="incompatible">{t("Incompatible")}</span></div><div className="failure-panel"><strong>{rejected.code}</strong><p>{rejected.message}</p></div><dl className="package-facts"><dt>{t("Package")}</dt><dd className="path-value">{rejected.packagePath}</dd></dl><div className="detail-actions"><button className="danger-button" onClick={() => setRemoveKey(rejected.package)}><Trash2 size={16} />{t("Remove package")}</button></div></>}
               </div>
             </div>
@@ -1085,7 +1127,7 @@ export function App() {
         )}
       </main>
 
-      {removeKey && runtime && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="remove-title"><TriangleAlert className="dialog-symbol danger" size={26} /><h2 id="remove-title">{t("Remove plugin?")}</h2><p>{t("The package, Plugin-owned data, Adapter Scope, Host State entries, and retained logs will be permanently deleted.")}</p><div className="dialog-actions"><button onClick={() => setRemoveKey(undefined)}>{t("Cancel")}</button><button className="danger-button" onClick={() => mutate(async () => { if (window.infolens) await window.infolens.removePlugin(removeKey); else await runtimeRequest(runtime, `/runtime/plugins/${encodeURIComponent(removeKey)}/remove`, { method: "DELETE" }); setRemoveKey(undefined); setManagedKey(undefined); }, t("Plugin removed"))}>{t("Remove plugin")}</button></div></div></div>}
+      {removeKey && runtime && <div className="dialog-scrim"><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="remove-title"><TriangleAlert className="dialog-symbol danger" size={26} /><h2 id="remove-title">{t("Remove plugin?")}</h2><p>{t("The package, Plugin-owned data, Adapter Scope, Host State entries, and retained logs will be permanently deleted.")}</p><div className="dialog-actions"><button onClick={() => setRemoveKey(undefined)}>{t("Cancel")}</button><button className="danger-button" onClick={() => mutate(async () => { await runtimeRequest(runtime, `/api/v1/plugins/${encodeURIComponent(removeKey)}/remove`, { method: "DELETE" }); setRemoveKey(undefined); setManagedKey(undefined); }, t("Plugin removed"))}>{t("Remove plugin")}</button></div></div></div>}
       {toast && <div className="toast" role="status"><span>{toast.message}</span>{toast.batchId && <button type="button" onClick={() => { setBatchId(toast.batchId); setView({ kind: "batch" }); setToast(undefined); }}><ExternalLink size={14} />{toast.actionLabel ?? t("View results")}</button>}</div>}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
     </div>

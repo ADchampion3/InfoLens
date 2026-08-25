@@ -9,6 +9,9 @@
     "@infolens/release-metadata": "0.2.0",
     "semver": "^7.6.3"
   },
+  "bin": {
+    "infolens-daemon": "./bin/infolens-daemon.mjs"
+  },
   "exports": {
     "./contract": "./src/contract.mjs",
     "./opencli-adapter": "./src/opencli-adapter.mjs",
@@ -16,6 +19,7 @@
     "./workspace-diagnostics": "./src/workspace-diagnostics.mjs",
     "./daily-summary": "./src/daily-summary.mjs",
     "./server": "./src/server.mjs",
+    "./daemon-state": "./src/daemon-state.mjs",
     "./package.json": "./package.json"
   }
 }

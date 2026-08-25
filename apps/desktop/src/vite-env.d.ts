@@ -57,6 +57,8 @@ interface RuntimePlugin {
   packagePath: string;
   workspaceUrl: string;
   apiBaseUrl: string;
+  healthUrl?: string;
+  capabilities?: Record<"browser" | "clipboard" | "file" | "notification", { requested: boolean; required: boolean; granted?: boolean }>;
   statusSnapshot?: StatusSnapshot;
   failure?: { code: string; message: string; logId?: string; operationId?: string; batchId?: string; timestamp?: string };
   origin?: "market" | "local" | "bundled";
@@ -246,6 +248,7 @@ interface RuntimeInfo {
   type: "runtime-ready";
   origin: string;
   runtimeToken?: string;
+  daemon?: { state: string; loopback: boolean };
   plugins: RuntimePlugin[];
   rejectedPlugins: RejectedPlugin[];
   hostState: HostState;
@@ -296,26 +299,10 @@ interface LogQueryRequest {
 interface Window {
   infolens?: {
     getRuntimeInfo(): Promise<RuntimeInfo | undefined>;
-    getMarketCatalog(query?: string): Promise<MarketCatalog>;
-    refreshMarketCatalog(): Promise<MarketCatalog>;
-    installMarketPlugin(request: { pluginId: string; version: string }): Promise<{ operationId: string; result?: unknown }>;
-    cancelMarketInstall(operationId: string): Promise<boolean>;
-    getMarketOperation(operationId: string): Promise<MarketOperation | undefined>;
-    retryMarketInstall(operationId: string): Promise<{ operationId: string; result?: unknown }>;
-    queryLogs(request?: LogQueryRequest): Promise<LogPage>;
-    copyLogEntry(id: string): Promise<{ count: number }>;
-    copyFilteredLogs(filters?: Partial<LogFilters>): Promise<{ count: number }>;
-    exportFilteredLogs(filters?: Partial<LogFilters>): Promise<{ canceled: boolean; count: number }>;
     selectPluginFolder(): Promise<string | null>;
     selectPluginArchive(): Promise<string | null>;
     copyText(value: string): Promise<void>;
     downloadText(value: { filename: string; text: string }): Promise<{ canceled: boolean; filename?: string }>;
-    removePlugin(id: string): Promise<void>;
-    testReadClipboard(): Promise<string>;
-    testTerminateRuntime(): Promise<void>;
-    testWriteLog(message: string): Promise<LogEntry>;
-    testLogQueryCount(): Promise<number>;
     onRuntimeStatus(listener: (event: RuntimeStatusEvent) => void): () => void;
-    onMarketProgress(listener: (operation: MarketOperation) => void): () => void;
   };
 }

@@ -1,4 +1,4 @@
-/* Infolens workspace design tokens · Hallmark Workbench / Cobalt */
+/* Infolens workspace design tokens · Hallmark Workbench / Cobalt · design-system: design.md · designed-as-app */
 :root {
   --font-display: Bahnschrift, "Arial Narrow", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-body: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -19,9 +19,9 @@
   --text-lg: 1.25rem;
   --text-xl: 1.5rem;
   --text-display: clamp(1.75rem, 3.5vw, 2.75rem);
-  --radius-xs: 0.25rem;
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
+  --radius-xs: 0.2rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
   --rule-thin: 1px;
   --rule-thick: 2px;
   --dur-fast: 120ms;

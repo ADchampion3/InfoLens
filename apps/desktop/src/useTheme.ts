@@ -32,7 +32,7 @@ export function useTheme(
 
   const changeTheme = async (nextTheme: ThemePreference) => {
     if (!runtime) return;
-    const hostState = await runtimeRequest<HostState>(runtime, "/runtime/host-state", { method: "PATCH", body: JSON.stringify({ theme: nextTheme }) });
+    const hostState = await runtimeRequest<HostState>(runtime, "/api/v1/host/state", { method: "PATCH", body: JSON.stringify({ theme: nextTheme }) });
     onRuntimeChange({ ...runtime, hostState });
   };
 

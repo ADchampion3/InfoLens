@@ -126,7 +126,7 @@ const PUBLIC_RUNTIME_PATHS = new Set([
 ]);
 
 function runtimePath(pathname, pluginId) {
-  const pluginRoot = `/plugins/${encodeURIComponent(pluginId)}`;
+  const pluginRoot = `/api/v1/plugins/${encodeURIComponent(pluginId)}`;
   return PUBLIC_RUNTIME_PATHS.has(pathname) || pathname === `${pluginRoot}/health` || pathname === `${pluginRoot}/api` || pathname.startsWith(`${pluginRoot}/api/`);
 }
 
@@ -330,7 +330,7 @@ function previewUrls(ready, pluginId) {
     origin: ready.origin,
     workspaceUrl: workspaceUrl.toString(),
     apiBaseUrl: plugin.apiBaseUrl,
-    healthUrl: `${ready.origin}/plugins/${encodeURIComponent(pluginId)}/health`,
+    healthUrl: `${ready.origin}/api/v1/plugins/${encodeURIComponent(pluginId)}/health`,
     pluginId,
   };
 }
@@ -609,9 +609,9 @@ export function createPreviewSession({
           workspaceProxy.server.listen(0, "127.0.0.1", () => resolve(workspaceProxy.server.address()));
         });
         const proxyOrigin = `http://127.0.0.1:${address.port}`;
-        current.urls.workspaceUrl = `${proxyOrigin}/__infolens_workspace_dev__/${encodeURIComponent(pluginId)}/?pluginId=${encodeURIComponent(pluginId)}&apiBaseUrl=${encodeURIComponent(`${proxyOrigin}/plugins/${encodeURIComponent(pluginId)}/api/`)}`;
-        current.urls.apiBaseUrl = `${proxyOrigin}/plugins/${encodeURIComponent(pluginId)}/api/`;
-        current.urls.healthUrl = `${proxyOrigin}/plugins/${encodeURIComponent(pluginId)}/health`;
+        current.urls.workspaceUrl = `${proxyOrigin}/__infolens_workspace_dev__/${encodeURIComponent(pluginId)}/?pluginId=${encodeURIComponent(pluginId)}&apiBaseUrl=${encodeURIComponent(`${proxyOrigin}/api/v1/plugins/${encodeURIComponent(pluginId)}/api/`)}`;
+        current.urls.apiBaseUrl = `${proxyOrigin}/api/v1/plugins/${encodeURIComponent(pluginId)}/api/`;
+        current.urls.healthUrl = `${proxyOrigin}/api/v1/plugins/${encodeURIComponent(pluginId)}/health`;
         current.urls.origin = proxyOrigin;
       }
       await startWatcher();

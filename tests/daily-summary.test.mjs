@@ -73,6 +73,7 @@ async function startRuntime({ pluginsRoot, dataRoot, extraEnv = {} }) {
     env: {
       ...process.env,
       INFOLENS_PROJECT_ROOT: root,
+      INFOLENS_RUNTIME_PREVIEW: "1",
       INFOLENS_PLUGINS_ROOT: pluginsRoot,
       INFOLENS_PLUGIN_DATA_ROOT: dataRoot,
       INFOLENS_HOST_STATE_PATH: path.join(path.dirname(dataRoot), "host-state.json"),

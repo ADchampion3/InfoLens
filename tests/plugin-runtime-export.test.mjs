@@ -34,6 +34,7 @@ function startRuntime({ pluginsRoot, dataRoot }) {
     env: {
       ...process.env,
       INFOLENS_PROJECT_ROOT: root,
+      INFOLENS_RUNTIME_PREVIEW: "1",
       INFOLENS_PLUGINS_ROOT: pluginsRoot,
       INFOLENS_PLUGIN_DATA_ROOT: dataRoot,
       INFOLENS_BUNDLED_OPENCLI_ROOT: openCliRoot,

@@ -7,6 +7,7 @@ const POLICIES = new Set(["manual", "disabled", "fixed"]);
 const INTERVALS = new Set([15, 30, 60, 360, 720, 1440]);
 const RETENTION_DAYS = new Set([7, 30, 90]);
 const PLUGIN_VERSION = "0.3.0";
+const REFRESH_RETRY = Object.freeze({ maxAttempts: 3, backoffMs: 250, maxBackoffMs: 2_000, backoffMultiplier: 2 });
 
 function text(value, field) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Hacker News result has invalid ${field}`);
@@ -15,6 +16,10 @@ function text(value, field) {
 function count(value, field) {
   if (!Number.isInteger(value) || value < 0) throw new Error(`Hacker News result has invalid ${field}`);
   return value;
+}
+
+function retryable(error) {
+  return error?.retryable === true || ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "NETWORK_ERROR", "OPENCLI_NETWORK_ERROR"].includes(error?.code);
 }
 
 export function validateCollection(result) {
@@ -88,7 +93,12 @@ export async function activate(context) {
     cancelSchedule?.();
     cancelSchedule = undefined;
     const settings = store.settings();
-    if (settings.policy === "fixed") cancelSchedule = context.schedule("refresh", { intervalMs: settings.intervalMinutes * 60_000, reason: "schedule" });
+    if (settings.policy === "fixed") {
+      const lastSuccessfulRefresh = Date.parse(store.metadata().lastSuccessfulRefresh ?? "");
+      const intervalMs = settings.intervalMinutes * 60_000;
+      const runImmediately = !Number.isFinite(lastSuccessfulRefresh) || Date.now() - lastSuccessfulRefresh >= intervalMs;
+      cancelSchedule = context.schedule("refresh", { intervalMs, runImmediately, reason: "schedule", retry: REFRESH_RETRY });
+    }
   };
 
   context.task("refresh", async (_, task) => {
@@ -102,14 +112,14 @@ export async function activate(context) {
       store.recordFailure(message, new Date().toISOString());
       await context.logger.warn("collection-failed-retained-content-preserved", { message });
       updateHealth();
-      return { ok: false, ...summary() };
+      return { ok: false, retryable: retryable(error), ...summary() };
     }
   });
   context.route("GET", "/summary", summary);
   context.registerDailySummaryProvider((input) => dailySummary(storeFilename, input));
   context.route("POST", "/refresh", async () => {
     if (store.settings().policy === "disabled") return { ok: false, disabled: true, ...summary() };
-    return context.enqueue("refresh", undefined, { reason: "manual", coalesceKey: "collection" });
+    return context.enqueue("refresh", undefined, { reason: "manual", coalesceKey: "collection", retry: REFRESH_RETRY });
   });
   context.route("POST", "/read", ({ url }) => { store.markRead(url.searchParams.get("id"), url.searchParams.get("read") !== "false"); updateHealth(); return summary(); });
   context.route("GET", "/settings", () => store.settings());
