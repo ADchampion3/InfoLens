@@ -76,7 +76,7 @@ For a new Plugin, start with the [Plugin Development Guide](docs/plugin-developm
 npm run plugin -- init path\to\my-plugin --check --format text
 npm run plugin -- doctor path\to\my-plugin --format text
 npm run plugin -- preview path\to\my-plugin --format text
-npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.infolens-plugin
+npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.zip
 ```
 
 `validate` is the fast package-contract check. `doctor` exercises the real

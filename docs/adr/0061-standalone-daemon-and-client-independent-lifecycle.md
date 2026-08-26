@@ -14,7 +14,7 @@ The existing Plugin Runtime is promoted to the Infolens daemon. It owns the daem
 
 The daemon exposes the versioned `/api/v1` contract. Readiness and loopback health are public; business and administration routes require either a daemon Bearer credential or an HttpOnly browser session created through the local bootstrap route. Credential rotation changes only authentication material and never business state. Cross-origin clients require an explicit allowlist.
 
-Electron is a thin client. It may start or discover the daemon, observe bounded restart status, provide OS primitives such as file selection, clipboard, and native download dialogs, and attach the BrowserWindow to the daemon-served Host Web. Plugin business reads, task control, Market operations, diagnostics, lifecycle, and backup/restore cross the daemon HTTP boundary. Closing the BrowserWindow disconnects the client and does not stop the daemon.
+Electron is a thin client. It may start or discover the daemon, observe bounded restart status, provide OS primitives such as file selection, clipboard, and native download dialogs, and attach the BrowserWindow to the daemon-served Host Web. Plugin business reads, task control, Distribution operations, diagnostics, lifecycle, and backup/restore cross the daemon HTTP boundary. Closing the BrowserWindow disconnects the client and does not stop the daemon.
 
 Plugin Workspaces receive a URL-scoped runtime configuration and a narrow capability result. They do not receive Node, Electron, persistent credentials, or arbitrary native handles. A failed or incompatible Plugin is represented as unavailable while sibling Plugins and daemon readiness remain available.
 

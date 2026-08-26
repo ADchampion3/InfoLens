@@ -1,7 +1,7 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
-const { access, cp, mkdir, readdir, writeFile } = require("node:fs/promises");
+const { access, cp, mkdir, readdir, readFile, stat, writeFile } = require("node:fs/promises");
 const { isIP } = require("node:net");
 const path = require("node:path");
 const readline = require("node:readline");
@@ -10,6 +10,7 @@ const { runtimeProxyEnvironment } = require("./runtime-network.cjs");
 
 const projectRoot = path.resolve(__dirname, "../..");
 const bundledPluginsRoot = path.join(projectRoot, "plugins");
+const MAX_PLUGIN_ARCHIVE_BYTES = 128 * 1024 * 1024;
 if (process.env.INFOLENS_USER_DATA_ROOT) app.setPath("userData", path.resolve(process.env.INFOLENS_USER_DATA_ROOT));
 let runtimeProcess;
 let runtimeInfo;
@@ -21,6 +22,18 @@ let quitting = false;
 let restarting = false;
 let logService;
 const applicationSessionId = process.env.INFOLENS_APPLICATION_SESSION_ID || randomUUID();
+
+async function readPluginArchiveDigest(archivePath) {
+  let value;
+  try { value = await readFile(`${archivePath}.sha256`, "utf8"); }
+  catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+  const digest = value.trim().split(/\s+/u)[0];
+  if (!/^[0-9a-f]{64}$/iu.test(digest)) throw new Error("Plugin ZIP digest companion is invalid");
+  return digest.toLowerCase();
+}
 
 function isLoopbackOrigin(value) {
   if (typeof value !== "string" || value.length > 2048) return false;
@@ -306,23 +319,25 @@ ipcMain.handle("runtime:get-info", async () => {
     return runtimeInfo;
   }
 });
-ipcMain.handle("plugin:select-folder", async () => {
-  if (process.env.INFOLENS_TEST_CONTROL === "1" && process.env.INFOLENS_TEST_INSTALL_PATH) {
-    return path.resolve(process.env.INFOLENS_TEST_INSTALL_PATH);
-  }
-  const result = await dialog.showOpenDialog(mainWindow, { title: "Install plugin", properties: ["openDirectory"] });
-  return result.canceled ? null : result.filePaths[0];
-});
 ipcMain.handle("plugin:select-archive", async () => {
   if (process.env.INFOLENS_TEST_CONTROL === "1" && process.env.INFOLENS_TEST_IMPORT_ARCHIVE_PATH) {
-    return path.resolve(process.env.INFOLENS_TEST_IMPORT_ARCHIVE_PATH);
+    const archivePath = path.resolve(process.env.INFOLENS_TEST_IMPORT_ARCHIVE_PATH);
+    const details = await stat(archivePath);
+    if (!details.isFile() || details.size > MAX_PLUGIN_ARCHIVE_BYTES) throw new Error("Plugin ZIP is unavailable or exceeds the size limit");
+    const bytes = await readFile(archivePath);
+    return { fileName: path.basename(archivePath), data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), expectedSha256: await readPluginArchiveDigest(archivePath) };
   }
   const result = await dialog.showOpenDialog(mainWindow, {
     title: "Import plugin ZIP",
     properties: ["openFile"],
     filters: [{ name: "Plugin ZIP archives", extensions: ["zip"] }],
   });
-  return result.canceled ? null : result.filePaths[0];
+  if (result.canceled) return null;
+  const archivePath = result.filePaths[0];
+  const details = await stat(archivePath);
+  if (!details.isFile() || details.size > MAX_PLUGIN_ARCHIVE_BYTES) throw new Error("Plugin ZIP is unavailable or exceeds the size limit");
+  const bytes = await readFile(archivePath);
+  return { fileName: path.basename(archivePath), data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), expectedSha256: await readPluginArchiveDigest(archivePath) };
 });
 ipcMain.handle("clipboard:write-text", (_event, value) => { clipboard.writeText(String(value)); });
 ipcMain.handle("daily-summary:download", async (_event, value = {}) => {

@@ -121,8 +121,7 @@ npm run daemon -- stop
 | `npm run plugin -- doctor <path>` | Run isolated plugin lifecycle and workspace checks |
 | `npm run plugin -- preview <path>` | Preview a built workspace through an isolated Runtime |
 | `npm run plugin -- adapters list <path>` | Inspect bundled and provided OpenCLI adapters |
-| `npm run plugin -- pack <path> --out <directory>` | Create a validated plugin package |
-| `npm run plugin -- publish <path> --registry-root <directory> --approved-by <maintainer>` | Pack and publish an immutable Market release |
+| `npm run plugin -- pack <path> --out <path>.zip` | Create a validated Plugin ZIP, SHA-256 companion, and distribution description |
 
 For a focused test run, use Node's test runner directly:
 
@@ -203,9 +202,9 @@ installation, and arbitrary dependency installation are not part of the
 adapter workflow.
 
 For coding-agent work, use the project-owned [Infolens Plugin Author
-skill](.agents/skills/infolens-plugin-author/SKILL.md). It covers the Contract
+  skill](.agents/skills/infolens-plugin-author/SKILL.md). It covers the Contract
 Version 2 package boundary, Provided OpenCLI Adapters, author gates, preview,
-packing, and Market publication. When a new site command is required, load
+and local distribution artifacts. When a new site command is required, load
 `.agents/skills/opencli-usage/SKILL.md` first and then
 `.agents/skills/opencli-adapter-author/SKILL.md`; copy the verified command from
 the private OpenCLI development location into the Plugin's
@@ -217,13 +216,14 @@ create and check a package from the repository root:
 ```powershell
 npm run plugin -- init path\to\my-plugin --check --format text
 npm run plugin -- doctor path\to\my-plugin --format text
-npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.infolens-plugin
+npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.zip
 ```
 
 The scaffold is framework-neutral and does not add SDK dependencies. Its
 generated `validate`, `doctor`, `dev`, `preview`, and `pack` scripts call
-`infolens-plugin`; use them when the author CLI is available on `PATH`. The
-external package distribution workflow remains separate.
+`infolens-plugin`; use them when the author CLI is available on `PATH`. `pack`
+creates a deterministic ZIP beside the source package, plus `<artifact>.sha256`
+and `<artifact>.distribution.json` companions.
 
 ## Data and Privacy
 

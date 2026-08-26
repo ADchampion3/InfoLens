@@ -30,8 +30,7 @@ infolens-plugin doctor . --timeout 10000
 infolens-plugin dev .
 infolens-plugin preview . --format text
 infolens-plugin adapters list .
-infolens-plugin pack . --out ..\my-plugin.infolens-plugin
-infolens-plugin publish . --registry-root .\market-registry --approved-by "Infolens Maintainer"
+infolens-plugin pack . --out ..\my-plugin.zip
 ```
 
 在 Infolens 源码仓库中，SDK Package 尚未作为依赖安装前，使用
@@ -43,13 +42,13 @@ infolens-plugin publish . --registry-root .\market-registry --approved-by "Infol
 Mapping 和 Provided OpenCLI Adapter Scope，但不会导入或激活 Plugin Backend Module。
 `doctor` 包含这些检查，然后在临时 Plugin Runtime 中导入并激活真实 Backend，记录
 Route、Task 和 Schedule，检查 Plugin Health，运行清理流程，并遍历静态 Workspace
-Bundle Graph。`pack` 会把最终包内容过滤到唯一的 Staging Directory，在写出
-`adapter-integrity.json` 并通过 Atomic Rename 发布前运行完整的 `doctor` Gate。
-已有的输出路径会被拒绝。
+Bundle Graph。`pack` 会把最终包内容过滤到唯一的 Staging Directory，针对完全相同的
+Staged Content 运行完整的 `doctor` Gate，然后生成确定性的 ZIP、SHA-256 Companion
+和机器可读的 Distribution Description。已有的输出路径或 Companion 会被拒绝。
 
 这些命令是分层的：`validate` 是 Contract 子集，`doctor` 是生命周期和 Workspace
 检查的超集，`preview` 是前台 Author Loop，`pack` 是经过 Staging 的 `doctor` 加上
-完整性检查和发布。JSON 结果中的 Warning 和 Information Finding 不会导致命令失败；
+完整性检查和本地 Distribution Artifact 生成。JSON 结果中的 Warning 和 Information Finding 不会导致命令失败；
 Error Finding 会产生非零退出状态。自动化应依赖稳定字段 `ok`、`command`、
 `environment`、`checks` 和 `error.code`/`error.phase`/`error.checkId`。人类可读消息
 和解析后的文件系统路径属于诊断详情。
@@ -85,8 +84,8 @@ Development Scope（Windows 上使用 Junction 和 Hard Link）。`adapters list
    Workspace 为已构建的静态资源。
 4. **Gate**：按 `validate`、`adapters list`、`doctor`、`pack` 顺序执行。`preview`
    只用于 Runtime/API Smoke Loop，不作为 UI Test。
-5. **发布**：只在 Maintainer 批准的 Market Release 中使用 `publish`；普通本地开发
-   在 Packed Directory 处结束。
+5. **分发**：将 ZIP 与 `.sha256`、`.distribution.json` Companion 一起交给接收方，
+   或将 ZIP 放在可验证的 HTTPS URL 上。
 
 Coding-agent 使用 `.agents/skills/infolens-plugin-author/SKILL.md`。需要新建 Site
 Command 时，先加载 `.agents/skills/opencli-usage/SKILL.md`，再加载
@@ -529,7 +528,7 @@ npm run plugin -- validate .
 npm run plugin -- doctor . --timeout 10000
 npm run plugin -- adapters list .
 npm run plugin -- dev .
-npm run plugin -- pack . --out ..\my-plugin.infolens-plugin
+npm run plugin -- pack . --out ..\my-plugin.zip
 ```
 
 在已安装 SDK 的项目中，使用等价的 `infolens-plugin` Binary：
@@ -541,7 +540,7 @@ infolens-plugin validate .
 infolens-plugin doctor . --timeout 10000
 infolens-plugin adapters list .
 infolens-plugin dev .
-infolens-plugin pack . --out ..\my-plugin.infolens-plugin
+infolens-plugin pack . --out ..\my-plugin.zip
 ```
 
 作者 CLI 可用后，生成的 Package 提供简短的本地工作流：
@@ -651,48 +650,25 @@ Preview 会把前端 HTTP 和 WebSocket 请求代理到与隔离 Runtime 相同�
 `pack` 会在目标输出旁创建唯一的 Staging Directory，复制 Package 时排除
 `node_modules`、`.git`、`.infolens-dev` 和旧的 `adapter-integrity.json`，然后针对完全
 相同的 Staged Content 运行完整的 `doctor` Check。只有所有 Error-Level Check 通过后，
-才会写入新的 Adapter Integrity Metadata，并 Atomic Rename 到输出路径。
+才会生成确定性的 ZIP、SHA-256 Companion 和机器可读的 Distribution Description。
 
-输出必须在 Source Package 外部，且不能已经存在。它是带 `.infolens-plugin` 后缀的
-Directory，不是 Zip File。Warning 仍会显示，但不会阻止发布；Staging 失败后会被
-清理，不会发布不完整 Artifact。
+输出必须在 Source Package 外部，且不能已经存在。对于 `my-plugin.zip`，Companion
+分别是 `my-plugin.zip.sha256` 和 `my-plugin.zip.distribution.json`。Warning 仍会显示，
+但不会阻止 Artifact 生成；Staging 失败后会被清理，不会留下不完整 Artifact。
 
-### publish
+## 安装、替换与分发清单
 
-`publish` 是仅供 Maintainer 使用的 Market 操作。它会运行同样的 Staged `pack` Gate，
-创建确定性的 ZIP，并更新本地静态 Registry 根目录。使用 `--approved-by` 提供与
-Publisher 一致的审批人；Registry 会拒绝缺失或不匹配的审批记录。一个
-`pluginId/version` 组合只能发布一次，重新发布时必须提高 Plugin Version，并使用新的
-Registry 输出目录。
+当前 Host 支持本地 ZIP Archive 和带预期 SHA-256 的直接 HTTPS URL。在桌面应用中使用
+`Import ZIP` 或 `Install URL`。Host 会验证 Source，安全解压到受管理的 Plugin Directory，
+创建 Adapter Scope 并启用 Plugin。安装结果记录为 `local` 或 `url` Provenance，不依赖
+Catalog 或 Registry；复制后不会继续跟随原始 Source Directory。
 
-```powershell
-infolens-plugin publish . `
-  --registry-root .\market-registry `
-  --publisher "Infolens Maintainer" `
-  --approved-by "Infolens Maintainer" `
-  --license MIT `
-  --category General `
-  --platform windows `
-  --arch x64
-```
-
-本地 `pack` 输出是供 Host 安装的 Directory；`publish` 输出的是 Market Registry 使用
-的 ZIP Artifact，两者是不同的输出物。
-
-## 安装、替换与发布清单
-
-当前 Host 支持本地 Package Directory 和本地 ZIP Archive。在桌面应用中，选择
-`pack` 生成的 Directory，或使用 `Import ZIP` 导入确定性 Archive。Host 会验证选中的
-Package，将它复制或安全解压到受管理的 Plugin Directory，创建 Adapter Scope 并启用
-Plugin。Archive Import 会复用 Market Archive Safety Boundary，但仍记录为 `local`
-Provenance，不代表 Registry Approval。复制后，安装结果不会继续跟随原始 Source
-Directory。
-
-Package 是受信任代码，不是安全 Sandbox。安装相同 Plugin ID 的另一个 Package 前，
-必须先移除已有 Plugin。移除会停止 Task、调用 `deactivate`、删除受管理的 Package
-和 Plugin-owned Data、清理 Adapter Scope，并删除 Host State Entry。不要假设替换后
-Plugin Data 仍然存在；如果不兼容版本之间需要保留数据，请提供 Plugin-owned
-Export/Import。
+Package 是受信任代码，不是安全 Sandbox。已有 External Plugin ID 必须使用显式的
+Replace Operation；Bundled Plugin 不能由 Personal Plugin Distribution 替换。替换会快照
+Package、Plugin-owned Data、Adapter Scope、Metadata 和启用状态；Host 保留恰好一个完整的
+上一版本并提供 Rollback。如果更多不兼容版本之间需要保留数据，请提供 Plugin-owned
+Export/Import。移除会停止 Task、调用 `deactivate`、删除受管理的 Package、Plugin-owned
+Data、Adapter Scope、保留的 Revision 和 Host State Entry。
 
 把 Package 交给其他用户前：
 
@@ -701,8 +677,8 @@ Export/Import。
 3. 确保每个 OpenCLI Command 都已声明，并且每个 Provided Adapter 的 Identity、
    Version、Range 和实际 Registration 都匹配。
 4. 运行 `validate`、`doctor` 和 `adapters list`，检查所有 Error 和 Warning Check。
-5. 将 `pack` 输出到新的路径，并检查 `adapter-integrity.json`。
-6. 将打包后的 Directory 安装到干净的本地 Host Profile，验证刷新、失败保留、Settings
+5. 将 `pack` 输出到新的路径，并检查 ZIP、`.sha256` 和 `.distribution.json` Companion。
+6. 将 ZIP 导入到干净的本地 Host Profile，验证刷新、替换、Rollback、失败保留、Settings
    和清理流程。
 7. 对 `COOKIE` 或 `INTERCEPT`，单独验证真实 Browser Bridge 和登录状态。无凭据的
    `doctor` 不能代替这项实时信息源测试。

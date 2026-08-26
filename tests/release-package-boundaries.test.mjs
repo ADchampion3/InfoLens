@@ -22,7 +22,7 @@ test("packaged release contains the installed @infolens package boundaries", asy
   const boundaries = [
     ["plugin-runtime", "@infolens/plugin-runtime"],
     ["plugin-sdk", "@infolens/plugin-sdk"],
-    ["plugin-market", "@infolens/plugin-market"],
+    ["plugin-distribution", "@infolens/plugin-distribution"],
     ["plugin-workspace", "@infolens/plugin-workspace"],
     ["release-metadata", "@infolens/release-metadata"],
     ["bundled-opencli", "@infolens/bundled-opencli"],

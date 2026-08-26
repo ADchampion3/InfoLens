@@ -26,15 +26,14 @@ infolens-plugin doctor . --timeout 10000
 infolens-plugin dev .
 infolens-plugin preview . --format text
 infolens-plugin adapters list .
-infolens-plugin pack . --out ..\my-plugin.infolens-plugin
-infolens-plugin publish . --registry-root .\market-registry --approved-by "Infolens Maintainer"
+infolens-plugin pack . --out ..\my-plugin.zip
 ```
 
 Inside the Infolens source workspace, use `npm run plugin -- <command> ...` before the SDK package has been installed as a dependency. An independent project installs `@infolens/plugin-sdk` and uses its published dependency boundaries; it does not need the Infolens repository tree or relative imports into it.
 
-`validate` is the fast package-contract gate. It checks the Manifest, required files, command mappings, and Provided OpenCLI Adapter Scope without importing or activating the Plugin Backend Module. `doctor` includes those checks, then imports and activates the real Backend in a temporary Plugin Runtime, records routes, tasks, and schedules, checks Plugin Health, runs cleanup, and walks the static Workspace Bundle graph. `pack` filters the exact package contents into a unique staging directory and runs the complete `doctor` gate against that staged directory before writing `adapter-integrity.json` and publishing it by atomic rename. An existing output path is rejected.
+`validate` is the fast package-contract gate. It checks the Manifest, required files, command mappings, and Provided OpenCLI Adapter Scope without importing or activating the Plugin Backend Module. `doctor` includes those checks, then imports and activates the real Backend in a temporary Plugin Runtime, records routes, tasks, and schedules, checks Plugin Health, runs cleanup, and walks the static Workspace Bundle graph. `pack` filters the exact package contents into a unique staging directory and runs the complete `doctor` gate against that staged directory before writing a deterministic ZIP, a SHA-256 companion, and a machine-readable distribution description. An existing output path or companion is rejected.
 
-The commands are layered: `validate` is the contract subset, `doctor` is the lifecycle and Workspace superset, `preview` is the foreground author loop, and `pack` is a staged `doctor` plus integrity and publication. Warnings and informational findings are included in the JSON result but do not fail a command; error findings produce a nonzero exit status. The stable automation fields are `ok`, `command`, `environment`, `checks`, and `error.code`/`error.phase`/`error.checkId`. Human messages and resolved filesystem paths are diagnostic details.
+The commands are layered: `validate` is the contract subset, `doctor` is the lifecycle and Workspace superset, `preview` is the foreground author loop, and `pack` is a staged `doctor` plus integrity and local Distribution Artifact generation. Warnings and informational findings are included in the JSON result but do not fail a command; error findings produce a nonzero exit status. The stable automation fields are `ok`, `command`, `environment`, `checks`, and `error.code`/`error.phase`/`error.checkId`. Human messages and resolved filesystem paths are diagnostic details.
 
 All author commands report the resolved Plugin Contract Version, target Host version, and Bundled OpenCLI version with their logical source and, where available, a source path. `--target-host-version <semver>` changes only the Minimum Host Version comparison and reports `cli-option` as its source. It cannot change the supported Contract Version or the command capabilities. `--timeout <ms>` applies to each doctor lifecycle phase and defaults to 10 seconds; `pack` passes the same value to its staged doctor.
 
@@ -55,8 +54,8 @@ Use this order for a new or changed Plugin:
    the Plugin Store, and keep the Workspace as built static assets.
 4. **Gate**: run `validate`, `adapters list`, `doctor`, and `pack` in that order.
    Use `preview` only for a Runtime/API smoke loop; it is not a UI test.
-5. **Publish**: use `publish` only for a maintainer-approved Market release;
-   ordinary local development ends at the packed directory.
+5. **Distribute**: hand the ZIP together with its `.sha256` and
+   `.distribution.json` companions to the recipient or host it at an HTTPS URL.
 
 For coding-agent work, use the local
 `.agents/skills/infolens-plugin-author/SKILL.md`. When the collection branch
@@ -555,7 +554,7 @@ npm run plugin -- validate .
 npm run plugin -- doctor . --timeout 10000
 npm run plugin -- adapters list .
 npm run plugin -- dev .
-npm run plugin -- pack . --out ..\my-plugin.infolens-plugin
+npm run plugin -- pack . --out ..\my-plugin.zip
 ~~~
 
 From a project with the SDK installed, use the equivalent
@@ -568,7 +567,7 @@ infolens-plugin validate .
 infolens-plugin doctor . --timeout 10000
 infolens-plugin adapters list .
 infolens-plugin dev .
-infolens-plugin pack . --out ..\my-plugin.infolens-plugin
+infolens-plugin pack . --out ..\my-plugin.zip
 ~~~
 
 The generated package provides a short local workflow after the author CLI is
@@ -700,53 +699,35 @@ output, copies the package while excluding <code>node_modules</code>,
 <code>.git</code>, <code>.infolens-dev</code>, and any old
 <code>adapter-integrity.json</code>, then runs the complete <code>doctor</code>
 check against that exact staged content. It writes fresh adapter integrity
-metadata and atomically renames the staging directory to the output only
-after all error-level checks pass.
+metadata into the ZIP and produces the ZIP, its SHA-256 companion, and its
+machine-readable distribution description only after all error-level checks
+pass.
 
-The output must be outside the source package and must not already exist. It is
-a directory with an <code>.infolens-plugin</code> suffix, not a zip file.
-Warnings remain visible but do not prevent publication. Failed staging is
-cleaned up and does not publish a partial artifact.
+The output must be outside the source package and must not already exist. For
+`my-plugin.zip`, the companions are `my-plugin.zip.sha256` and
+`my-plugin.zip.distribution.json`. Warnings remain visible but do not prevent
+artifact creation. Failed staging is cleaned up and does not leave a partial
+artifact.
 
-### publish
+## Install, Replace, and Distribution Checklist
 
-`publish` is a maintainer-only Market operation. It runs the same staged
-`pack` gate, creates a deterministic ZIP, and updates a local static Registry
-root. Supply `--approved-by` with the declared publisher; the Registry rejects
-missing or mismatched approval records. A `pluginId/version` pair is immutable,
-so use a new Plugin version and a new Registry output when publishing again.
+The current Host accepts a local ZIP or a direct HTTPS URL with an expected
+SHA-256. In the desktop app, use <code>Import ZIP</code> or
+<code>Install URL</code>. The Host validates the source, safely extracts the
+archive into the managed Plugin Directory, creates its Adapter Scope, and
+enables it. Installation records <code>local</code> or <code>url</code>
+provenance and never depends on a catalog or Registry. Installation does not
+follow the original source directory after copying.
 
-```powershell
-infolens-plugin publish . `
-  --registry-root .\market-registry `
-  --publisher "Infolens Maintainer" `
-  --approved-by "Infolens Maintainer" `
-  --license MIT `
-  --category General `
-  --platform windows `
-  --arch x64
-```
-
-Local `pack` output is a directory for Host installation. `publish` produces
-the ZIP artifact used by the Market Registry; these are separate outputs.
-
-## Install, Replace, and Release Checklist
-
-The current Host supports both local package directories and local ZIP
-archives. In the desktop app, choose the directory produced by <code>pack</code>
-or use <code>Import ZIP</code> for a deterministic archive. The Host validates
-the selected package, copies or safely extracts it into the managed plugin
-directory, creates its Adapter Scope, and enables it. Archive imports reuse the
-Market archive safety boundary but remain <code>local</code> provenance and do
-not imply Registry approval. Installation does not follow the original source
-directory after copying.
-
-The package is trusted code, not a security sandbox. An existing plugin ID must
-be removed before another package with the same ID is installed. Removal stops
-tasks, calls <code>deactivate</code>, removes the managed package and
-plugin-owned data, cleans its Adapter Scope, and removes its Host State entry.
-Do not assume plugin data survives replacement; provide plugin-owned
-export/import if users need data across incompatible versions.
+The package is trusted code, not a security sandbox. An existing external
+plugin ID requires an explicit replacement operation; a Bundled Plugin cannot
+be replaced by Personal Plugin Distribution. Replacement snapshots the
+package, Plugin-owned data, Adapter Scope, metadata, and enabled state. The
+Host retains exactly one previous complete revision and offers Rollback;
+provide plugin-owned export/import if users need data across more incompatible
+versions. Removal stops tasks, calls <code>deactivate</code>, removes the
+managed package, plugin-owned data, Adapter Scope, retained revisions, and
+Host State entry.
 
 Before handing a package to another user:
 
@@ -757,10 +738,10 @@ Before handing a package to another user:
    matching identity, version, range, and actual registration.
 4. Run <code>validate</code>, <code>doctor</code>, and
    <code>adapters list</code> and inspect all error and warning checks.
-5. Run <code>pack</code> to a new output path and inspect
-   <code>adapter-integrity.json</code>.
-6. Install the packed directory into a clean local Host profile and exercise
-   refresh, failure-retention, settings, and cleanup paths.
+5. Run <code>pack</code> to a new output path and inspect the ZIP,
+   <code>.sha256</code>, and <code>.distribution.json</code> companions.
+6. Import the ZIP into a clean local Host profile and exercise refresh,
+   replacement, rollback, failure-retention, settings, and cleanup paths.
 7. For <code>COOKIE</code> or <code>INTERCEPT</code>, separately verify the real
    browser bridge and login state. Credential-free <code>doctor</code> cannot
    replace that live-source test.

@@ -2,7 +2,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("infolens", {
   getRuntimeInfo: () => ipcRenderer.invoke("runtime:get-info"),
-  selectPluginFolder: () => ipcRenderer.invoke("plugin:select-folder"),
   selectPluginArchive: () => ipcRenderer.invoke("plugin:select-archive"),
   copyText: (value) => ipcRenderer.invoke("clipboard:write-text", value),
   downloadText: (value) => ipcRenderer.invoke("daily-summary:download", value),

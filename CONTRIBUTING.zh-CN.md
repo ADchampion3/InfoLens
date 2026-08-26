@@ -71,7 +71,7 @@ npm test
 npm run plugin -- init path\to\my-plugin --check --format text
 npm run plugin -- doctor path\to\my-plugin --format text
 npm run plugin -- preview path\to\my-plugin --format text
-npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.infolens-plugin
+npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.zip
 ```
 
 `validate` 是快速的包契约检查。`doctor` 会在临时状态中运行真实 Backend 生命周期。

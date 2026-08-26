@@ -11,6 +11,7 @@ import { createReleaseManifest, verifyRelease } from "../scripts/verify-release.
 import { loadBundledOpenCli } from "../packages/plugin-runtime/src/opencli-adapter.mjs";
 import { diagnoseWorkspaceBundle } from "../packages/plugin-runtime/src/workspace-diagnostics.mjs";
 import { createPreviewSession, runWorkspaceBuild, workspaceBuildScript } from "../packages/plugin-sdk/src/preview.mjs";
+import { inspectZip } from "../packages/plugin-distribution/src/archive.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "packages", "plugin-sdk", "bin", "infolens-plugin.mjs");
@@ -84,7 +85,7 @@ async function copyPackageBoundary(projectRoot) {
   const entries = [
     ["packages/plugin-sdk", "node_modules/@infolens/plugin-sdk"],
     ["packages/plugin-runtime", "node_modules/@infolens/plugin-runtime"],
-    ["packages/plugin-market", "node_modules/@infolens/plugin-market"],
+    ["packages/plugin-distribution", "node_modules/@infolens/plugin-distribution"],
     ["packages/release-metadata", "node_modules/@infolens/release-metadata"],
     ["packages/plugin-workspace", "node_modules/@infolens/plugin-workspace"],
     ["resources/opencli", "node_modules/@infolens/bundled-opencli"],
@@ -130,7 +131,7 @@ test("init creates a doctor-ready Plugin and text output stays useful for author
     assert.match(help.stdout, /init <path>/);
     assert.match(help.stdout, /--format <json\|text>/);
     assert.match(help.stdout, /Omitted plugin paths default to the current directory/);
-    assert.match(help.stdout, /pack defaults to a sibling .*infolens-plugin path/);
+    assert.match(help.stdout, /pack defaults to a sibling .*\.zip path/);
 
     const packageRoot = path.join(temporaryRoot, "reading-notes");
     const initialized = await runCli(cli, root, ["init", packageRoot]);
@@ -180,7 +181,9 @@ test("init creates a doctor-ready Plugin and text output stays useful for author
     const scriptPack = await runNpmScript(packageRoot, "pack");
     assert.equal(scriptPack.code, 0, `${scriptPack.stdout}\n${scriptPack.stderr}`);
     assert.match(scriptPack.stdout, /pack: passed/);
-    assert.equal(await readdir(temporaryRoot).then((entries) => entries.includes("reading-notes.infolens-plugin")), true);
+    assert.equal(await readdir(temporaryRoot).then((entries) => entries.includes("reading-notes.zip")), true);
+    assert.equal(await readdir(temporaryRoot).then((entries) => entries.includes("reading-notes.zip.sha256")), true);
+    assert.equal(await readdir(temporaryRoot).then((entries) => entries.includes("reading-notes.zip.distribution.json")), true);
 
     const previewChild = spawn(process.execPath, [cli, "preview", packageRoot, "--format", "text", "--timeout", "5000"], {
       cwd: root,
@@ -665,18 +668,20 @@ test("official Plugins pass the author command matrix and an independent project
       assert(doctor.result.registrations);
       assert(doctor.result.workspace.visited.length > 0);
 
-      const output = path.join(temporaryRoot, `${id}.infolens-plugin`);
+      const output = path.join(temporaryRoot, `${id}.zip`);
       const packed = await runCli(cli, root, ["pack", packageRoot, "--out", output, "--timeout", "5000"]);
       assert.equal(packed.code, 0, `${id} pack failed: ${packed.result.error?.code ?? "unknown"}`);
       assert.equal(packed.result.ok, true);
-      const integrity = JSON.parse(await readFile(path.join(output, "adapter-integrity.json"), "utf8"));
+      const integrityEntry = inspectZip(await readFile(output)).entries.find(({ name }) => name === "adapter-integrity.json");
+      assert(integrityEntry, `${id} pack did not include adapter-integrity.json`);
+      const integrity = JSON.parse(integrityEntry.data.toString("utf8"));
       assert.equal(integrity.pluginId, id);
       if (id === "hn") {
-        const before = await readFile(path.join(output, "adapter-integrity.json"), "utf8");
+        const before = await readFile(output);
         const refused = await runCli(cli, root, ["pack", packageRoot, "--out", output, "--timeout", "5000"]);
         assert.notEqual(refused.code, 0);
         assert.equal(refused.result.error.code, "PACK_OUTPUT_EXISTS");
-        assert.equal(await readFile(path.join(output, "adapter-integrity.json"), "utf8"), before);
+        assert.deepEqual(await readFile(output), before);
       }
     }
 
@@ -779,7 +784,7 @@ test("doctor reports lifecycle failures and static Workspace findings through th
     assert.equal(warningOutcome.code, 0);
     assert(warningOutcome.result.checks.some((check) => check.code === "WORKSPACE_EXTERNAL_REFERENCE" && check.severity === "warning"));
     assert(warningOutcome.result.checks.some((check) => check.code === "WORKSPACE_DYNAMIC_REFERENCE" && check.severity === "warning"));
-    const warningOutput = path.join(temporaryRoot, "workspace-warning.infolens-plugin");
+    const warningOutput = path.join(temporaryRoot, "workspace-warning.zip");
     const warningPack = await runCli(cli, root, ["pack", warning, "--out", warningOutput, "--timeout", "1000"]);
     assert.equal(warningPack.code, 0);
     assert(warningPack.result.checks.some((check) => check.code === "WORKSPACE_EXTERNAL_REFERENCE" && check.severity === "warning"));
@@ -791,11 +796,11 @@ test("doctor reports lifecycle failures and static Workspace findings through th
     const missingOutcome = await runCli(cli, root, ["doctor", missing, "--timeout", "1000"]);
     assert.notEqual(missingOutcome.code, 0);
     assert.equal(missingOutcome.result.checks.filter((check) => check.code === "WORKSPACE_MISSING_DEPENDENCY").length, 2);
-    const missingOutput = path.join(temporaryRoot, "workspace-missing.infolens-plugin");
+    const missingOutput = path.join(temporaryRoot, "workspace-missing.zip");
     const missingPack = await runCli(cli, root, ["pack", missing, "--out", missingOutput, "--timeout", "1000"]);
     assert.notEqual(missingPack.code, 0);
     assert.equal(missingPack.result.checks.filter((check) => check.code === "WORKSPACE_MISSING_DEPENDENCY").length, 2);
-    await assert.rejects(readFile(path.join(missingOutput, "manifest.json")), (error) => error.code === "ENOENT");
+    await assert.rejects(readFile(missingOutput), (error) => error.code === "ENOENT");
 
     const stagedDependency = await createFixture(temporaryRoot, "staged-dependency", {
       backend: "import \"fixture-dependency\"; export async function activate(context) { context.setHealth({ state: \"ready\" }); }",
@@ -805,12 +810,12 @@ test("doctor reports lifecycle failures and static Workspace findings through th
     await writeFile(path.join(stagedDependency, "node_modules", "fixture-dependency", "index.mjs"), "export const present = true;\n", "utf8");
     const sourceValidation = await runCli(cli, root, ["validate", stagedDependency]);
     assert.equal(sourceValidation.code, 0);
-    const stagedOutput = path.join(temporaryRoot, "staged-dependency.infolens-plugin");
+    const stagedOutput = path.join(temporaryRoot, "staged-dependency.zip");
     const stagedPack = await runCli(cli, root, ["pack", stagedDependency, "--out", stagedOutput, "--timeout", "1000"]);
     assert.notEqual(stagedPack.code, 0);
     assert(failedCheck(stagedPack.result, "BACKEND_IMPORT_FAILED"));
-    assert.equal(await readdir(temporaryRoot).then((entries) => entries.some((entry) => entry.startsWith(".staged-dependency.infolens-plugin.stage-"))), false);
-    await assert.rejects(readFile(path.join(stagedOutput, "manifest.json")), (error) => error.code === "ENOENT");
+    assert.equal(await readdir(temporaryRoot).then((entries) => entries.some((entry) => entry.startsWith(".staged-dependency.zip.stage-"))), false);
+    await assert.rejects(readFile(stagedOutput), (error) => error.code === "ENOENT");
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

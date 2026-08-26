@@ -1,6 +1,6 @@
 # Plugin Distribution Market Boundary
 
-Status: accepted
+Status: superseded by [ADR 0062](0062-personal-plugin-distribution.md)
 
 Supersedes [ADR 0013](0013-fixed-directory-and-local-plugin-installation.md) only where it excludes a remote Registry and marketplace. The fixed Plugin Directory, explicit local installation, and existing Plugin lifecycle contracts remain in force.
 

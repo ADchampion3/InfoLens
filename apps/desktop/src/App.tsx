@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FileArchive, FolderPlus, ListChecks,
+  AlertCircle, CheckCircle2, CircleOff, Copy, Download, ExternalLink, FileArchive, ListChecks,
   LoaderCircle, RefreshCw, RotateCcw, ScrollText, Trash2, TriangleAlert,
 } from "lucide-react";
 import {
@@ -18,9 +18,8 @@ import { InstrumentRail, Lifecycle, sourceInitial } from "./components/Instrumen
 import { CommandPalette } from "./components/CommandPalette";
 import { OverviewView } from "./components/OverviewView";
 import { BridgePanel } from "./components/BridgePanel";
-import { MarketView } from "./components/MarketView";
 import type { CommandItem } from "./components/CommandPalette";
-import { readJsonResponse, runtimeRequest } from "./runtime-api";
+import { readJsonResponse, runtimeRequest, runtimeUpload } from "./runtime-api";
 import { useTheme } from "./useTheme";
 import type { HostView } from "./host-view";
 import { useLanguage } from "./i18n";
@@ -28,6 +27,7 @@ import type { Translate } from "./i18n";
 
 type Status = "loading" | "ready" | "error";
 type DailySummaryDeliveryMode = `${"facts" | "prompt" | "written"}:${"copy" | "download"}`;
+type LocalDistributionArchive = { fileName: string; body: Blob; expectedSha256?: string };
 
 function previewOrigin() {
   return new URLSearchParams(window.location.search).get("runtimeOrigin");
@@ -762,10 +762,7 @@ export function App() {
   const [logFilters, setLogFilters] = useState<LogFilters>(INITIAL_LOG_FILTERS);
   const [focusedLogId, setFocusedLogId] = useState<string>();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [marketCatalog, setMarketCatalog] = useState<MarketCatalog>();
-  const [marketLoading, setMarketLoading] = useState(false);
-  const [marketRefreshing, setMarketRefreshing] = useState(false);
-  const [marketOperation, setMarketOperation] = useState<MarketOperation>();
+  const [distributionOperation, setDistributionOperation] = useState<DistributionOperation>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const observedBatchIds = useRef(new Set<string>());
   const notifiedBatchIds = useRef(new Set<string>());
@@ -863,18 +860,6 @@ export function App() {
     }
   }), []);
 
-  useEffect(() => {
-    if (view.kind !== "market" || !runtime) return;
-    let active = true;
-    setMarketLoading(true);
-    runtimeRequest<MarketCatalog>(runtime, "/api/v1/market/catalog").then((catalog) => {
-      if (active) setMarketCatalog(catalog);
-    }).catch((error) => {
-      if (active) showNotice(error instanceof Error ? error.message : t("Market catalog is unavailable."));
-    }).finally(() => { if (active) setMarketLoading(false); });
-    return () => { active = false; };
-  }, [view.kind, runtime?.origin]);
-
   const { theme, actualTheme, changeTheme } = useTheme(runtime, setRuntime, iframeRef, view);
 
   useEffect(() => {
@@ -926,65 +911,126 @@ export function App() {
     catch (error) { showNotice(error instanceof Error ? error.message : t("Operation failed")); }
   };
 
-  const install = async () => {
-    if (!runtime) return;
-    const sourcePath = window.infolens ? await window.infolens.selectPluginFolder() : window.prompt(t("Plugin folder path"));
-    if (!sourcePath) return;
-    await mutate(async () => {
-      const result = await runtimeRequest<{ pluginId: string }>(runtime, "/api/v1/plugins/install", { method: "POST", body: JSON.stringify({ sourcePath }) });
-      setManagedKey(result.pluginId);
-      setView({ kind: "plugins" });
-    }, t("Plugin folder installed and enabled"));
+  const selectLocalArchive = async (): Promise<LocalDistributionArchive | undefined> => {
+    if (window.infolens) {
+      const selected = await window.infolens.selectPluginArchive();
+      return selected ? { fileName: selected.fileName, body: new Blob([selected.data], { type: "application/zip" }), expectedSha256: selected.expectedSha256 } : undefined;
+    }
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".zip,application/zip";
+      input.onchange = () => {
+        const file = input.files?.[0];
+        resolve(file ? { fileName: file.name, body: file } : undefined);
+      };
+      input.click();
+    });
+  };
+
+  const waitForDistribution = async (operationId: string) => {
+    if (!runtime) throw new Error(t("Plugin services are unavailable."));
+    let operation: DistributionOperation | undefined;
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      operation = await runtimeRequest<DistributionOperation>(runtime, `/api/v1/plugins/distribution/operations/${encodeURIComponent(operationId)}`);
+      setDistributionOperation(operation);
+      if (["completed", "failed", "cancelled"].includes(operation.state)) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+    if (!operation || !["completed", "failed", "cancelled"].includes(operation.state)) throw new Error(t("Distribution operation timed out."));
+    if (operation.state !== "completed") {
+      const failure = new Error(operation.error?.message ?? t("Plugin distribution failed."));
+      Object.assign(failure, { code: operation.error?.code });
+      throw failure;
+    }
+    return operation;
+  };
+
+  const startDistribution = async (intent: DistributionIntent, pluginId: string | undefined, source?: DistributionSource) => {
+    if (!runtime) throw new Error(t("Plugin services are unavailable."));
+    const operation = await runtimeRequest<DistributionOperation>(runtime, "/api/v1/plugins/distribution", {
+      method: "POST",
+      body: JSON.stringify({ intent, ...(pluginId ? { pluginId } : {}), ...(source ? { source } : {}) }),
+    });
+    setDistributionOperation(operation);
+    return waitForDistribution(operation.operationId);
+  };
+
+  const promptUrlSource = (): DistributionSource | undefined => {
+    const url = window.prompt(t("HTTPS Plugin ZIP URL"));
+    if (!url?.trim()) return undefined;
+    const expectedSha256 = window.prompt(t("Expected SHA-256 digest"));
+    if (!expectedSha256?.trim()) return undefined;
+    return { kind: "url", url: url.trim(), expectedSha256: expectedSha256.trim() };
   };
 
   const importArchive = async () => {
     if (!runtime) return;
-    const archivePath = window.infolens ? await window.infolens.selectPluginArchive() : window.prompt(t("Plugin ZIP path"));
-    if (!archivePath) return;
+    const archive = await selectLocalArchive();
+    if (!archive) return;
     await mutate(async () => {
-      const result = await runtimeRequest<{ pluginId: string }>(runtime, "/api/v1/plugins/install-archive", { method: "POST", body: JSON.stringify({ archivePath }) });
-      setManagedKey(result.pluginId);
+      const result = await runtimeUpload<{ operationId: string }>(runtime, "/api/v1/plugins/distribution/upload", archive.body, { "x-infolens-distribution-intent": "install", "x-infolens-distribution-file-name": encodeURIComponent(archive.fileName), ...(archive.expectedSha256 ? { "x-infolens-expected-sha256": archive.expectedSha256 } : {}) });
+      const operation = await waitForDistribution(result.operationId);
+      setManagedKey(operation.pluginId);
       setView({ kind: "plugins" });
     }, t("Plugin ZIP imported and enabled"));
   };
 
-  const refreshMarket = async () => {
+  const installFromUrl = async () => {
+    const source = promptUrlSource();
+    if (!source) return;
+    await mutate(async () => {
+      const operation = await startDistribution("install", undefined, source);
+      if (operation.pluginId) setManagedKey(operation.pluginId);
+      setView({ kind: "plugins" });
+    }, t("Plugin URL installed and enabled"));
+  };
+
+  const replacePluginFromArchive = async (pluginId: string) => {
     if (!runtime) return;
-    setMarketRefreshing(true);
-    try {
-      await runtimeRequest(runtime, "/api/v1/market/refresh", { method: "POST" });
-      setMarketCatalog(await runtimeRequest<MarketCatalog>(runtime, "/api/v1/market/catalog"));
-      showNotice(t("Market catalog refreshed"));
-    }
-    catch (error) {
-      await runtimeRequest<MarketCatalog>(runtime, "/api/v1/market/catalog").then(setMarketCatalog).catch(() => {});
-      showNotice(error instanceof Error ? error.message : t("Market refresh failed."));
-    }
-    finally { setMarketRefreshing(false); }
+    const archive = await selectLocalArchive();
+    if (!archive) return;
+    await mutate(async () => {
+      const result = await runtimeUpload<{ operationId: string }>(runtime, "/api/v1/plugins/distribution/upload", archive.body, { "x-infolens-distribution-intent": "replace", "x-infolens-plugin-id": pluginId, "x-infolens-distribution-file-name": encodeURIComponent(archive.fileName), ...(archive.expectedSha256 ? { "x-infolens-expected-sha256": archive.expectedSha256 } : {}) });
+      await waitForDistribution(result.operationId);
+      setManagedKey(pluginId);
+      setView({ kind: "plugins" });
+    }, t("Plugin replaced and enabled"));
   };
 
-  const installMarket = async (release: MarketRelease) => {
-    if (!runtime) return;
+  const replacePluginFromUrl = async (pluginId: string) => {
+    const source = promptUrlSource();
+    if (!source) return;
+    await mutate(async () => {
+      await startDistribution("replace", pluginId, source);
+      setManagedKey(pluginId);
+      setView({ kind: "plugins" });
+    }, t("Plugin replaced and enabled"));
+  };
+
+  const rollbackPlugin = async (pluginId: string) => {
+    await mutate(async () => {
+      await startDistribution("rollback", pluginId);
+      setManagedKey(pluginId);
+      setView({ kind: "plugins" });
+    }, t("Plugin rolled back"));
+  };
+
+  const cancelDistribution = async () => {
+    if (!runtime || !distributionOperation || ["completed", "failed", "cancelled"].includes(distributionOperation.state)) return;
+    const operation = await runtimeRequest<{ operation?: DistributionOperation }>(runtime, `/api/v1/plugins/distribution/operations/${encodeURIComponent(distributionOperation.operationId)}/cancel`, { method: "POST" }).catch(() => undefined);
+    if (operation?.operation) setDistributionOperation(operation.operation);
+  };
+
+  const retryDistribution = async () => {
+    if (!runtime || !distributionOperation) return;
     try {
-      const result = await runtimeRequest<{ operationId: string }>(runtime, "/api/v1/market/install", { method: "POST", body: JSON.stringify({ pluginId: release.pluginId, version: release.version }) });
-      setMarketOperation(await runtimeRequest<MarketOperation>(runtime, `/api/v1/market/operations/${encodeURIComponent(result.operationId)}`));
+      const next = await runtimeRequest<DistributionOperation>(runtime, `/api/v1/plugins/distribution/operations/${encodeURIComponent(distributionOperation.operationId)}/retry`, { method: "POST" });
+      setDistributionOperation(next);
+      await waitForDistribution(next.operationId);
       await refreshInfo();
-      showNotice(t("{name} installed and enabled", { name: release.name }));
-    } catch (error) { showNotice(error instanceof Error ? error.message : t("Market installation failed.")); }
-  };
-
-  const cancelMarket = () => {
-    if (marketOperation && runtime) void runtimeRequest(runtime, `/api/v1/market/operations/${encodeURIComponent(marketOperation.operationId)}/cancel`, { method: "POST" });
-  };
-
-  const retryMarket = async () => {
-    if (!marketOperation || !runtime) return;
-    try {
-      const result = await runtimeRequest<{ operationId: string }>(runtime, `/api/v1/market/operations/${encodeURIComponent(marketOperation.operationId)}/retry`, { method: "POST" });
-      setMarketOperation(await runtimeRequest<MarketOperation>(runtime, `/api/v1/market/operations/${encodeURIComponent(result.operationId)}`));
-      await refreshInfo();
-      showNotice(t("{name} installed and enabled", { name: marketOperation.pluginId }));
-    } catch (error) { showNotice(error instanceof Error ? error.message : t("Market retry failed.")); }
+      showNotice(t("Plugin distribution retried"));
+    } catch (error) { showNotice(error instanceof Error ? error.message : t("Plugin distribution retry failed.")); }
   };
 
   const checkBridge = async () => {
@@ -1051,7 +1097,6 @@ export function App() {
   const commands = useMemo<CommandItem[]>(() => {
     const goTo: CommandItem[] = [
       { id: "view-overview", group: t("Go to"), label: t("Overview"), action: () => setView({ kind: "overview" }) },
-      { id: "view-market", group: t("Go to"), label: t("Plugin Market"), action: () => setView({ kind: "market" }) },
       { id: "view-plugins", group: t("Go to"), label: t("Plugins"), action: () => setView({ kind: "plugins" }) },
       { id: "view-daily-summary", group: t("Go to"), label: t("Daily Summary"), action: () => setView({ kind: "daily-summary" }) },
       { id: "view-batch", group: t("Go to"), label: t("Batch refresh"), action: () => void openBatchRefresh() },
@@ -1066,7 +1111,6 @@ export function App() {
       action: () => void selectPlugin(plugin),
     }));
     const actions: CommandItem[] = [
-      { id: "action-install-folder", group: t("Actions"), label: t("Install local plugin folder"), action: () => void install() },
       { id: "action-import-archive", group: t("Actions"), label: t("Import plugin ZIP"), action: () => void importArchive() },
       { id: "theme-system", group: t("Actions"), label: t("Theme: System"), action: () => void changeTheme("system") },
       { id: "theme-light", group: t("Actions"), label: t("Theme: Light"), action: () => void changeTheme("light") },
@@ -1092,20 +1136,20 @@ export function App() {
         )}
         {status === "ready" && view.kind === "plugin" && workspaceSrc && selected?.state !== "disabled" && <iframe ref={iframeRef} className="workspace-frame" src={workspaceSrc} title={`${selected?.name ?? t("Plugin")} ${t("workspace")}`} allow="clipboard-write" />}
         {status === "ready" && view.kind === "overview" && runtime && <OverviewView runtime={runtime} onOpenPlugin={(plugin) => void selectPlugin(plugin)} onOpenBatch={() => void openBatchRefresh()} onOpenDailySummary={() => setView({ kind: "daily-summary" })} onOpenSettings={() => setView({ kind: "settings" })} />}
-        {status === "ready" && view.kind === "market" && <MarketView catalog={marketCatalog} loading={marketLoading} refreshing={marketRefreshing} operation={marketOperation} onRefresh={() => void refreshMarket()} onInstall={installMarket} onCancel={cancelMarket} onRetry={() => void retryMarket()} />}
         {status === "ready" && view.kind === "batch" && runtime && <BatchRefreshView runtime={runtime} initialBatchId={batchId} onBatchIdChange={setBatchId} onBatchStarted={observeBatch} onOpenLogs={openBatchLogs} />}
         {status === "ready" && !runtimeRestarting && view.kind === "daily-summary" && runtime && <DailySummaryView runtime={runtime} onOpenBatch={openBatchRefresh} onNotice={showNotice} selectedPluginIds={dailySummarySelection} onSelectionChange={setDailySummarySelection} />}
         {status === "ready" && view.kind === "plugins" && runtime && (
           <section className="host-page plugin-manager">
-            <header className="page-header"><div><h1>{t("Plugins")}</h1><p>{t("Installed packages and local diagnostics")}</p></div><div className="page-header-actions"><button type="button" onClick={install}><FolderPlus size={17} />{t("Install folder")}</button><button type="button" className="primary-button" onClick={importArchive}><FileArchive size={17} />{t("Import ZIP")}</button></div></header>
+            <header className="page-header"><div><h1>{t("Plugins")}</h1><p>{t("Installed packages and distribution controls")}</p></div><div className="page-header-actions"><button type="button" className="primary-button" onClick={importArchive}><FileArchive size={17} />{t("Import ZIP")}</button><button type="button" onClick={() => void installFromUrl()}><ExternalLink size={17} />{t("Install URL")}</button></div></header>
+            {distributionOperation && <div className={`distribution-operation distribution-operation--${distributionOperation.state}`} role="status"><div><strong>{t("Plugin distribution")}</strong><span>{distributionOperation.intent} · {distributionOperation.phase} · {distributionOperation.state}</span><span>{t("Operation")}: {distributionOperation.operationId}</span>{distributionOperation.progress && <span>{distributionOperation.progress.received}{distributionOperation.progress.total ? ` / ${distributionOperation.progress.total}` : ""} bytes</span>}{distributionOperation.error && <span className="distribution-error">{distributionOperation.error.code}: {distributionOperation.error.message}</span>}</div><div className="distribution-operation-actions">{!["completed", "failed", "cancelled"].includes(distributionOperation.state) && <button type="button" onClick={() => void cancelDistribution()}>{t("Cancel")}</button>}{["failed", "cancelled"].includes(distributionOperation.state) && <button type="button" onClick={() => void retryDistribution()}><RotateCcw size={14} />{t("Retry")}</button>}</div></div>}
             <div className="manager-layout">
               <div className="package-list" role="listbox" aria-label={t("Installed plugins")}>
                 {runtime.plugins.map((plugin) => <button key={plugin.id} className={managedKey === plugin.id ? "package-row selected" : "package-row"} onClick={() => setManagedKey(plugin.id)}><span className={`source-icon source-icon--${plugin.id}`}>{sourceInitial(plugin)}</span><span><strong>{plugin.name}</strong><small>{plugin.version}</small></span><Lifecycle state={plugin.state} /></button>)}
                 {runtime.rejectedPlugins.map((plugin) => <button key={plugin.package} className={managedKey === plugin.package ? "package-row selected" : "package-row"} onClick={() => setManagedKey(plugin.package)}><span className="source-icon"><TriangleAlert size={15} /></span><span><strong>{plugin.name ?? plugin.package}</strong><small>{t("Incompatible")}</small></span><AlertCircle className="danger" size={15} /></button>)}
               </div>
               <div className="package-detail">
-                {managed?.provenance && <div className="package-provenance"><strong>{t("Origin")}: {managed.origin ?? managed.provenance.origin}</strong>{managed.releaseStatus && <span>{t("Release status")}: {t(managed.releaseStatus)}</span>}{managed.provenance.publisher && <span>{t("Publisher")}: {managed.provenance.publisher}</span>}{managed.provenance.expectedSha256 && <span className="path-value">SHA-256: {managed.provenance.expectedSha256}</span>}</div>}
-                {managed && <><div className="detail-title"><span className="detail-title-copy"><h2>{managed.name}</h2><p>{managed.id} · {managed.version}</p></span><label className="toggle"><input type="checkbox" checked={managed.enabled} onChange={(event) => mutate(() => runtimeRequest(runtime, `/api/v1/plugins/${managed.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: event.target.checked }) }), event.target.checked ? t("{name} enabled", { name: managed.name }) : t("{name} disabled", { name: managed.name }))} /><span />{t("Enabled")}</label></div><dl className="package-facts"><dt>{t("State")}</dt><dd>{t(managed.state)}</dd><dt>{t("Package")}</dt><dd className="path-value">{managed.packagePath}</dd><dt>{t("Last successful refresh")}</dt><dd>{managed.statusSnapshot?.lastSuccessfulRefreshAt ?? t("Not yet recorded")}</dd>{managed.statusSnapshot?.failure && <><dt>{t("Latest failure")}</dt><dd className="failure-summary"><span>{managed.statusSnapshot.failure.code}: {managed.statusSnapshot.failure.message}</span><button type="button" onClick={() => openFailureLogs(managed.id, managed.statusSnapshot!.failure!)}>{t("View matching logs")}</button></dd></>}</dl><div className="detail-actions"><button onClick={() => mutate(async () => { const value = await runtimeRequest<{ diagnostics: string }>(runtime, `/api/v1/plugins/${managed.id}/diagnostics`); if (window.infolens) await window.infolens.copyText(value.diagnostics); else await navigator.clipboard.writeText(value.diagnostics); }, t("Diagnostics copied"))}><Copy size={16} />{t("Copy diagnostics")}</button><button className="danger-button" onClick={() => setRemoveKey(managed.id)}><Trash2 size={16} />{t("Remove plugin")}</button></div></>}
+                {managed?.provenance && <div className="package-provenance"><strong>{t("Origin")}: {managed.origin ?? managed.provenance.origin}</strong>{managed.provenance.sourceUrl && <span className="path-value">{managed.provenance.sourceUrl}</span>}{managed.provenance.sourceFileName && <span>{managed.provenance.sourceFileName}</span>}{managed.provenance.observedSha256 && <span className="path-value">SHA-256: {managed.provenance.observedSha256}</span>}{["repair", "unavailable"].includes(managed.provenance.recoveryState ?? "") && <span className="failure-summary">{t("Recovery requires repair")}</span>}</div>}
+                {managed && <><div className="detail-title"><span className="detail-title-copy"><h2>{managed.name}</h2><p>{managed.id} · {managed.version}</p></span><label className="toggle"><input type="checkbox" checked={managed.enabled} onChange={(event) => mutate(() => runtimeRequest(runtime, `/api/v1/plugins/${managed.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: event.target.checked }) }), event.target.checked ? t("{name} enabled", { name: managed.name }) : t("{name} disabled", { name: managed.name }))} /><span />{t("Enabled")}</label></div><dl className="package-facts"><dt>{t("State")}</dt><dd>{t(managed.state)}</dd><dt>{t("Package")}</dt><dd className="path-value">{managed.packagePath}</dd><dt>{t("Last successful refresh")}</dt><dd>{managed.statusSnapshot?.lastSuccessfulRefreshAt ?? t("Not yet recorded")}</dd><dt>{t("Previous revision")}</dt><dd>{managed.provenance?.previousRevision ? `${managed.provenance.previousRevision.version ?? t("Unknown version")} · ${managed.provenance.previousRevision.observedSha256 ?? t("Digest unavailable")}` : t("No previous revision")}</dd>{managed.statusSnapshot?.failure && <><dt>{t("Latest failure")}</dt><dd className="failure-summary"><span>{managed.statusSnapshot.failure.code}: {managed.statusSnapshot.failure.message}</span><button type="button" onClick={() => openFailureLogs(managed.id, managed.statusSnapshot!.failure!)}>{t("View matching logs")}</button></dd></>}</dl><div className="detail-actions"><button onClick={() => mutate(async () => { const value = await runtimeRequest<{ diagnostics: string }>(runtime, `/api/v1/plugins/${managed.id}/diagnostics`); if (window.infolens) await window.infolens.copyText(value.diagnostics); else await navigator.clipboard.writeText(value.diagnostics); }, t("Diagnostics copied"))}><Copy size={16} />{t("Copy diagnostics")}</button>{managed.provenance?.origin !== "bundled" && <><button type="button" onClick={() => void replacePluginFromArchive(managed.id)}><FileArchive size={16} />{t("Replace ZIP")}</button><button type="button" onClick={() => void replacePluginFromUrl(managed.id)}><ExternalLink size={16} />{t("Replace URL")}</button>{managed.provenance?.previousRevision && <button type="button" onClick={() => void rollbackPlugin(managed.id)}><RefreshCw size={16} />{t("Rollback")}</button>}</>}<button className="danger-button" onClick={() => setRemoveKey(managed.id)}><Trash2 size={16} />{t("Remove plugin")}</button></div><div className="trusted-code-notice"><strong>{t("Trusted Plugin code")}</strong><span>{t("Plugin Backend code runs with filesystem, network, and subprocess access. Verify the ZIP or HTTPS digest before installing.")}</span></div></>}
                 {rejected && <><div className="detail-title"><span className="detail-title-copy"><h2>{rejected.name ?? rejected.package}</h2><p>{rejected.version ?? t("Invalid package")}</p></span><span className="incompatible">{t("Incompatible")}</span></div><div className="failure-panel"><strong>{rejected.code}</strong><p>{rejected.message}</p></div><dl className="package-facts"><dt>{t("Package")}</dt><dd className="path-value">{rejected.packagePath}</dd></dl><div className="detail-actions"><button className="danger-button" onClick={() => setRemoveKey(rejected.package)}><Trash2 size={16} />{t("Remove package")}</button></div></>}
               </div>
             </div>

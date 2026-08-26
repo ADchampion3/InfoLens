@@ -108,7 +108,7 @@ npm start
 | `npm run plugin -- validate <path>` | 验证 Plugin 包契约 |
 | `npm run plugin -- doctor <path>` | 运行隔离的 Plugin 生命周期和 Workspace 检查 |
 | `npm run plugin -- adapters list <path>` | 查看 Bundled 和 Provided OpenCLI Adapter |
-| `npm run plugin -- pack <path> --out <directory>` | 创建经过验证的 Plugin 包 |
+| `npm run plugin -- pack <path> --out <path>.zip` | 创建经过验证的 Plugin ZIP、SHA-256 Companion 和 Distribution Description |
 
 运行指定测试文件时，可以直接使用 Node Test Runner：
 
@@ -188,7 +188,7 @@ Command 都必须在 Manifest 中声明。Provided Adapter 会在打包时复制
 npm run plugin -- init path\to\my-plugin --check --format text
 npm run plugin -- doctor path\to\my-plugin --format text
 npm run plugin -- preview path\to\my-plugin --format text
-npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.infolens-plugin
+npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.zip
 ```
 
 生成的骨架与框架无关，不会添加 SDK 依赖。它生成的 `validate`、`doctor`、`dev`、

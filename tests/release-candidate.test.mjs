@@ -62,7 +62,6 @@ test("packaged Electron executes the full release integration matrix", { timeout
     INFOLENS_BUNDLED_OPENCLI_ROOT: path.join(root, "tests", "fixtures", "runtime-opencli", "opencli"),
     INFOLENS_TEST_OPENCLI_STATE: stateFile,
     INFOLENS_TEST_CONTROL: "1",
-    INFOLENS_TEST_INSTALL_PATH: path.join(root, "tests", "fixtures", "plugin-packages", "installable-plugin"),
   };
   let app = await launchPackagedApp(root, environment);
   try {
@@ -99,19 +98,6 @@ test("packaged Electron executes the full release integration matrix", { timeout
     await clickText(app.cdp, "Dark");
     await clickText(app.cdp, "Hacker News");
     assert.equal(await waitFor(() => app.cdp.evaluateTarget("/workspace/", "document.documentElement.dataset.theme"), "workspace theme did not update"), "dark");
-
-    await clickText(app.cdp, "Plugins");
-    await clickText(app.cdp, "Install plugin");
-    await waitFor(async () => (await runtimeInfo(app.cdp)).plugins.some(({ id }) => id === "reading-notes"), "compatible plugin was not installed through Electron UI");
-    await waitFor(() => app.cdp.evaluate("(() => { const button=[...document.querySelectorAll('.package-list button')].find((item)=>item.textContent.includes('Reading Notes')); if(!button)return false; button.click(); return true; })()"), "installed plugin did not appear in Plugin Manager");
-    await clickText(app.cdp, "Copy diagnostics");
-    const diagnostics = await waitFor(async () => { const value=await app.cdp.evaluate("window.infolens.testReadClipboard()"); return value.includes("reading-notes-activated") ? value : undefined; }, "diagnostics were not copied through Electron clipboard IPC");
-    assert.match(diagnostics, /reading-notes-activated/);
-    assert.doesNotMatch(diagnostics, /cookie|authorization/i);
-    await clickText(app.cdp, "Remove plugin");
-    await app.cdp.evaluate("(() => { const button=document.querySelector('[role=dialog] .danger-button'); if(!button)throw new Error('Removal confirmation not found'); button.click(); return true; })()");
-    await waitFor(async () => !(await runtimeInfo(app.cdp)).plugins.some(({ id }) => id === "reading-notes"), "installed plugin was not removed through Electron UI");
-    await assert.rejects(access(path.join(pluginsRoot, "reading-notes")));
 
     await writeFile(stateFile, `${JSON.stringify({ producthunt: "malformed" }, null, 2)}\n`, "utf8");
     const failedRefresh = await request(initial.origin, "/plugins/product-hunt/api/refresh", { method: "POST" });

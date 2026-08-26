@@ -56,3 +56,13 @@ export async function runtimeRequest<T>(runtime: RuntimeInfo, route: string, ini
   if (!response.ok) throw Object.assign(new Error(body.error ?? "Operation failed"), { code: body.code, body });
   return body;
 }
+
+export async function runtimeUpload<T>(runtime: RuntimeInfo, route: string, body: BodyInit, extraHeaders: HeadersInit = {}): Promise<T> {
+  const headers = new Headers(extraHeaders);
+  if (!headers.has("content-type")) headers.set("content-type", "application/zip");
+  if (runtime.runtimeToken) headers.set("authorization", `Bearer ${runtime.runtimeToken}`);
+  const response = await fetch(`${runtime.origin}${route}`, { method: "POST", body, headers, credentials: "include" });
+  const result = await readJsonResponse<{ error?: string; code?: string } & T>(response, "Plugin services are unavailable.");
+  if (!response.ok) throw Object.assign(new Error(result.error ?? "Operation failed"), { code: result.code, body: result });
+  return result;
+}

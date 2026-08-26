@@ -1,10 +1,10 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { shortRefreshMessage } from "./refresh-outcome.mjs";
 
 const THEMES = new Set(["system", "light", "dark"]);
-const PLUGIN_ORIGINS = new Set(["market", "local", "bundled"]);
-const RELEASE_STATUSES = new Set(["current", "retracted", "incompatible", "unknown"]);
+const PLUGIN_ORIGINS = new Set(["url", "local", "bundled"]);
+const DISTRIBUTION_MIGRATION_VERSION = 1;
 
 function cleanFailure(failure) {
   if (!failure || typeof failure !== "object") return undefined;
@@ -28,48 +28,57 @@ function cleanSnapshot(snapshot = {}) {
   };
 }
 
-function cleanInstallation(record = {}) {
-  if (!record || typeof record !== "object" || !PLUGIN_ORIGINS.has(record.origin)) return undefined;
-  const list = (value) => Array.isArray(value) ? [...new Set(value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()))] : undefined;
+function cleanRevision(revision) {
+  if (!revision || typeof revision !== "object" || typeof revision.id !== "string" || !revision.id.trim()) return undefined;
   return {
-    origin: record.origin,
+    id: revision.id.trim(),
+    ...(typeof revision.revisionId === "string" && revision.revisionId.trim() ? { revisionId: revision.revisionId.trim() } : {}),
+    ...(typeof revision.version === "string" ? { version: revision.version } : {}),
+    ...(typeof revision.observedSha256 === "string" ? { observedSha256: revision.observedSha256.toLowerCase() } : {}),
+    ...(typeof revision.origin === "string" && PLUGIN_ORIGINS.has(revision.origin) ? { origin: revision.origin } : {}),
+    ...(typeof revision.sourceUrl === "string" && revision.sourceUrl.trim() ? { sourceUrl: revision.sourceUrl.trim() } : {}),
+    ...(typeof revision.sourceFileName === "string" && revision.sourceFileName.trim() ? { sourceFileName: path.basename(revision.sourceFileName.trim()) } : {}),
+    ...(typeof revision.expectedSha256 === "string" ? { expectedSha256: revision.expectedSha256.toLowerCase() } : {}),
+    ...(typeof revision.enabled === "boolean" ? { enabled: revision.enabled } : {}),
+    ...(typeof revision.createdAt === "string" ? { createdAt: revision.createdAt } : {}),
+  };
+}
+
+function cleanInstallation(record = {}) {
+  if (!record || typeof record !== "object") return undefined;
+  const legacyMarket = record.origin === "market";
+  const origin = legacyMarket ? (typeof record.artifactUrl === "string" && record.artifactUrl.trim() ? "url" : "local") : record.origin;
+  if (!PLUGIN_ORIGINS.has(origin)) return undefined;
+  return {
+    origin,
     ...(typeof record.version === "string" ? { version: record.version } : {}),
-    ...(typeof record.name === "string" ? { name: record.name } : {}),
-    ...(typeof record.description === "string" ? { description: shortRefreshMessage(record.description) } : {}),
-    ...(typeof record.registryUrl === "string" ? { registryUrl: record.registryUrl } : {}),
-    ...(typeof record.indexUrl === "string" ? { indexUrl: record.indexUrl } : {}),
-    ...(typeof record.artifactUrl === "string" ? { artifactUrl: record.artifactUrl } : {}),
-    ...(Number.isSafeInteger(record.artifactSize) && record.artifactSize > 0 ? { artifactSize: record.artifactSize } : {}),
-    ...(typeof record.publisher === "string" ? { publisher: record.publisher } : {}),
-    ...(typeof record.license === "string" ? { license: record.license } : {}),
-    ...(typeof record.changelog === "string" ? { changelog: shortRefreshMessage(record.changelog) } : {}),
     ...(typeof record.contractVersion === "string" ? { contractVersion: record.contractVersion } : {}),
     ...(typeof record.minHostVersion === "string" ? { minHostVersion: record.minHostVersion } : {}),
-    ...(list(record.categories) ? { categories: list(record.categories) } : {}),
-    ...(list(record.platforms) ? { platforms: list(record.platforms) } : {}),
-    ...(list(record.architectures) ? { architectures: list(record.architectures) } : {}),
-    ...(typeof record.publishedAt === "string" ? { publishedAt: record.publishedAt } : {}),
     ...(typeof record.expectedSha256 === "string" ? { expectedSha256: record.expectedSha256 } : {}),
     ...(typeof record.observedSha256 === "string" ? { observedSha256: record.observedSha256 } : {}),
+    ...(origin === "url" && typeof (record.sourceUrl ?? record.artifactUrl) === "string" ? { sourceUrl: String(record.sourceUrl ?? record.artifactUrl) } : {}),
+    ...(origin === "local" && typeof (record.sourceFileName ?? record.fileName) === "string" ? { sourceFileName: path.basename(String(record.sourceFileName ?? record.fileName)) } : {}),
     ...(typeof record.operationId === "string" ? { operationId: record.operationId } : {}),
-    ...(RELEASE_STATUSES.has(record.releaseStatus) ? { releaseStatus: record.releaseStatus } : { releaseStatus: "unknown" }),
-    ...(typeof record.retractionReason === "string" ? { retractionReason: shortRefreshMessage(record.retractionReason, "Release retracted") } : {}),
     ...(typeof record.installedAt === "string" ? { installedAt: record.installedAt } : {}),
+    ...(cleanRevision(record.previousRevision) ? { previousRevision: cleanRevision(record.previousRevision) } : {}),
+    ...(typeof record.recoveryState === "string" ? { recoveryState: record.recoveryState } : {}),
   };
 }
 
 export class HostStateStore {
   constructor(filePath) {
     this.filePath = filePath;
-    this.state = { version: 2, enabledPluginIds: [], lastSelection: null, theme: "system", statusSnapshots: {}, pluginInstallations: {} };
+    this.state = { version: 3, distributionMigrationVersion: DISTRIBUTION_MIGRATION_VERSION, enabledPluginIds: [], lastSelection: null, theme: "system", statusSnapshots: {}, pluginInstallations: {} };
     this.writes = Promise.resolve();
   }
 
   async load() {
+    let value;
     try {
-      const value = JSON.parse(await readFile(this.filePath, "utf8"));
+      value = JSON.parse(await readFile(this.filePath, "utf8"));
       this.state = {
-        version: 2,
+        version: 3,
+        distributionMigrationVersion: DISTRIBUTION_MIGRATION_VERSION,
         enabledPluginIds: [...new Set(Array.isArray(value.enabledPluginIds) ? value.enabledPluginIds.filter((id) => typeof id === "string") : [])],
         lastSelection: typeof value.lastSelection === "string" ? value.lastSelection : null,
         theme: THEMES.has(value.theme) ? value.theme : "system",
@@ -79,6 +88,7 @@ export class HostStateStore {
     } catch (error) {
       if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
     }
+    if (value && JSON.stringify(value) !== JSON.stringify(this.state)) await this.persist();
     return this.snapshot();
   }
 
@@ -86,19 +96,26 @@ export class HostStateStore {
 
   async update(change) {
     const next = typeof change === "function" ? change(this.snapshot()) : { ...this.snapshot(), ...change };
-    next.version = 2;
+    next.version = 3;
+    next.distributionMigrationVersion = DISTRIBUTION_MIGRATION_VERSION;
     next.enabledPluginIds = [...new Set(next.enabledPluginIds)];
     if (!THEMES.has(next.theme)) throw new Error(`Unsupported theme '${next.theme}'`);
     next.pluginInstallations = Object.fromEntries(Object.entries(next.pluginInstallations ?? {}).map(([id, record]) => [id, cleanInstallation(record)]).filter(([, record]) => record));
     this.state = next;
-    this.writes = this.writes.then(async () => {
-      await mkdir(path.dirname(this.filePath), { recursive: true });
-      const temporaryPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-      await writeFile(temporaryPath, `${JSON.stringify(this.state, null, 2)}\n`, "utf8");
-      await rename(temporaryPath, this.filePath);
-    });
+    this.writes = this.writes.catch(() => {}).then(() => this.persist());
     await this.writes;
     return this.snapshot();
+  }
+
+  async persist() {
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    const temporaryPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(this.state, null, 2)}\n`, "utf8");
+      await rename(temporaryPath, this.filePath);
+    } finally {
+      await rm(temporaryPath, { force: true });
+    }
   }
 
   async flush() { await this.writes; }

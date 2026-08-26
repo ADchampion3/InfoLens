@@ -94,15 +94,17 @@ OpenCLI 负责在 Daemon 授权的 Manifest Command 下获得 Collection Result�
 apps/desktop/              Electron Thin Client 和 OS Integration
 packages/plugin-runtime/   Standalone Daemon 和 Plugin Runtime
 packages/plugin-sdk/       共享 Manifest、Backend 和 Workspace Helpers
+packages/plugin-distribution/  确定性的 ZIP Artifact 和 Distribution Source
 plugins/hn/                Bundled Hacker News Plugin (`PUBLIC`)
 plugins/github-trending/   Bundled GitHub Trending Plugin (`PUBLIC`)
 plugins/zhihu-hot/         Bundled Zhihu Hot List Plugin (`COOKIE`)
 plugins/product-hunt/      Bundled Product Hunt Plugin (`INTERCEPT`)
 ```
 
-仓库固定的 `plugins/` 目录是构建后 Package 唯一的开发和 Daemon Discovery 位置。
-MVP 不区分官方 Package 和用户安装的 Package；所有被发现的 Package 使用相同的
-Daemon-owned Lifecycle 和移除语义。
+仓库固定的 `plugins/` 目录是构建后 Package 的开发和 Daemon Discovery 位置。
+Personal Plugin Distribution 会在该目录之外暂存确定性的 ZIP，验证后将解压出的 Package
+提交到同一个受管理位置。MVP 不区分官方 Package 和用户安装的 Package；所有被发现的
+Package 使用相同的 Daemon-owned Lifecycle 和移除语义。
 
 Host Web 使用 React、Vite 和 TypeScript。它渲染持久的左侧 Plugin
 Navigation Rail、选中 Plugin 的右侧 Workspace Frame，以及导航底部的 Plugin 管理和
@@ -184,29 +186,32 @@ Provided Adapter 会被复制到 Infolens 管理的不可变 Store 中，位置�
 只接收这些精确路径。Development Scope 链接源文件，Installed Scope 引用不可变 Store
 内容。
 
-将本地 Package 复制到受管理的 Plugin Directory 之前，Daemon 会检查 Contract Version
-是否受支持、Daemon Semantic Version 是否满足 `minHostVersion`，以及每个声明的 Command
-Mapping 是否受支持。启动 Discovery 时，Daemon 会对每个 Package 重复这些检查。发现不
-兼容时，会在任何安装变更或 Module Activation 之前说明原因并拒绝。被拒绝的 Package
-不会被激活，也不会出现在普通 Navigation 中，但会保留在 Plugin Management 中供检查
-和移除。Daemon 只执行 Discovery 和启动所需的结构性 Package Validation。默认情况下，
-已安装的本地 Plugin 是受信任的：没有 Permission Approval、Package Review、Data
-Generation System 或受治理的 Upgrade Transaction。
+将 Distribution Artifact 提交到受管理的 Plugin Directory 之前，Daemon 会限制并安全检查
+ZIP，然后检查 Contract Version 是否受支持、Daemon Semantic Version 是否满足
+`minHostVersion`，以及每个声明的 Command Mapping 是否受支持。启动 Discovery 时，Daemon
+会对每个 Package 重复这些检查。发现不兼容时，会在任何安装变更或 Module Activation 之前
+说明原因并拒绝。被拒绝的 Package 不会被激活，也不会出现在普通 Navigation 中，但会保留
+在 Plugin Management 中供检查和移除。Daemon 只执行 Discovery 和启动所需的结构性
+Package Validation。默认情况下，已安装的本地 Plugin 是受信任的：没有 Permission
+Approval、Package Review、Data Generation System 或由发布方控制的发布工作流。
 
-启动时，Daemon 扫描项目固定的 `plugins/` 目录寻找 Plugin Package。从本地 Folder 选择
-预构建 Plugin 后，Daemon 会把它复制到受管理的 Discovery 位置，并在验证成功后立即启用。
-没有既有 Daemon State 的有效 Discovered Plugin 默认启用；用户禁用的 Plugin 保持禁用。
-MVP Development Build 会在官方 Plugin 的仓库目录中运行它们，不支持外部 Development
-Link、Symbolic Link 或 Plugin Hot Reload。
+启动时，Daemon 扫描项目固定的 `plugins/` 目录寻找 Plugin Package。Personal Plugin
+Distribution 接受本地 ZIP，或带预期 SHA-256 的直接 HTTPS ZIP URL，在受管理目录之外暂存，
+并在验证成功后立即启用。没有既有 Daemon State 的有效 Discovered Plugin 默认启用；用户
+禁用的 Plugin 保持禁用。MVP Development Build 会在官方 Plugin 的仓库目录中运行它们，
+不支持外部 Development Link、Symbolic Link 或 Plugin Hot Reload。
 
-Daemon 不会原地 Upgrade 或 Replace 已安装的 Plugin。若本地安装的 Manifest ID 已存在，
-安装会被拒绝，并提示用户先通过 Plugin Management 移除现有 Plugin。不存在自动 Rollback
-或 Data Migration Transaction。
+已有 External Plugin ID 必须使用显式的 Replace Intent；Bundled Plugin 不能由 Personal
+Plugin Distribution 替换。Replace 和 Rollback 按 Plugin 串行执行。切换前，Daemon 会快照
+Package、Plugin-owned Data、Adapter Scope、Host State Metadata 和启用状态，只保留一个完整
+的上一版本；Deactivate、磁盘、Validation、切换或 Activation 失败时恢复该版本。Rollback
+交换当前和上一版本的完整快照，不执行 Data Migration。
 
 明确移除 Plugin 时，Daemon 会要求 Plugin Runtime Deactivate Module、取消 Task、注销
-Route，然后删除 Package 和 Plugin-owned Data Directory。如果 Module 在短暂 Grace
-Period 内没有结束，Daemon 会在删除前重启不包含该 Module 的 Plugin Runtime。手动替换时
-Daemon 不保留 Source Data，因为新 Package 可能使用不兼容的数据格式。
+Route，然后删除 Package、Plugin-owned Data Directory、Adapter Scope 和保留的 Distribution
+Revision。如果 Module 在短暂 Grace Period 内没有结束，Daemon 会在删除前重启不包含该
+Module 的 Plugin Runtime。除一个显式 Replace Revision 外，Daemon 不保留 Source Data，
+因为新 Package 可能使用不兼容的数据格式。
 
 Daemon 在 `http://127.0.0.1:<daemonPort>/plugins/<pluginId>/workspace/` 提供每个
 Plugin 的构建后 Web Workspace，在

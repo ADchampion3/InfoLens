@@ -12,7 +12,7 @@ Plugin author commands resolve Host, Plugin Contract, Plugin SDK, and Bundled Op
 
 Workspace diagnosis is static. It follows local HTML, JavaScript, and CSS references from the Manifest Workspace entry, handles cycles and duplicates, rejects missing or escaping local files, and reports external or dynamically unresolved references as warnings without fetching or executing them. Source maps are ignored by default.
 
-`pack` filters the source package into a unique staging directory beside the requested directory, runs `doctor` against that exact staged content, writes adapter integrity metadata, and atomically renames the staging directory only after all error-level checks pass. Warnings remain visible and permit publication. Failed staging or diagnosis removes the staging directory and never publishes a known-broken artifact.
+`pack` filters the source package into a unique staging directory beside the requested output, runs `doctor` against that exact staged content, writes adapter integrity metadata, and creates a deterministic Plugin ZIP plus its SHA-256 and distribution-description companions only after all error-level checks pass. Warnings remain visible and permit artifact creation. Failed staging or diagnosis removes the staging directory and never leaves a known-broken artifact.
 
 ## Consequences
 

@@ -10,6 +10,14 @@ export const ARCHIVE_LIMITS = Object.freeze({
   maxTotalBytes: 128 * 1024 * 1024,
 });
 
+const EXCLUDED_PACKAGE_DIRECTORIES = new Set([
+  "node_modules",
+  ".git",
+  ".infolens-dev",
+  ".infolens-market",
+  ".infolens-distribution",
+]);
+
 export class ArchiveError extends Error {
   constructor(code, message) {
     super(message);
@@ -36,6 +44,29 @@ function normalizeArchivePath(value, { directory = false } = {}) {
   return `${parts.join("/")}${directory ? "/" : ""}`;
 }
 
+function archiveEntryKey(name) {
+  return name.endsWith("/") ? name.slice(0, -1) : name;
+}
+
+function validateArchiveEntryNames(entries) {
+  const kinds = new Map();
+  for (const entry of entries) {
+    const key = archiveEntryKey(entry.name);
+    const normalizedKey = key.toLocaleLowerCase("en-US");
+    fail(!key || kinds.has(normalizedKey), "ARCHIVE_DUPLICATE_ENTRY", `Archive contains duplicate entry '${entry.name}'`);
+    kinds.set(normalizedKey, entry.directory ? "directory" : "file");
+  }
+  for (const [normalizedKey, kind] of kinds) {
+    if (kind !== "file") continue;
+    const parts = normalizedKey.split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      if (kinds.get(parts.slice(0, index).join("/")) === "file") {
+        throw new ArchiveError("ARCHIVE_PATH_CONFLICT", "Archive contains a file where another entry requires a directory");
+      }
+    }
+  }
+}
+
 function packageRelativePath(root, filename) {
   const relative = path.relative(root, filename);
   fail(!relative || relative.startsWith("..") || path.isAbsolute(relative), "PACKAGE_PATH_INVALID", "Package entry escapes the package root");
@@ -43,9 +74,13 @@ function packageRelativePath(root, filename) {
 }
 
 export function packageArchiveFilter(_source, relative, entry) {
-  const parts = relative.split(path.sep).filter(Boolean);
-  if (parts.some((part) => ["node_modules", ".git", ".infolens-dev", ".infolens-market"].includes(part))) return false;
-  return true;
+  if (isExcludedPackagePath(relative)) return false;
+  return entry?.isDirectory?.() || entry?.isFile?.() !== false;
+}
+
+export function isExcludedPackagePath(relative) {
+  const parts = String(relative).split(/[\\/]/u).filter(Boolean);
+  return parts.some((part) => EXCLUDED_PACKAGE_DIRECTORIES.has(part));
 }
 
 export async function collectFiles(root, filter = packageArchiveFilter) {
@@ -155,15 +190,13 @@ export function createDeterministicZip(entries, options = {}) {
     fail(data.length > limits.maxEntryBytes, "ARCHIVE_ENTRY_TOO_LARGE", `Archive entry '${name}' exceeds the per-file size limit`);
     return { name, data };
   }).sort((left, right) => compareNames(left.name, right.name));
-  fail(normalized.length === 0, "ARCHIVE_EMPTY", "Cannot publish an empty Plugin archive");
+  fail(normalized.length === 0, "ARCHIVE_EMPTY", "Cannot create an empty Plugin archive");
   fail(normalized.length > limits.maxEntries, "ARCHIVE_TOO_MANY_ENTRIES", "Plugin archive contains too many files");
-  const names = new Set();
   let totalBytes = 0;
   for (const entry of normalized) {
-    fail(names.has(entry.name), "ARCHIVE_DUPLICATE_ENTRY", `Archive contains duplicate entry '${entry.name}'`);
-    names.add(entry.name);
     totalBytes += entry.data.length;
   }
+  validateArchiveEntryNames(normalized);
   fail(totalBytes > limits.maxTotalBytes, "ARCHIVE_TOO_LARGE", "Plugin archive expands beyond the total size limit");
 
   const localParts = [];
@@ -262,12 +295,12 @@ export function inspectZip(input, options = {}) {
   const entriesTotal = readUInt16(buffer, end + 10, "ARCHIVE_INVALID", "ZIP entry count is invalid");
   const centralSize = readUInt32(buffer, end + 12, "ARCHIVE_INVALID", "ZIP central directory size is invalid");
   const centralOffset = readUInt32(buffer, end + 16, "ARCHIVE_INVALID", "ZIP central directory offset is invalid");
+  const centralEnd = centralOffset + centralSize;
   fail(disk !== 0 || centralDisk !== 0 || entriesOnDisk !== entriesTotal, "ARCHIVE_UNSUPPORTED", "Multi-disk ZIP archives are not supported");
   fail(entriesTotal > limits.maxEntries, "ARCHIVE_TOO_MANY_ENTRIES", "Plugin archive contains too many files");
-  fail(centralOffset + centralSize > end || centralOffset > buffer.length, "ARCHIVE_INVALID", "ZIP central directory is outside the archive");
+  fail(centralEnd > end || centralOffset > buffer.length, "ARCHIVE_INVALID", "ZIP central directory is outside the archive");
 
   const entries = [];
-  const names = new Set();
   let cursor = centralOffset;
   let totalBytes = 0;
   for (let index = 0; index < entriesTotal; index += 1) {
@@ -283,13 +316,10 @@ export function inspectZip(input, options = {}) {
     const externalAttrs = readUInt32(buffer, cursor + 38, "ARCHIVE_INVALID", "ZIP attributes are invalid");
     const localOffset = readUInt32(buffer, cursor + 42, "ARCHIVE_INVALID", "ZIP local header offset is invalid");
     const recordLength = 46 + nameLength + extraLength + commentLength;
-    fail(cursor + recordLength > buffer.length, "ARCHIVE_INVALID", "ZIP central directory record is truncated");
+    fail(cursor + recordLength > centralEnd, "ARCHIVE_INVALID", "ZIP central directory record is truncated");
     const rawName = buffer.subarray(cursor + 46, cursor + 46 + nameLength).toString("utf8");
     const directory = rawName.endsWith("/");
     const name = normalizeArchivePath(rawName, { directory });
-    const nameKey = name.toLocaleLowerCase("en-US");
-    fail(names.has(nameKey), "ARCHIVE_DUPLICATE_ENTRY", `Archive contains duplicate entry '${name}'`);
-    names.add(nameKey);
     fail(flags & 0x1, "ARCHIVE_ENCRYPTED", `Archive entry '${name}' is encrypted`);
     fail(flags & 0x8, "ARCHIVE_UNSUPPORTED", `Archive entry '${name}' uses a data descriptor`);
     fail(method !== 0 && method !== 8, "ARCHIVE_COMPRESSION_UNSUPPORTED", `Archive entry '${name}' uses unsupported compression`);
@@ -304,6 +334,13 @@ export function inspectZip(input, options = {}) {
     fail(readUInt32(buffer, localOffset, "ARCHIVE_INVALID", `Archive entry '${name}' local header is invalid`) !== 0x04034b50, "ARCHIVE_INVALID", `Archive entry '${name}' local header is invalid`);
     const localNameLength = readUInt16(buffer, localOffset + 26, "ARCHIVE_INVALID", `Archive entry '${name}' local filename is invalid`);
     const localExtraLength = readUInt16(buffer, localOffset + 28, "ARCHIVE_INVALID", `Archive entry '${name}' local extra field is invalid`);
+    const localFlags = readUInt16(buffer, localOffset + 6, "ARCHIVE_INVALID", `Archive entry '${name}' local flags are invalid`);
+    const localMethod = readUInt16(buffer, localOffset + 8, "ARCHIVE_INVALID", `Archive entry '${name}' local compression is invalid`);
+    const localCompressedSize = readUInt32(buffer, localOffset + 18, "ARCHIVE_INVALID", `Archive entry '${name}' local compressed size is invalid`);
+    const localUncompressedSize = readUInt32(buffer, localOffset + 22, "ARCHIVE_INVALID", `Archive entry '${name}' local uncompressed size is invalid`);
+    const localName = buffer.subarray(localOffset + 30, localOffset + 30 + localNameLength).toString("utf8");
+    fail(localName !== rawName, "ARCHIVE_INVALID", `Archive entry '${name}' local filename does not match the central directory`);
+    fail(localFlags !== flags || localMethod !== method || localCompressedSize !== compressedSize || localUncompressedSize !== uncompressedSize, "ARCHIVE_INVALID", `Archive entry '${name}' local metadata does not match the central directory`);
     const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
     fail(dataOffset + compressedSize > buffer.length, "ARCHIVE_INVALID", `Archive entry '${name}' data is truncated`);
     const compressed = buffer.subarray(dataOffset, dataOffset + compressedSize);
@@ -314,6 +351,8 @@ export function inspectZip(input, options = {}) {
     entries.push({ name, data, directory, compressedSize, uncompressedSize });
     cursor += recordLength;
   }
+  fail(cursor !== centralEnd, "ARCHIVE_INVALID", "ZIP central directory length does not match its entries");
+  validateArchiveEntryNames(entries);
   return { entries, totalBytes, archiveBytes: buffer.length };
 }
 

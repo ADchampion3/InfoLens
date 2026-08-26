@@ -30,8 +30,7 @@ Commands:
   dev <path>                  Prepare the development Adapter Scope
   preview <path>              Run an isolated Runtime and serve the Workspace
   adapters list <path>        List bundled and Provided OpenCLI Adapters
-  pack <path>                 Validate and publish a staged Plugin package
-  publish <path>              Pack and publish an immutable Market release
+  pack <path>                 Validate and create a deterministic Plugin ZIP
   help                        Show this help
 
 Options:
@@ -40,21 +39,11 @@ Options:
   --timeout <milliseconds>   Set the doctor phase timeout (default: 10000)
   --dev                       Start the configured frontend dev server for preview
   --dev-url <url>             Proxy an already-running loopback frontend dev server
-  --out <path>                Output package path for pack
-  --registry-root <path>      Local static Registry directory for publish
-  --publisher <name>          Publisher name for publish metadata
-  --approved-by <name>        Maintainer approval name for publish metadata
-  --license <name>            License identifier for publish metadata
-  --category <name>           Category for publish metadata
-  --description <text>        Description for publish metadata
-  --changelog <text>          Changelog for publish metadata
-  --platform <name>           Target platform for publish metadata
-  --arch <name>               Target architecture for publish metadata
-  --index-url <url>           Official Registry index URL for publish metadata
+  --out <path>                Output ZIP path for pack
 
 Path defaults:
   Omitted plugin paths default to the current directory
-  pack defaults to a sibling <plugin-directory>.infolens-plugin path
+  pack defaults to a sibling <plugin-directory>.zip path
 
 JSON contract:
   Stable fields include ok, command, environment, checks, and error identity
@@ -67,8 +56,7 @@ Init options:
 Examples:
   infolens-plugin init .\\my-plugin --check --format text
   infolens-plugin doctor . --format text
-  infolens-plugin pack . --out ..\\my-plugin.infolens-plugin
-  infolens-plugin publish . --registry-root .\\market-registry --approved-by "Infolens Maintainer"
+  infolens-plugin pack . --out ..\\my-plugin.zip
 
 Operational commands return stable JSON by default. Use --format text for a
 compact summary with failed check IDs, codes, phases, and next actions.
@@ -211,7 +199,7 @@ function defaultNextActions(result) {
   const packagePath = result.plugin?.path ?? ".";
   if (!result.ok) return [];
   if (result.command === "validate") return [`npm run plugin -- doctor ${packagePath} --format text`];
-  if (result.command === "doctor") return [`npm run plugin -- pack ${packagePath} --out ${path.join(path.dirname(packagePath), `${result.plugin?.id ?? "my-plugin"}.infolens-plugin`)}`];
+  if (result.command === "doctor") return [`npm run plugin -- pack ${packagePath} --out ${path.join(path.dirname(packagePath), `${result.plugin?.id ?? "my-plugin"}.zip`)}`];
   if (result.command === "adapters list") return [`npm run plugin -- doctor ${packagePath} --format text`];
   return [];
 }
@@ -257,15 +245,15 @@ async function readManifest(packageRoot) {
 }
 
 async function loadDependencies() {
-  const [release, contract, opencli, scope, workspace, market] = await Promise.all([
+  const [release, contract, opencli, scope, workspace, distribution] = await Promise.all([
     import("@infolens/release-metadata"),
     import("@infolens/plugin-runtime/contract"),
     import("@infolens/plugin-runtime/opencli-adapter"),
     import("@infolens/plugin-runtime/adapter-scope"),
     import("@infolens/plugin-runtime/workspace-diagnostics"),
-    import("@infolens/plugin-market"),
+    import("@infolens/plugin-distribution"),
   ]);
-  return { release, contract, opencli, scope, workspace, market };
+  return { release, contract, opencli, scope, workspace, distribution };
 }
 
 async function resolveContext(deps, targetOption) {
@@ -428,7 +416,7 @@ async function copyDirectoryContents(sourceRoot, destinationRoot, filter = () =>
   await copy(sourceRoot, destinationRoot);
 }
 
-async function startDiagnosticRuntime(packageRoot, context, timeoutMs) {
+async function startDiagnosticRuntime(packageRoot, deps, context, timeoutMs) {
   let temporaryRoot;
   let child;
   let lines;
@@ -441,7 +429,7 @@ async function startDiagnosticRuntime(packageRoot, context, timeoutMs) {
     const pluginId = pluginManifest?.id;
     const pluginsRoot = path.join(temporaryRoot, "plugins");
     const targetRoot = path.join(pluginsRoot, pluginId ?? "target");
-    await copyDirectoryContents(packageRoot, targetRoot, packageFilter);
+    await copyDirectoryContents(packageRoot, targetRoot, (source, relative, entry) => packageFilter(source, relative, entry, deps.distribution));
     await copyDirectoryContents(sdkRoot, path.join(temporaryRoot, "node_modules", "@infolens", "plugin-sdk"));
     const dataRoot = path.join(temporaryRoot, "plugin-data");
     const hostStatePath = path.join(temporaryRoot, "host-state.json");
@@ -558,7 +546,7 @@ async function runDoctor(packageRoot, deps, context, timeoutMs) {
 
   let diagnostic;
   try {
-    diagnostic = await startDiagnosticRuntime(packageRoot, context, timeoutMs);
+    diagnostic = await startDiagnosticRuntime(packageRoot, deps, context, timeoutMs);
     addCheck(result, "doctor.runtime", "info", "passed", { phase: "runtime-start" });
     const health = await readDiagnosticHealth(diagnostic.ready.origin, diagnostic.pluginId, timeoutMs, diagnostic.ready.runtimeToken);
     if (!health.response.ok || !["ready", "running"].includes(health.body.state)) {
@@ -782,7 +770,7 @@ async function runInit(packageRoot, deps, context, { id: requestedId, name: requ
     result.created = files.map(([relative]) => relative);
     result.next = [
       `npm run plugin -- doctor ${packageRoot} --format text`,
-      `npm run plugin -- pack ${packageRoot} --out ${path.join(path.dirname(packageRoot), `${id}.infolens-plugin`)}`,
+      `npm run plugin -- pack ${packageRoot} --out ${path.join(path.dirname(packageRoot), `${id}.zip`)}`,
     ];
     const scaffoldCheck = { id: "init.scaffold", severity: "info", status: "passed", phase: "init", details: { files: result.created } };
     if (check) {
@@ -907,9 +895,8 @@ async function runListAdapters(packageRoot, deps, context) {
   }
 }
 
-function packageFilter(source, relative) {
-  const parts = relative.split(path.sep).filter(Boolean);
-  if (parts.some((part) => ["node_modules", ".git", ".infolens-dev"].includes(part))) return false;
+function packageFilter(_source, relative, _entry, distribution) {
+  if (distribution.isExcludedPackagePath(relative)) return false;
   if (relative === "adapter-integrity.json") return false;
   return true;
 }
@@ -923,18 +910,22 @@ async function runPack(packageRoot, deps, context, output, timeoutMs) {
   const result = baseResult("pack", context.environment, manifest, packageRoot);
   addEnvironmentChecks(result);
   if (context.bootstrapError) return { result: setFailure(result, context.bootstrapError, { id: "environment.bootstrap" }) };
-  if (context.targetError) return { result: setFailure(result, context.targetError, { phase: "arguments", checkId: "environment.target-host", id: "environment.target-host" }) };
-  if (await outputExists(output)) return { result: setFailure(result, codedError("PACK_OUTPUT_EXISTS", `Pack output already exists: ${output}`, "pack", "pack.output"), { phase: "pack", checkId: "pack.output", id: "pack.output" }) };
+  if (context.targetError) return { result: setFailure(result, context.targetError, { phase: "arguments", checkId: "pack.output", id: "pack.output" }) };
+  const digestPath = deps.distribution.digestCompanionPath(output);
+  const descriptionPath = deps.distribution.distributionDescriptionPath(output);
+  if (await outputExists(output) || await outputExists(digestPath) || await outputExists(descriptionPath)) {
+    return { result: setFailure(result, codedError("PACK_OUTPUT_EXISTS", "Pack output or its distribution companions already exist: " + output, "pack", "pack.output"), { phase: "pack", checkId: "pack.output", id: "pack.output" }) };
+  }
   const relativeOutput = path.relative(packageRoot, output);
   if (!relativeOutput.startsWith("..") && !path.isAbsolute(relativeOutput)) return { result: setFailure(result, codedError("PACK_OUTPUT_INSIDE_SOURCE", "Pack output must be outside the source Plugin directory", "pack", "pack.output"), { phase: "pack", checkId: "pack.output", id: "pack.output" }) };
 
   const parent = path.dirname(output);
   await mkdir(parent, { recursive: true });
   let staging;
-  let published = false;
+  let artifactCreated = false;
   try {
-    staging = await mkdtemp(path.join(parent, `.${path.basename(output)}.stage-`));
-    await copyDirectoryContents(packageRoot, staging, packageFilter);
+    staging = await mkdtemp(path.join(parent, "." + path.basename(output) + ".stage-"));
+    await copyDirectoryContents(packageRoot, staging, (source, relative, entry) => packageFilter(source, relative, entry, deps.distribution));
     const diagnosis = await runDoctor(staging, deps, context, timeoutMs);
     result.checks = diagnosis.result.checks;
     if (diagnosis.result.plugin) result.plugin = { ...diagnosis.result.plugin, sourcePath: packageRoot };
@@ -949,79 +940,53 @@ async function runPack(packageRoot, deps, context, output, timeoutMs) {
       version: diagnosis.result.plugin?.version ?? manifest?.version,
       adapters: (diagnosis.adapterScope?.adapters ?? []).map(({ id, version, sha256 }) => ({ id, version, sha256 })),
     };
-    await writeFile(path.join(staging, "adapter-integrity.json"), `${JSON.stringify(integrity, null, 2)}\n`, "utf8");
+    await writeFile(path.join(staging, "adapter-integrity.json"), JSON.stringify(integrity, null, 2) + "\n", "utf8");
     addCheck(result, "pack.integrity", "info", "passed", { phase: "integrity", details: { adapters: integrity.adapters.length } });
-    await rename(staging, output);
-    published = true;
+
+    const entries = await deps.distribution.collectFiles(staging, deps.distribution.packageArchiveFilter);
+    const archive = deps.distribution.createDeterministicZip(entries);
+    await writeFile(output, archive, { flag: "wx" });
+    const sha256 = deps.distribution.sha256Buffer(archive);
+    await deps.distribution.writeDigestCompanion(output, sha256);
+    const description = await deps.distribution.describeDistributionArtifact(output, {
+      pluginId: integrity.pluginId,
+      version: integrity.version,
+      contractVersion: manifest?.contractVersion,
+      minHostVersion: manifest?.minHostVersion,
+      sha256,
+      platforms: manifest?.platforms,
+      architectures: manifest?.architectures,
+      tool: "infolens-plugin",
+      toolVersion: "0.2.0",
+    });
+    await deps.distribution.writeDistributionDescription(output, description);
     result.output = output;
     result.integrity = integrity;
+    result.artifact = { path: output, size: archive.length, sha256 };
+    result.digest = { path: digestPath, sha256 };
+    result.distributionDescription = { path: descriptionPath, ...description };
     result.ok = true;
-    addCheck(result, "pack.publish", "info", "passed", { phase: "publication" });
+    artifactCreated = true;
+    addCheck(result, "pack.artifact", "info", "passed", { phase: "distribution", details: { size: archive.length, sha256, entries: entries.length } });
+    addCheck(result, "pack.digest", "info", "passed", { phase: "distribution", details: { path: digestPath } });
+    addCheck(result, "pack.description", "info", "passed", { phase: "distribution", details: { path: descriptionPath } });
     return { result };
   } catch (error) {
-    return { result: setFailure(result, error, { phase: error.phase ?? "pack", checkId: error.checkId ?? "pack.publish", id: error.checkId ?? "pack.publish" }) };
+    return { result: setFailure(result, error, { phase: error.phase ?? "pack", checkId: error.checkId ?? "pack.artifact", id: error.checkId ?? "pack.artifact" }) };
   } finally {
-    if (!published && staging) await rm(staging, { recursive: true, force: true });
-  }
-}
-
-async function runPublish(packageRoot, deps, context, options, timeoutMs) {
-  const manifest = await readManifest(packageRoot);
-  const result = baseResult("publish", context.environment, manifest, packageRoot);
-  addEnvironmentChecks(result);
-  if (context.bootstrapError) return { result: setFailure(result, context.bootstrapError, { id: "environment.bootstrap" }) };
-  if (context.targetError) return { result: setFailure(result, context.targetError, { phase: "arguments", checkId: "environment.target-host", id: "environment.target-host" }) };
-  if (!manifest?.id || !manifest.version) return { result: setFailure(result, codedError("INVALID_PACKAGE", "publish requires a readable Plugin manifest", "publish", "plugin.manifest"), { phase: "publish", checkId: "plugin.manifest", id: "plugin.manifest" }) };
-  const registryRoot = path.resolve(options.registry_root ?? path.join(process.cwd(), "market-registry"));
-  const stagingParent = await mkdtemp(path.join(os.tmpdir(), "infolens-market-publish-"));
-  const stagedPackage = path.join(stagingParent, `${manifest.id}.infolens-plugin`);
-  try {
-    const packed = await runPack(packageRoot, deps, context, stagedPackage, timeoutMs);
-    result.checks = packed.result.checks;
-    for (const key of ["plugin", "registrations", "health", "cleanup", "workspace", "integrity"]) if (packed.result[key] !== undefined) result[key] = packed.result[key];
-    if (!packed.result.ok) {
-      result.error = packed.result.error;
-      return { result };
+    if (staging) await rm(staging, { recursive: true, force: true });
+    if (!artifactCreated) {
+      await rm(output, { force: true });
+      await rm(digestPath, { force: true });
+      await rm(descriptionPath, { force: true });
     }
-    const publisher = options.publisher ?? "Infolens Maintainer";
-    const release = await deps.market.publishMarketRelease({
-      packageRoot: stagedPackage,
-      registryRoot,
-      manifest: packed.result.plugin ? { ...manifest, ...packed.result.plugin } : manifest,
-      indexUrl: options.index_url,
-      metadata: {
-        description: options.description ?? manifest.description ?? `${manifest.name} Plugin`,
-        publisher,
-        approval: {
-          approvedBy: options.approved_by,
-          approvedAt: new Date().toISOString(),
-          publisher,
-        },
-        license: options.license ?? "UNLICENSED",
-        categories: [options.category ?? "General"],
-        changelog: options.changelog ?? "Initial stable release",
-        platforms: [options.platform ?? (process.platform === "win32" ? "windows" : process.platform)],
-        architectures: [options.arch ?? (process.arch === "x64" ? "x64" : process.arch)],
-      },
-    });
-    result.release = release.release;
-    result.artifact = { path: release.artifactPath, size: release.release.artifact.size, sha256: release.release.artifact.sha256 };
-    result.registryRoot = registryRoot;
-    result.ok = true;
-    addCheck(result, "market.archive", "info", "passed", { phase: "publication", details: { size: release.release.artifact.size, sha256: release.release.artifact.sha256 } });
-    addCheck(result, "market.registry", "info", "passed", { phase: "publication", details: { registryRoot } });
-    return { result };
-  } catch (error) {
-    return { result: setFailure(result, error, { phase: error.phase ?? "publish", checkId: error.checkId ?? "market.registry", id: error.checkId ?? "market.registry" }) };
-  } finally {
-    await rm(stagingParent, { recursive: true, force: true });
   }
 }
 
 function parseOptions(argv) {
   const options = {};
   const positional = [];
-  const valueOptions = new Set(["target-host-version", "timeout", "out", "format", "id", "name", "registry-root", "publisher", "approved-by", "license", "category", "description", "changelog", "platform", "arch", "index-url", "dev-url"]);
+  const valueOptions = new Set(["target-host-version", "timeout", "out", "format", "id", "name", "dev-url"]);
   const flagOptions = new Set(["check", "dev"]);
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -1096,14 +1061,13 @@ async function main(argv) {
     if (command === "init") outcome = await runInit(packageRoot, deps, context, { id: options.id, name: options.name, check: options.check, timeoutMs });
     else if (command === "validate") outcome = await runValidate(packageRoot, deps, context);
     else if (command === "doctor") outcome = await runDoctor(packageRoot, deps, context, timeoutMs);
-    else if (command === "pack") outcome = await runPack(packageRoot, deps, context, path.resolve(options.out ?? path.join(path.dirname(packageRoot), `${path.basename(packageRoot)}.infolens-plugin`)), timeoutMs);
-    else if (command === "publish") outcome = await runPublish(packageRoot, deps, context, options, timeoutMs);
+    else if (command === "pack") outcome = await runPack(packageRoot, deps, context, path.resolve(options.out ?? path.join(path.dirname(packageRoot), `${path.basename(packageRoot)}.zip`)), timeoutMs);
     else if (command === "dev") outcome = await runDev(packageRoot, deps, context);
     else if (command === "preview") outcome = await runPreview(packageRoot, deps, context, timeoutMs, options);
     else if (command === "adapters" && positional[0] === "list") outcome = await runListAdapters(packageRoot, deps, context);
     else {
       const result = baseResult(command ?? "unknown", context.environment);
-      outcome = { result: setFailure(result, codedError("INVALID_ARGUMENTS", "Usage: infolens-plugin <init|validate|doctor|dev|preview|pack|publish|adapters list> [plugin-path]", "arguments"), { phase: "arguments", id: "arguments" }) };
+      outcome = { result: setFailure(result, codedError("INVALID_ARGUMENTS", "Usage: infolens-plugin <init|validate|doctor|dev|preview|pack|adapters list> [plugin-path]", "arguments"), { phase: "arguments", id: "arguments" }) };
     }
   } catch (error) {
     const result = baseResult(command ?? "unknown", context.environment, await readManifest(packageRoot), packageRoot);

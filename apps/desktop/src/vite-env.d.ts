@@ -18,29 +18,31 @@ interface HostState {
 }
 
 interface PluginInstallation {
-  origin: "market" | "local" | "bundled";
+  origin: "url" | "local" | "bundled";
   version?: string;
-  name?: string;
-  description?: string;
-  registryUrl?: string;
-  indexUrl?: string;
-  artifactUrl?: string;
-  artifactSize?: number;
-  publisher?: string;
-  license?: string;
-  categories?: string[];
-  changelog?: string;
   contractVersion?: string;
   minHostVersion?: string;
-  platforms?: string[];
-  architectures?: string[];
-  publishedAt?: string;
+  sourceUrl?: string;
+  sourceFileName?: string;
   expectedSha256?: string;
   observedSha256?: string;
-  releaseStatus?: "current" | "retracted" | "incompatible" | "unknown";
-  retractionReason?: string;
   installedAt?: string;
   operationId?: string;
+  previousRevision?: PluginRevision;
+  recoveryState?: string;
+}
+
+interface PluginRevision {
+  revisionId: string;
+  id: string;
+  version?: string;
+  origin?: "url" | "local";
+  sourceUrl?: string;
+  sourceFileName?: string;
+  expectedSha256?: string;
+  observedSha256?: string;
+  enabled?: boolean;
+  createdAt?: string;
 }
 
 interface RuntimePlugin {
@@ -61,73 +63,42 @@ interface RuntimePlugin {
   capabilities?: Record<"browser" | "clipboard" | "file" | "notification", { requested: boolean; required: boolean; granted?: boolean }>;
   statusSnapshot?: StatusSnapshot;
   failure?: { code: string; message: string; logId?: string; operationId?: string; batchId?: string; timestamp?: string };
-  origin?: "market" | "local" | "bundled";
-  releaseStatus?: PluginInstallation["releaseStatus"];
+  origin?: "url" | "local" | "bundled";
   provenance?: PluginInstallation;
 }
 
-interface MarketCompatibility {
-  compatible: boolean;
-  reasons: Array<{ code: string; message: string }>;
-}
+type DistributionIntent = "install" | "replace" | "rollback";
 
-interface MarketRelease {
-  pluginId: string;
-  name: string;
-  description: string;
-  icon?: string;
-  publisher: string;
-  license: string;
-  categories: string[];
-  version: string;
-  changelog: string;
-  contractVersion: string;
-  minHostVersion: string;
-  platforms: string[];
-  architectures: string[];
-  artifact: { url: string; size: number; sha256: string };
-  publishedAt: string;
-  indexUrl?: string;
-  retraction?: { reason: string; at?: string };
-  compatibility: MarketCompatibility;
-  installable: boolean;
-}
+type DistributionSource =
+  | { kind: "local"; path: string; expectedSha256?: string }
+  | { kind: "url"; url: string; expectedSha256: string };
 
-type MarketIndexRelease = Omit<MarketRelease, "compatibility" | "installable">;
-
-interface MarketPlugin {
-  pluginId: string;
-  name: string;
-  description: string;
-  icon?: string;
-  publisher: string;
-  license: string;
-  categories: string[];
-  releases: MarketRelease[];
-  latestCompatible?: string;
-}
-
-interface MarketCatalog {
-  index?: { schemaVersion: number; generatedAt?: string; registry?: { name?: string; source?: string }; releases: MarketIndexRelease[] };
-  cachedAt?: string;
-  cacheAgeMs?: number;
-  offline: boolean;
-  connected: boolean;
-  releases: MarketRelease[];
-  plugins: MarketPlugin[];
-}
-
-interface MarketOperation {
+interface DistributionOperation {
   operationId: string;
-  pluginId: string;
-  version: string;
-  phase: "download" | "verification" | "extraction" | "package-validation" | "activation" | "complete" | "cancelled" | "failed";
-  state: "running" | "succeeded" | "cancelled" | "failed";
+  intent: DistributionIntent;
+  pluginId?: string;
+  source?: { kind: "local" | "url"; url?: string; fileName?: string; expectedSha256?: string };
+  phase: string;
+  state: "queued" | "preflight" | "committing" | "completed" | "failed" | "cancelled";
   progress?: { received: number; total?: number };
+  candidateVersion?: string;
+  candidateSha256?: string;
+  currentVersion?: string;
+  currentSha256?: string;
   observedSha256?: string;
-  startedAt: string;
-  completedAt?: string;
+  previousOperationId?: string;
+  revisionId?: string;
+  createdAt: string;
+  updatedAt: string;
+  result?: Record<string, unknown>;
   error?: { code: string; message: string };
+}
+
+interface PluginRevisionsResponse {
+  pluginId: string;
+  current: PluginInstallation | null;
+  previous: PluginRevision | null;
+  rollbackAvailable: boolean;
 }
 
 type BrowserStatusOverall = "connected" | "degraded" | "disconnected" | "unknown";
@@ -299,8 +270,7 @@ interface LogQueryRequest {
 interface Window {
   infolens?: {
     getRuntimeInfo(): Promise<RuntimeInfo | undefined>;
-    selectPluginFolder(): Promise<string | null>;
-    selectPluginArchive(): Promise<string | null>;
+    selectPluginArchive(): Promise<{ fileName: string; data: ArrayBuffer; expectedSha256?: string } | null>;
     copyText(value: string): Promise<void>;
     downloadText(value: { filename: string; text: string }): Promise<{ canceled: boolean; filename?: string }>;
     onRuntimeStatus(listener: (event: RuntimeStatusEvent) => void): () => void;

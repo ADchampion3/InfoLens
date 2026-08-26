@@ -6,6 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { test } from "node:test";
 import { observeWorkspaceTheme, workspaceTheme } from "@infolens/plugin-sdk";
+import { writeDeterministicZip } from "@infolens/plugin-distribution";
 
 const root = path.resolve(import.meta.dirname, "..");
 const openCliRoot = path.join(root, "tests/fixtures/plugin-contract/opencli");
@@ -51,6 +52,15 @@ async function packageProvidedFixture(packageRoot, id, adapterVersion) {
   await writeFile(path.join(adapterRoot, "opencli-plugin.json"), JSON.stringify({ name: "io.infolens.producthunt", version: adapterVersion, opencli: ">=1.8.6 <2.0.0" }));
   await writeFile(path.join(adapterRoot, "today.js"), `export const version = "${adapterVersion}";`);
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+}
+
+async function waitForDistribution(origin, operationId) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const current = await request(origin, `/runtime/plugins/distribution/operations/${encodeURIComponent(operationId)}`);
+    if (["completed", "failed", "cancelled"].includes(current.body.state)) return current.body;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Distribution operation ${operationId} did not finish`);
 }
 
 function startRuntime(temporaryRoot, environment = {}) {
@@ -102,9 +112,11 @@ test("host state, package lifecycle, diagnostics, and removal run through Runtim
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-plugin-lifecycle-"));
   const installedRoot = path.join(temporaryRoot, "managed-plugins", "existing");
   const sourceRoot = path.join(temporaryRoot, "source-package");
+  const sourceArchive = path.join(temporaryRoot, "daily-reader.zip");
   const rejectedRoot = path.join(temporaryRoot, "managed-plugins", "rejected-package");
   await packageFixture(installedRoot, "existing");
   await packageFixture(sourceRoot, "daily-reader");
+  const sourceArtifact = await writeDeterministicZip(sourceRoot, sourceArchive);
   await packageFixture(rejectedRoot, "rejected-package", { valid: false });
   let running = await startRuntime(temporaryRoot);
   try {
@@ -120,15 +132,19 @@ test("host state, package lifecycle, diagnostics, and removal run through Runtim
     const disabled = await request(origin, "/runtime/info");
     assert.equal(disabled.body.plugins.find(({ id }) => id === "existing").state, "disabled");
 
-    const installed = await request(origin, "/runtime/plugins/install", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourcePath: sourceRoot }) });
-    assert.equal(installed.response.status, 201);
-    assert.equal(installed.body.pluginId, "daily-reader");
+    const installedRequest = await request(origin, "/runtime/plugins/distribution", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ intent: "install", source: { kind: "local", path: sourceArchive, expectedSha256: sourceArtifact.sha256 } }) });
+    assert.equal(installedRequest.response.status, 202);
+    const installed = await waitForDistribution(origin, installedRequest.body.operationId);
+    assert.equal(installed.state, "completed", JSON.stringify(installed));
+    assert.equal(installed.result.pluginId, "daily-reader");
     await access(path.join(temporaryRoot, "managed-plugins", "daily-reader", "manifest.json"));
 
-    const duplicate = await request(origin, "/runtime/plugins/install", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourcePath: sourceRoot }) });
-    assert.equal(duplicate.response.status, 409);
-    assert.equal(duplicate.body.code, "DUPLICATE_PLUGIN_ID");
-    assert.match(duplicate.body.error, /remove the installed plugin first/);
+    const duplicateRequest = await request(origin, "/runtime/plugins/distribution", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ intent: "install", source: { kind: "local", path: sourceArchive, expectedSha256: sourceArtifact.sha256 } }) });
+    assert.equal(duplicateRequest.response.status, 202);
+    const duplicate = await waitForDistribution(origin, duplicateRequest.body.operationId);
+    assert.equal(duplicate.state, "failed", JSON.stringify(duplicate));
+    assert.equal(duplicate.error.code, "DUPLICATE_PLUGIN_ID");
+    assert.match(duplicate.error.message, /explicit replacement/);
 
     const diagnostics = await request(origin, "/runtime/plugins/daily-reader/diagnostics");
     assert.match(diagnostics.body.diagnostics, /fixture-ready/);
@@ -144,11 +160,14 @@ test("host state, package lifecycle, diagnostics, and removal run through Runtim
     const runtimeLogRoot = path.join(temporaryRoot, "data", "plugins", "_runtime", "logs");
     const runtimeEntries = (await Promise.all((await readdir(runtimeLogRoot)).filter((name) => name.startsWith("runtime.log")).map((name) => readFile(path.join(runtimeLogRoot, name), "utf8"))))
       .flatMap((content) => content.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse));
-    for (const messages of [["plugin-install-started", "plugin-install-completed {\"pluginId\":\"daily-reader\"}"], ["plugin-removal-started {\"pluginId\":\"daily-reader\"}", "plugin-removal-completed {\"pluginId\":\"daily-reader\"}"]]) {
-      const completed = runtimeEntries.find((entry) => entry.message === messages[1]);
-      assert(completed?.operationId, `${messages[1]} did not have an operation ID`);
-      assert.deepEqual(runtimeEntries.filter((entry) => entry.operationId === completed.operationId).map(({ message }) => message), messages);
-    }
+    const distributionStarted = runtimeEntries.find((entry) => entry.message.startsWith("distribution-operation-started"));
+    const distributionCompleted = runtimeEntries.find((entry) => entry.message.startsWith("distribution-operation-completed"));
+    assert(distributionStarted?.operationId, "distribution operation start did not have an operation ID");
+    assert.equal(distributionCompleted?.operationId, distributionStarted.operationId);
+    assert.match(distributionCompleted?.message ?? "", /^distribution-operation-completed /);
+    const removalCompleted = runtimeEntries.find((entry) => entry.message === "plugin-removal-completed {\"pluginId\":\"daily-reader\"}");
+    assert(removalCompleted?.operationId, "plugin removal did not have an operation ID");
+    assert.deepEqual(runtimeEntries.filter((entry) => entry.operationId === removalCompleted.operationId).map(({ message }) => message), ["plugin-removal-started {\"pluginId\":\"daily-reader\"}", "plugin-removal-completed {\"pluginId\":\"daily-reader\"}"]);
   } finally {
     await stopRuntime(running.child);
   }

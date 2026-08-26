@@ -110,9 +110,25 @@ _Avoid_: Selected plugin, visible workspace
 The fixed `plugins/` location that the host scans for discovered plugin packages.
 _Avoid_: Marketplace, remote registry
 
+**Personal Plugin Distribution**:
+The explicit local-first path for installing a trusted Plugin from a deterministic ZIP or a direct HTTPS URL with an expected SHA-256. It has no catalog, publisher registry, retraction channel, or background updater.
+_Avoid_: Market, automatic upgrade service
+
+**Distribution Artifact**:
+A deterministic Plugin ZIP accompanied by an external `.sha256` digest file and a machine-readable `.distribution.json` description.
+_Avoid_: Registry release, mutable package folder
+
+**Plugin Revision**:
+A complete Runtime snapshot of one installed Plugin package, its Plugin-owned data, Adapter Scope, Host State metadata, and enabled state retained for local rollback.
+_Avoid_: Backup archive, package cache
+
+**Distribution Operation**:
+A durable Runtime command with an `install`, `replace`, or `rollback` intent, normalized source, phase, status, journal, and operation ID.
+_Avoid_: Client-side upload job, background update
+
 **Plugin Manager**:
-The host surface for listing installed plugins and explicitly removing one before a replacement installation.
-_Avoid_: Automatic upgrader, marketplace
+The host surface for importing or installing Distribution Artifacts, replacing and rolling back Plugin Revisions, inspecting status, and explicitly removing a plugin.
+_Avoid_: Catalog browser, automatic upgrader
 
 **Plugin Removal**:
 An explicit plugin-manager action that stops a plugin and deletes both its package and plugin-owned data.

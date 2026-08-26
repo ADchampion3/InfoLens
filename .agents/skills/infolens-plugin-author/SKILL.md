@@ -1,6 +1,6 @@
 ---
 name: infolens-plugin-author
-description: Develop, review, and package Infolens Plugin Contract Version 2 packages, including manifests, Plugin Backend modules, static Workspace Bundles, OpenCLI command mappings, Provided OpenCLI Adapters, author validation, preview, packing, and Market publication. Use when adding or changing an Infolens Plugin or its OpenCLI integration.
+description: Develop, review, and package Infolens Plugin Contract Version 2 packages, including manifests, Plugin Backend modules, static Workspace Bundles, OpenCLI command mappings, Provided OpenCLI Adapters, author validation, preview, and Personal Plugin Distribution artifacts. Use when adding or changing an Infolens Plugin or its OpenCLI integration.
 ---
 
 # Infolens Plugin Author
@@ -169,7 +169,7 @@ npm run plugin -- adapters list path\to\my-plugin --format text
 npm run plugin -- dev path\to\my-plugin --format text
 npm run plugin -- doctor path\to\my-plugin --timeout 10000 --format text
 npm run plugin -- preview path\to\my-plugin --format text
-npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.infolens-plugin --format text
+npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.zip --format text
 ```
 
 - `validate` checks manifest, entry files, compatibility, command mappings,
@@ -188,17 +188,18 @@ npm run plugin -- pack path\to\my-plugin --out ..\my-plugin.infolens-plugin --fo
   its URL as a Runtime/API smoke surface, not a UI test.
 - `pack` copies the exact package contents to staging, excludes
   `node_modules`, `.git`, `.infolens-dev`, and old `adapter-integrity.json`,
-  runs staged `doctor`, writes fresh adapter hashes, and atomically publishes
-  a directory. The output must be outside the source package and must not
-  already exist; it is not a ZIP archive.
+  runs staged `doctor`, writes fresh adapter hashes into a deterministic ZIP,
+  and creates `<artifact>.sha256` plus `<artifact>.distribution.json`.
+  Outputs must be outside the source package and all three paths must be new.
 
-Use `publish` only for an approved Market release. It runs `pack`, creates a
-deterministic ZIP, and updates a registry; it requires a valid maintainer
-approval record and an unused `pluginId/version` pair.
+Personal Plugin Distribution has no `publish` command, central catalog,
+Registry, retraction, or background update workflow. A Host accepts the ZIP
+locally or accepts a direct HTTPS URL together with its expected SHA-256.
 
 Completion: `validate`, `doctor`, and `pack` return `ok: true`; all warnings
-are understood; `adapter-integrity.json` exists in the packed directory; and
-any live-source verification still required is named explicitly.
+are understood; the ZIP contains `adapter-integrity.json`; the SHA-256 and
+distribution-description companions exist; and any live-source verification
+still required is named explicitly.
 
 ## Diagnose Failures
 

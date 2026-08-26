@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, cp, copyFile, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -19,7 +19,9 @@ import { refreshInputKey, sanitizeRefreshOptions } from "./refresh-options.mjs";
 import { BatchManager, BATCH_TERMINAL_STATES } from "./batch-manager.mjs";
 import { garbageCollectAdapterStore, preparePluginAdapterScope, removePluginAdapterScope } from "./adapter-scope.mjs";
 import { aggregateDailySummary } from "./daily-summary.mjs";
-import { extractZip, sha256File } from "@infolens/plugin-market/archive";
+import { extractZip } from "@infolens/plugin-distribution/archive";
+import { PluginDistributionModule } from "@infolens/plugin-distribution/module";
+import { DEFAULT_SOURCE_LIMITS, DistributionError, downloadDistributionSource, normalizeDistributionFileName, stageLocalDistributionSource } from "@infolens/plugin-distribution/source";
 import {
   acquireDaemonLock,
   daemonPaths,
@@ -29,7 +31,6 @@ import {
   writeDaemonDiscovery,
 } from "./daemon-state.mjs";
 import { createBackup, restoreBackup } from "./backup.mjs";
-import { PluginMarketService } from "@infolens/plugin-market";
 
 const projectRoot = process.env.INFOLENS_PROJECT_ROOT
   ? path.resolve(process.env.INFOLENS_PROJECT_ROOT)
@@ -56,6 +57,11 @@ const pluginSdkTokenEntry = path.join(pluginSdkRoot, "workspace-tokens.css");
 const pluginSdkWorkspaceStyles = path.join(pluginSdkRoot, "workspace.css");
 const hostStatePath = path.resolve(process.env.INFOLENS_HOST_STATE_PATH ?? (daemonMode ? configuredDaemonPaths.hostStatePath : path.join(path.dirname(dataRoot), "host-state.json")));
 const adapterRegistryRoot = path.resolve(process.env.INFOLENS_ADAPTER_REGISTRY_ROOT ?? (daemonMode ? configuredDaemonPaths.adapterRegistryRoot : path.join(path.dirname(dataRoot), "opencli-adapters")));
+const distributionRoot = path.resolve(process.env.INFOLENS_DISTRIBUTION_ROOT ?? (daemonMode ? configuredDaemonPaths.distributionRoot : path.join(path.dirname(dataRoot), "plugin-distribution")));
+const distributionJournalRoot = path.resolve(process.env.INFOLENS_DISTRIBUTION_JOURNAL_ROOT ?? path.join(distributionRoot, "journals"));
+const distributionRevisionRoot = path.resolve(process.env.INFOLENS_DISTRIBUTION_REVISION_ROOT ?? path.join(distributionRoot, "revisions"));
+const distributionOperationRoot = path.join(distributionRoot, "operations");
+const distributionStatusRoot = path.join(distributionRoot, "status");
 const batchStatePath = process.env.INFOLENS_BATCH_STATE_PATH
   ? path.resolve(process.env.INFOLENS_BATCH_STATE_PATH)
   : (daemonMode ? configuredDaemonPaths.batchStatePath : undefined);
@@ -136,7 +142,48 @@ let operationRecordsWrite = Promise.resolve();
 const hostState = new HostStateStore(hostStatePath);
 await hostState.load();
 let batchManager;
-let marketService;
+const distributionLocks = new Map();
+const distributionJournals = new Map();
+const distributionModule = new PluginDistributionModule({
+  maxOperations: 1_000,
+  execute: ({ operation }) => executeDistributionOperation(operation),
+  onCreate: async (operation) => {
+    await persistDistributionStatus(operation);
+    await writeDistributionJournal(operation);
+    await runtimeLogger.info("distribution-operation-started", {
+      operationId: operation.operationId,
+      intent: operation.intent,
+      ...(operation.pluginId ? { pluginId: operation.pluginId } : {}),
+      ...(operation.source ? { source: publicDistributionSource(operation.source) } : {}),
+    }).catch(() => {});
+  },
+  onComplete: async (operation, result) => {
+    await persistDistributionStatus(operation).catch(() => {});
+    await writeDistributionJournal(operation).catch(() => {});
+    await runtimeLogger.info("distribution-operation-completed", {
+      operationId: operation.operationId,
+      intent: operation.intent,
+      pluginId: operation.pluginId,
+      version: result?.version,
+      observedSha256: result?.observedSha256,
+      ...(result?.previousRevision?.revisionId ? { revisionId: result.previousRevision.revisionId } : {}),
+    }).catch(() => {});
+    await removeDistributionJournal(operation.operationId).catch(() => {});
+  },
+  onFailure: async (operation) => {
+    await updateDistributionOperation(operation, operation.state, operation.phase, { error: operation.error }).catch(() => {});
+    await runtimeLogger[operation.state === "cancelled" ? "warn" : "error"]("distribution-operation-failed", {
+      operationId: operation.operationId,
+      intent: operation.intent,
+      ...(operation.pluginId ? { pluginId: operation.pluginId } : {}),
+      phase: operation.phase,
+      ...operation.error,
+    }).catch(() => {});
+    await removeDistributionJournal(operation.operationId).catch(() => {});
+  },
+});
+const distributionOperations = distributionModule.operations;
+const distributionControllers = distributionModule.controllers;
 
 async function loadOperationRecords() {
   if (!operationRecordsPath) return;
@@ -219,32 +266,8 @@ function defaultInstallationRecord(id, version) {
   return {
     origin: bundledPluginIds.has(id) ? "bundled" : "local",
     version,
-    releaseStatus: "unknown",
     installedAt: new Date().toISOString(),
   };
-}
-
-async function reconcileMarketProvenance(releases = []) {
-  const byRelease = new Map(
-    (Array.isArray(releases) ? releases : [])
-      .filter((release) => typeof release?.pluginId === "string" && typeof release?.version === "string")
-      .map((release) => [`${release.pluginId}@${release.version}`, release]),
-  );
-  return hostState.update((state) => {
-    const pluginInstallations = { ...(state.pluginInstallations ?? {}) };
-    for (const [id, record] of Object.entries(pluginInstallations)) {
-      if (record.origin !== "market") continue;
-      const release = byRelease.get(`${id}@${record.version}`);
-      if (!release) {
-        pluginInstallations[id] = { ...record, releaseStatus: "unknown", retractionReason: undefined };
-      } else if (release.retraction) {
-        pluginInstallations[id] = { ...record, releaseStatus: "retracted", retractionReason: release.retraction.reason };
-      } else {
-        pluginInstallations[id] = { ...record, releaseStatus: "current", retractionReason: undefined };
-      }
-    }
-    return { ...state, pluginInstallations };
-  });
 }
 
 function emitStatus(type, pluginId, details = {}) {
@@ -389,7 +412,7 @@ function setCorsHeaders(request, response, pathname) {
   if (typeof origin !== "string" || !corsOrigins.has(origin)) return;
   response.setHeader("access-control-allow-origin", origin);
   response.setHeader("access-control-allow-credentials", "true");
-  response.setHeader("access-control-allow-headers", "authorization, content-type, x-infolens-operation-id, x-infolens-bootstrap");
+  response.setHeader("access-control-allow-headers", "authorization, content-type, x-infolens-operation-id, x-infolens-bootstrap, x-infolens-distribution-intent, x-infolens-plugin-id, x-infolens-distribution-file-name, x-infolens-expected-sha256");
   response.setHeader("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
   response.setHeader("vary", "Origin");
 }
@@ -972,7 +995,7 @@ function publicPlugin(plugin, origin) {
     packagePath: plugin.packageRoot,
     capabilities: publicCapabilities(plugin.manifest),
     enabled: true,
-    ...(provenance ? { origin: provenance.origin, releaseStatus: provenance.releaseStatus, provenance } : {}),
+    ...(provenance ? { origin: provenance.origin, provenance } : {}),
     browserDependent,
     ...(browserDependent ? { dependencyState, dependencyWarning: dependencyState !== "connected" } : { dependencyState: "not-required" }),
     statusSnapshot,
@@ -1014,7 +1037,7 @@ function publicCompatiblePlugin(descriptor, origin) {
   return {
     id, name: manifest.name, version: manifest.version, icon: manifest.icon,
     state: "disabled", enabled: false, packagePath: descriptor.packageRoot,
-    ...(provenance ? { origin: provenance.origin, releaseStatus: provenance.releaseStatus, provenance } : {}),
+    ...(provenance ? { origin: provenance.origin, provenance } : {}),
     browserDependent,
     ...(browserDependent ? { dependencyState: "unknown", dependencyWarning: true } : { dependencyState: "not-required" }),
     workspaceUrl: `${origin}/plugins/${id}/workspace/`,
@@ -1121,49 +1144,26 @@ batchManager = new BatchManager({
   onEvent: (event, details) => emitBatchEvent(event, details),
 });
 
-async function initializeMarketService() {
-  if (!daemonMode) return;
-  const marketRoot = path.join(configuredDaemonPaths.root, "market");
-  const registryUrl = process.env.INFOLENS_MARKET_REGISTRY_URL
-    || (process.env.INFOLENS_TEST_CONTROL === "1" ? process.env.INFOLENS_TEST_MARKET_REGISTRY_URL : undefined);
-  marketService = new PluginMarketService({
-    ...(registryUrl ? { registryUrl } : {}),
-    cachePath: path.join(marketRoot, "catalog.json"),
-    tempRoot: path.join(marketRoot, "installations"),
-    hostVersion: DEFAULT_TARGET_HOST_VERSION,
-    contractVersion: String(PLUGIN_CONTRACT_VERSION),
-    logger: (entry) => runtimeLogger.info(entry.event ?? "market-operation", entry),
-    reconcileProvenance: (index) => reconcileMarketProvenance(index?.releases),
-    runtimeClient: ({ archivePath, expectedSha256, observedSha256, release, operationId, signal }) => installArchive({
-      archivePath,
-      expectedSha256,
-      observedSha256,
-      release,
-      operationId,
-      signal,
-      origin: "market",
-    }),
-  });
-  try { await marketService.initialize(); }
-  catch (error) {
-    await runtimeLogger.warn("market-service-initialization-failed", errorDetails(error));
-  }
-}
-
 async function deactivatePlugin(plugin, options = {}) {
+  const deactivationGuard = typeof options.deactivationGuard === "function" ? options.deactivationGuard : () => true;
+  const deferRouteCleanup = options.deferRouteCleanup === true;
   if (plugin.diagnostic) {
     plugin.diagnostic.phase = "cleanup";
     process.stdout.write(`${JSON.stringify({ type: "diagnostic-phase", pluginId: plugin.manifest.id, phase: "cleanup" })}\n`);
   }
   if (!options.skipTaskStop) await plugin.taskManager.stop(options);
-  plugin.routes.clear();
+  if (!deactivationGuard()) return { ok: false, phase: "cleanup", failure: { code: "PLUGIN_DEACTIVATION_TIMED_OUT", message: "Plugin deactivation finished after its Runtime deadline" } };
+  if (!deferRouteCleanup) plugin.routes.clear();
   let cleanup;
   try {
     await plugin.lifecycle?.deactivate?.();
+    if (!deactivationGuard()) return { ok: false, phase: "cleanup", failure: { code: "PLUGIN_DEACTIVATION_TIMED_OUT", message: "Plugin deactivation finished after its Runtime deadline" } };
+    if (deferRouteCleanup) plugin.routes.clear();
     await plugin.logger.info("plugin-deactivated");
     emitStatus("deactivated", plugin.manifest.id);
     cleanup = { ok: true, phase: "cleanup" };
   } catch (error) {
+    if (!deactivationGuard()) return { ok: false, phase: "cleanup", failure: { code: "PLUGIN_DEACTIVATION_TIMED_OUT", message: "Plugin deactivation finished after its Runtime deadline" } };
     const failure = { ...errorDetails(error), code: error?.code ?? "PLUGIN_CLEANUP_FAILED", phase: "cleanup" };
     setPluginStatus(plugin, "failed", { failure });
     await plugin.logger.error("cleanup-failed", failure);
@@ -1189,6 +1189,45 @@ async function readJsonBody(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+function requestHeader(request, name) {
+  const value = request.headers[name.toLowerCase()];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function uploadedDistributionFileName(request) {
+  const raw = requestHeader(request, "x-infolens-distribution-file-name");
+  if (!raw) return undefined;
+  let decoded;
+  try { decoded = decodeURIComponent(raw); } catch { throw new DistributionError("DISTRIBUTION_FILE_NAME_INVALID", "Distribution file name is invalid"); }
+  return normalizeDistributionFileName(decoded);
+}
+
+async function receiveDistributionUpload(request, destination, maxBytes = DEFAULT_SOURCE_LIMITS.maxTemporaryBytes) {
+  const declaredLength = Number(requestHeader(request, "content-length") ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    request.resume();
+    throw new DistributionError("DISTRIBUTION_UPLOAD_TOO_LARGE", "Distribution upload exceeds the temporary storage limit");
+  }
+  await mkdir(path.dirname(destination), { recursive: true });
+  const handle = await open(destination, "wx", 0o600);
+  let received = 0;
+  let complete = false;
+  try {
+    for await (const chunk of request) {
+      const value = Buffer.from(chunk);
+      received += value.length;
+      if (received > maxBytes) throw new DistributionError("DISTRIBUTION_UPLOAD_TOO_LARGE", "Distribution upload exceeds the temporary storage limit");
+      await handle.write(value);
+    }
+    if (!received) throw new DistributionError("DISTRIBUTION_UPLOAD_EMPTY", "Distribution upload is empty");
+    complete = true;
+    return received;
+  } finally {
+    await handle.close().catch(() => {});
+    if (!complete) await rm(destination, { force: true });
+  }
+}
+
 async function setPluginEnabled(id, enabled) {
   const descriptor = findCompatible(id);
   if (!descriptor) throw new ContractError("PLUGIN_NOT_FOUND", `plugin '${id}' is not installed and compatible`);
@@ -1209,211 +1248,840 @@ async function setPluginEnabled(id, enabled) {
   }));
 }
 
-function assertInstallableId(id, { market = false } = {}) {
-  if (market && bundledPluginIds.has(id)) throw new ContractError("MARKET_BUNDLED_CONFLICT", `Market plugin '${id}' conflicts with a Bundled Plugin; remove or replace the bundled package through a Host release`);
-  if (compatiblePlugins.some((plugin) => plugin.validated.manifest.id === id) || rejectedPlugins.some((plugin) => plugin.id === id) || installingPluginIds.has(id)) {
-    throw new ContractError("DUPLICATE_PLUGIN_ID", `plugin id '${id}' is already installed; remove the installed plugin first`);
-  }
+function safeDistributionSegment(value) {
+  const raw = String(value);
+  if (/^[A-Za-z0-9._-]{1,160}$/u.test(raw) && raw !== "." && raw !== "..") return raw;
+  return "operation-" + createHash("sha256").update(raw).digest("hex").slice(0, 48);
 }
 
-function marketReleaseArtifact(release) {
-  const artifact = release?.artifact && typeof release.artifact === "object" && !Array.isArray(release.artifact) ? release.artifact : {};
+function pathIsWithin(root, target) {
+  const relation = path.relative(path.resolve(root), path.resolve(target));
+  return relation === "" || (!relation.startsWith("..") && !path.isAbsolute(relation));
+}
+
+function isManagedPluginId(value) {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9-]*$/u.test(value);
+}
+
+function managedChildPath(root, target, label) {
+  if (typeof target !== "string") throw new Error(`${label} is missing`);
+  const resolved = path.resolve(target);
+  const relation = path.relative(path.resolve(root), resolved);
+  if (!relation || relation.startsWith("..") || path.isAbsolute(relation)) throw new Error(`${label} is outside its managed directory`);
+  return resolved;
+}
+
+function maybeManagedChildPath(root, target, label) {
+  if (typeof target !== "string") return undefined;
+  try { return managedChildPath(root, target, label); } catch { return undefined; }
+}
+
+function journalOperationRoot(journal) {
+  const target = journal.paths?.operationRoot
+    ?? (typeof journal.operationId === "string" ? distributionOperationPath(journal.operationId) : undefined);
+  return target ? maybeManagedChildPath(distributionOperationRoot, target, "Distribution operation") : undefined;
+}
+
+function distributionJournalPath(operationId) {
+  return path.join(distributionJournalRoot, safeDistributionSegment(operationId) + ".json");
+}
+
+function distributionStatusPath(operationId) {
+  return path.join(distributionStatusRoot, safeDistributionSegment(operationId) + ".json");
+}
+
+function distributionOperationPath(operationId) {
+  return path.join(distributionOperationRoot, safeDistributionSegment(operationId));
+}
+
+function publicDistributionSource(source) {
+  if (!source) return undefined;
   return {
-    pluginId: release?.pluginId,
-    version: release?.version,
-    contractVersion: String(release?.contractVersion ?? ""),
-    minHostVersion: release?.minHostVersion,
-    platforms: release?.platforms ?? [],
-    architectures: release?.architectures ?? [],
-    retraction: release?.retraction,
-    sha256: artifact.sha256,
+    kind: source.kind,
+    ...(source.url ? { url: source.url } : {}),
+    ...(source.fileName ? { fileName: source.fileName } : {}),
+    ...(source.expectedSha256 ? { expectedSha256: source.expectedSha256 } : {}),
   };
 }
 
-function releasePlatformMatches(platforms) {
-  const aliases = new Set(platforms.map((value) => value === "windows" ? "win32" : value === "macos" ? "darwin" : value));
-  return aliases.has(process.platform);
+function publicDistributionOperation(operation) {
+  if (!operation) return undefined;
+  return {
+    operationId: operation.operationId,
+    intent: operation.intent,
+    ...(operation.pluginId ? { pluginId: operation.pluginId } : {}),
+    state: operation.state,
+    phase: operation.phase,
+    createdAt: operation.createdAt,
+    updatedAt: operation.updatedAt,
+    ...(publicDistributionSource(operation.source) ? { source: publicDistributionSource(operation.source) } : {}),
+    ...(operation.progress ? { progress: structuredClone(operation.progress) } : {}),
+    ...(operation.candidateVersion ? { candidateVersion: operation.candidateVersion } : {}),
+    ...(operation.candidateSha256 ? { candidateSha256: operation.candidateSha256 } : {}),
+    ...(operation.currentVersion ? { currentVersion: operation.currentVersion } : {}),
+    ...(operation.currentSha256 ? { currentSha256: operation.currentSha256 } : {}),
+    ...(operation.observedSha256 ? { observedSha256: operation.observedSha256 } : {}),
+    ...(operation.previousOperationId ? { previousOperationId: operation.previousOperationId } : {}),
+    ...(operation.revisionId ? { revisionId: operation.revisionId } : {}),
+    ...(operation.result ? { result: structuredClone(operation.result) } : {}),
+    ...(operation.error ? { error: structuredClone(operation.error) } : {}),
+  };
 }
 
-function releaseArchitectureMatches(architectures) {
-  return architectures.includes(process.arch) || (process.arch === "x64" && architectures.includes("amd64"));
+async function writeJsonAtomically(filename, value) {
+  await mkdir(path.dirname(filename), { recursive: true });
+  const temporary = filename + "." + process.pid + "." + randomUUID() + ".tmp";
+  try {
+    await writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    await rename(temporary, filename);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
-function assertMarketReleaseManifest(manifest, release) {
-  const expected = marketReleaseArtifact(release);
-  if (expected.pluginId !== manifest.id) throw new ContractError("MARKET_MANIFEST_MISMATCH", "Downloaded package ID does not match the selected Market release");
-  if (expected.version !== manifest.version) throw new ContractError("MARKET_MANIFEST_MISMATCH", "Downloaded package version does not match the selected Market release");
-  if (expected.contractVersion !== String(manifest.contractVersion)) throw new ContractError("MARKET_MANIFEST_MISMATCH", "Downloaded package Contract Version does not match the selected Market release");
-  if (expected.minHostVersion !== manifest.minHostVersion) throw new ContractError("MARKET_MANIFEST_MISMATCH", "Downloaded package Minimum Host Version does not match the selected Market release");
-  if (!releasePlatformMatches(expected.platforms)) throw new ContractError("UNSUPPORTED_PLATFORM", `Market release does not support platform '${process.platform}'`);
-  if (!releaseArchitectureMatches(expected.architectures)) throw new ContractError("UNSUPPORTED_ARCHITECTURE", `Market release does not support architecture '${process.arch}'`);
-  if (expected.retraction) throw new ContractError("MARKET_RELEASE_RETRACTED", "The selected Market release has been retracted");
+async function persistDistributionStatus(operation) {
+  const { promise: _promise, controller: _controller, signal: _signal, ...serializable } = operation;
+  await writeJsonAtomically(distributionStatusPath(operation.operationId), serializable);
 }
 
-async function commitPluginCandidate(stageRoot, validated, { origin, release, expectedSha256, observedSha256, operationId } = {}) {
+async function writeDistributionJournal(operation, extra = {}) {
+  const journal = {
+    version: 1,
+    operationId: operation.operationId,
+    intent: operation.intent,
+    ...(operation.pluginId ? { pluginId: operation.pluginId } : {}),
+    phase: operation.phase,
+    state: operation.state,
+    source: publicDistributionSource(operation.source),
+    createdAt: operation.createdAt,
+    updatedAt: operation.updatedAt,
+    ...(operation.candidateVersion ? { candidateVersion: operation.candidateVersion } : {}),
+    ...(operation.candidateSha256 ? { candidateSha256: operation.candidateSha256 } : {}),
+    ...(operation.currentVersion ? { currentVersion: operation.currentVersion } : {}),
+    ...(operation.currentSha256 ? { currentSha256: operation.currentSha256 } : {}),
+    ...(operation.observedSha256 ? { observedSha256: operation.observedSha256 } : {}),
+    ...(operation.previousOperationId ? { previousOperationId: operation.previousOperationId } : {}),
+    ...(operation.paths ? { paths: structuredClone(operation.paths) } : {}),
+    ...(operation.revision ? { revision: structuredClone(operation.revision) } : {}),
+    ...(operation.oldInstallation ? { oldInstallation: structuredClone(operation.oldInstallation) } : {}),
+    ...(operation.oldEnabled !== undefined ? { oldEnabled: operation.oldEnabled } : {}),
+    ...(operation.oldStatusSnapshot ? { oldStatusSnapshot: structuredClone(operation.oldStatusSnapshot) } : {}),
+    ...(operation.result ? { result: structuredClone(operation.result) } : {}),
+    ...(operation.error ? { error: structuredClone(operation.error) } : {}),
+    ...extra,
+  };
+  distributionJournals.set(operation.operationId, journal);
+  await writeJsonAtomically(distributionJournalPath(operation.operationId), journal);
+}
+
+async function removeDistributionJournal(operationId) {
+  distributionJournals.delete(operationId);
+  await rm(distributionJournalPath(operationId), { force: true });
+}
+
+async function updateDistributionOperation(operation, state, phase, details = {}) {
+  Object.assign(operation, details, { state, phase, updatedAt: new Date().toISOString() });
+  await persistDistributionStatus(operation);
+  await writeDistributionJournal(operation);
+  emitDaemonEvent("distribution-progress", publicDistributionOperation(operation));
+  return publicDistributionOperation(operation);
+}
+
+async function loadDistributionStatuses() {
+  try {
+    for (const entry of await readdir(distributionStatusRoot, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      try {
+        const value = JSON.parse(await readFile(path.join(distributionStatusRoot, entry.name), "utf8"));
+        if (typeof value.operationId === "string") distributionOperations.set(value.operationId, value);
+      } catch {}
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+async function copyPathIfPresent(source, destination) {
+  try {
+    const details = await stat(source);
+    await rm(destination, { recursive: true, force: true });
+    if (details.isDirectory()) await cp(source, destination, { recursive: true, errorOnExist: true });
+    else if (details.isFile()) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await copyFile(source, destination, { force: false });
+    } else throw new Error("Managed distribution state must contain regular files or directories");
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function revisionDescriptor(id, revisionId, installation, enabled, createdAt) {
+  return {
+    revisionId,
+    id,
+    version: installation?.version,
+    origin: installation?.origin,
+    ...(installation?.sourceUrl ? { sourceUrl: installation.sourceUrl } : {}),
+    ...(installation?.sourceFileName ? { sourceFileName: installation.sourceFileName } : {}),
+    ...(installation?.expectedSha256 ? { expectedSha256: installation.expectedSha256 } : {}),
+    ...(installation?.observedSha256 ? { observedSha256: installation.observedSha256 } : {}),
+    enabled: Boolean(enabled),
+    createdAt,
+  };
+}
+
+async function createRevisionSnapshot(id, packageRoot, installation, enabled, statusSnapshot) {
+  if (!isManagedPluginId(id)) throw new ContractError("DISTRIBUTION_PLUGIN_ID_INVALID", "Plugin ID is not safe for a distribution revision");
+  const revisionId = Date.now() + "-" + randomUUID();
+  const root = path.join(distributionRevisionRoot, id, revisionId);
+  const packageSnapshot = path.join(root, "package");
+  const createdAt = new Date().toISOString();
+  const descriptor = revisionDescriptor(id, revisionId, installation, enabled, createdAt);
+  try {
+    await mkdir(path.join(distributionRevisionRoot, id), { recursive: true });
+    if (!await copyPathIfPresent(packageRoot, packageSnapshot)) throw new Error("Current Plugin package is missing");
+    await copyPathIfPresent(path.join(dataRoot, id), path.join(root, "data"));
+    await copyPathIfPresent(path.join(adapterRegistryRoot, "scopes", id), path.join(root, "adapter-scope"));
+    await writeJsonAtomically(path.join(root, "metadata.json"), {
+      version: 1,
+      pluginId: id,
+      revisionId,
+      complete: true,
+      installation: structuredClone(installation ?? {}),
+      enabled: Boolean(enabled),
+      ...(statusSnapshot ? { statusSnapshot: structuredClone(statusSnapshot) } : {}),
+      descriptor,
+      createdAt,
+    });
+    await writeFile(path.join(root, ".complete"), "complete\n", { flag: "wx" });
+    return { root, revisionId, descriptor };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    const failure = new ContractError("DISTRIBUTION_SNAPSHOT_FAILED", "Plugin revision snapshot could not be completed");
+    failure.cause = error;
+    throw failure;
+  }
+}
+
+async function removeRevision(id, revision) {
+  const revisionId = typeof revision === "string" ? revision : revision?.revisionId;
+  if (!revisionId || !/^[A-Za-z0-9._-]+$/u.test(revisionId)) return;
+  const root = path.join(distributionRevisionRoot, id, revisionId);
+  if (!pathIsWithin(distributionRevisionRoot, root)) throw new Error("Refusing to remove a revision outside the distribution directory");
+  await rm(root, { recursive: true, force: true });
+  const parent = path.join(distributionRevisionRoot, id);
+  try { if ((await readdir(parent)).length === 0) await rm(parent, { recursive: true, force: true }); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+}
+
+async function readCompleteRevision(id, revision) {
+  if (!isManagedPluginId(id)) throw new ContractError("DISTRIBUTION_PLUGIN_ID_INVALID", "Plugin ID is not safe for a distribution revision");
+  const revisionId = typeof revision === "string" ? revision : revision?.revisionId;
+  if (!revisionId || !/^[A-Za-z0-9._-]+$/u.test(revisionId)) throw new ContractError("DISTRIBUTION_REVISION_UNAVAILABLE", "The previous Plugin revision identity is invalid");
+  const root = path.join(distributionRevisionRoot, id, revisionId);
+  if (!pathIsWithin(distributionRevisionRoot, root) || path.relative(distributionRevisionRoot, root) === "") throw new ContractError("DISTRIBUTION_REVISION_UNAVAILABLE", "The previous Plugin revision path is invalid");
+  try {
+    const metadata = JSON.parse(await readFile(path.join(root, "metadata.json"), "utf8"));
+    if (metadata.complete !== true || metadata.pluginId !== id || metadata.revisionId !== revisionId) throw new Error("revision metadata is incomplete");
+    await access(path.join(root, ".complete"));
+    const packageRoot = path.join(root, "package");
+    if (!(await stat(packageRoot)).isDirectory()) throw new Error("revision package is missing");
+    return { root, metadata, packageRoot };
+  } catch (error) {
+    const failure = new ContractError("DISTRIBUTION_REVISION_UNAVAILABLE", "The previous Plugin revision is missing or incomplete");
+    failure.cause = error;
+    throw failure;
+  }
+}
+
+async function restoreStateSnapshot(id, root) {
+  if (!isManagedPluginId(id)) throw new Error("Plugin ID is not safe for restoring distribution state");
+  const revisionRoot = managedChildPath(distributionRevisionRoot, root, "Distribution revision snapshot");
+  await rm(path.join(dataRoot, id), { recursive: true, force: true });
+  await copyPathIfPresent(path.join(revisionRoot, "data"), path.join(dataRoot, id));
+  const guard = path.join(adapterRegistryRoot, "scopes", ".recovery-" + safeDistributionSegment(id) + "-" + randomUUID());
+  const hasScope = await copyPathIfPresent(path.join(revisionRoot, "adapter-scope"), guard);
+  await removePluginAdapterScope(adapterRegistryRoot, id);
+  if (hasScope) {
+    const target = path.join(adapterRegistryRoot, "scopes", id);
+    await rm(target, { recursive: true, force: true });
+    await rename(guard, target);
+  } else {
+    await rm(guard, { recursive: true, force: true });
+  }
+  await garbageCollectAdapterStore(adapterRegistryRoot);
+}
+
+async function restoreJournalHostState(journal) {
+  const id = journal.pluginId;
+  if (!id) return;
+  if (!isManagedPluginId(id)) throw new Error("Distribution journal Plugin ID is invalid");
+  await hostState.update((state) => {
+    const pluginInstallations = { ...(state.pluginInstallations ?? {}) };
+    const statusSnapshots = { ...(state.statusSnapshots ?? {}) };
+    const enabledPluginIds = state.enabledPluginIds.filter((pluginId) => pluginId !== id);
+    if (journal.oldInstallation) pluginInstallations[id] = journal.oldInstallation;
+    else delete pluginInstallations[id];
+    if (journal.oldEnabled) enabledPluginIds.push(id);
+    if (journal.oldStatusSnapshot) statusSnapshots[id] = journal.oldStatusSnapshot;
+    else delete statusSnapshots[id];
+    return { ...state, enabledPluginIds: [...new Set(enabledPluginIds)], pluginInstallations, statusSnapshots };
+  });
+}
+
+function assertDistributionCandidate(id, { intent, pluginId, version, observedSha256 } = {}) {
+  if (pluginId && pluginId !== id) throw new ContractError("DISTRIBUTION_PLUGIN_ID_MISMATCH", "The distribution archive Plugin ID does not match the requested Plugin ID");
+  const descriptor = findCompatible(id);
+  const rejection = rejectedPlugins.find((plugin) => plugin.id === id || plugin.package === id);
+  if (intent === "install") {
+    if (bundledPluginIds.has(id) || installationRecord(id)?.origin === "bundled") throw new ContractError("DISTRIBUTION_BUNDLED_CONFLICT", "An external distribution cannot install over a Bundled Plugin");
+    if (descriptor || rejection || installingPluginIds.has(id)) throw new ContractError("DUPLICATE_PLUGIN_ID", "The Plugin ID is already installed; use explicit replacement");
+    return;
+  }
+  if (!descriptor || rejection) throw new ContractError("PLUGIN_NOT_FOUND", "The external Plugin to replace is not installed and compatible");
+  const current = installationRecord(id);
+  if (bundledPluginIds.has(id) || current?.origin === "bundled") throw new ContractError("DISTRIBUTION_BUNDLED_REPLACE_FORBIDDEN", "A Bundled Plugin can only be updated by a Host release");
+  if (intent === "replace" && version && observedSha256 && current?.version === version && current.observedSha256 && current.observedSha256 !== observedSha256) {
+    throw new ContractError("DISTRIBUTION_SAME_VERSION_DIGEST_CONFLICT", "The same Plugin version has a different archive digest");
+  }
+}
+
+function relocateValidated(validated, fromRoot, toRoot) {
+  const relocate = (value) => path.join(toRoot, path.relative(fromRoot, value));
+  return { ...validated, backendPath: relocate(validated.backendPath), workspaceEntry: relocate(validated.workspaceEntry), workspaceRoot: relocate(validated.workspaceRoot) };
+}
+
+async function preflightDistributionCandidate(packageRoot) {
+  const preflightRegistryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-adapter-preflight-"));
+  try { return await validatePluginPackage(packageRoot, validationRuntime, adapterScopeOptions(preflightRegistryRoot)); }
+  finally { await rm(preflightRegistryRoot, { recursive: true, force: true }); }
+}
+
+function installationForDistribution(validated, source, observedSha256, operationId) {
+  return {
+    origin: source.kind,
+    version: validated.manifest.version,
+    contractVersion: String(validated.manifest.contractVersion),
+    minHostVersion: validated.manifest.minHostVersion,
+    ...(source.kind === "url" ? { sourceUrl: source.url } : { sourceFileName: source.fileName }),
+    ...(source.expectedSha256 ? { expectedSha256: source.expectedSha256 } : {}),
+    observedSha256,
+    installedAt: new Date().toISOString(),
+    operationId,
+  };
+}
+
+async function disposePluginInstance(plugin) {
+  if (!plugin) return;
+  await plugin.taskManager.stop().catch(() => {});
+  plugin.routes.clear();
+  const index = activePlugins.indexOf(plugin);
+  if (index >= 0) activePlugins.splice(index, 1);
+  await plugin.logger.flush().catch(() => {});
+}
+
+async function deactivateForDistribution(id) {
+  const active = findPlugin(id);
+  if (!active) return;
+  const graceMs = Number(process.env.INFOLENS_DEACTIVATION_GRACE_MS) || 2_500;
+  let timedOut = false;
+  let timer;
+  const settled = await Promise.race([
+    deactivatePlugin(active, { deferRouteCleanup: true, deactivationGuard: () => !timedOut }).then((cleanup) => cleanup?.ok !== false),
+    new Promise((resolve) => { timer = setTimeout(() => { timedOut = true; resolve(false); }, graceMs); }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (!settled) throw new ContractError("RUNTIME_RESTART_REQUIRED", "Plugin '" + id + "' did not deactivate within " + graceMs + "ms; restart Runtime before replacement");
+}
+
+async function withDistributionLock(id, action) {
+  const previous = distributionLocks.get(id) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(action);
+  distributionLocks.set(id, current);
+  try { return await current; }
+  finally { if (distributionLocks.get(id) === current) distributionLocks.delete(id); }
+}
+
+async function commitInitialDistributionCandidate(operation, stageRoot, validated, sourceInfo) {
   const id = validated.manifest.id;
-  assertInstallableId(id, { market: origin === "market" });
-  installingPluginIds.add(id);
+  assertDistributionCandidate(id, { intent: "install", pluginId: operation.pluginId, version: validated.manifest.version, observedSha256: sourceInfo.sha256 });
   const destination = path.join(pluginsRoot, id);
+  const previousState = hostState.snapshot();
+  operation.pluginId = id;
+  operation.paths = { ...(operation.paths ?? {}), candidatePath: stageRoot, destinationPath: destination, packageCommitted: false };
+  operation.candidateVersion = validated.manifest.version;
+  operation.candidateSha256 = sourceInfo.sha256;
+  installingPluginIds.add(id);
   let descriptor;
   let activated;
-  let committed = false;
   try {
+    await updateDistributionOperation(operation, "committing", "switching");
     await mkdir(pluginsRoot, { recursive: true });
     await rename(stageRoot, destination);
-    committed = true;
-    const relocated = {
-      ...validated,
-      backendPath: path.join(destination, path.relative(stageRoot, validated.backendPath)),
-      workspaceEntry: path.join(destination, path.relative(stageRoot, validated.workspaceEntry)),
-      workspaceRoot: path.join(destination, path.relative(stageRoot, validated.workspaceRoot)),
-    };
-    descriptor = { validated: relocated, packageRoot: destination };
+    operation.paths.packageCommitted = true;
+    await updateDistributionOperation(operation, "committing", "package-switched");
+    const relocated = relocateValidated(await validatePluginPackage(destination, validationRuntime, contractOptions), destination, destination);
+    descriptor = { validated: relocated, packageRoot: destination, deactivated: false, unloaded: false };
     compatiblePlugins.push(descriptor);
-    await hostState.update((state) => ({
-      ...state,
-      enabledPluginIds: [...state.enabledPluginIds, id],
-      pluginInstallations: {
-        ...(state.pluginInstallations ?? {}),
-        [id]: origin === "market"
-          ? {
-            origin: "market",
-            version: validated.manifest.version,
-            name: release.name,
-            description: release.description,
-            registryUrl: release.registryUrl,
-            indexUrl: release.indexUrl,
-            artifactUrl: release.artifact?.url,
-            artifactSize: release.artifact?.size,
-            publisher: release.publisher,
-            license: release.license,
-            categories: release.categories,
-            changelog: release.changelog,
-            contractVersion: String(release.contractVersion ?? validated.manifest.contractVersion),
-            minHostVersion: release.minHostVersion ?? validated.manifest.minHostVersion,
-            platforms: release.platforms,
-            architectures: release.architectures,
-            publishedAt: release.publishedAt,
-            expectedSha256,
-            observedSha256,
-            releaseStatus: release.retraction ? "retracted" : "current",
-            ...(release.retraction?.reason ? { retractionReason: release.retraction.reason } : {}),
-            installedAt: new Date().toISOString(),
-            ...(operationId ? { operationId } : {}),
-          }
-        : {
-          origin: "local",
-          version: validated.manifest.version,
-          releaseStatus: "unknown",
-          ...(observedSha256 ? { observedSha256 } : {}),
-          installedAt: new Date().toISOString(),
-        },
-      },
-    }));
+    await updateDistributionOperation(operation, "committing", "activation");
     activated = await activatePlugin(relocated, destination);
     if (activated?.status.state === "failed") {
       const failure = activated.status.failure;
-      throw new ContractError(failure?.code ?? "PLUGIN_ACTIVATION_FAILED", failure?.message ?? `Plugin '${id}' failed during activation`);
+      throw new ContractError(failure?.code ?? "DISTRIBUTION_ACTIVATION_FAILED", failure?.message ?? "The Plugin failed during activation");
     }
-    return id;
+    const installation = installationForDistribution(relocated, operation.source, sourceInfo.sha256, operation.operationId);
+    await hostState.update((state) => ({
+      ...state,
+      enabledPluginIds: [...new Set([...state.enabledPluginIds, id])],
+      pluginInstallations: { ...(state.pluginInstallations ?? {}), [id]: installation },
+    }));
+    const result = { pluginId: id, version: relocated.manifest.version, observedSha256: sourceInfo.sha256, intent: "install" };
+    await updateDistributionOperation(operation, "completed", "completed", { result });
+    return result;
   } catch (error) {
+    if (activated) {
+      await deactivatePlugin(activated).catch(() => disposePluginInstance(activated));
+    }
     if (descriptor) {
       const index = compatiblePlugins.indexOf(descriptor);
       if (index >= 0) compatiblePlugins.splice(index, 1);
     }
-    if (activated) {
-      await activated.taskManager.stop().catch(() => {});
-      activated.routes.clear();
-      const activeIndex = activePlugins.indexOf(activated);
-      if (activeIndex >= 0) activePlugins.splice(activeIndex, 1);
-      await activated.logger.flush().catch(() => {});
-    }
-    if (committed) await rm(destination, { recursive: true, force: true });
+    if (operation.paths.packageCommitted) await rm(destination, { recursive: true, force: true });
     await rm(path.join(dataRoot, id), { recursive: true, force: true });
-    await removePluginAdapterScope(adapterRegistryRoot, id);
-    await hostState.update((state) => {
-      const statusSnapshots = { ...state.statusSnapshots };
-      delete statusSnapshots[id];
-      const pluginInstallations = { ...(state.pluginInstallations ?? {}) };
-      delete pluginInstallations[id];
-      return { ...state, enabledPluginIds: state.enabledPluginIds.filter((pluginId) => pluginId !== id), statusSnapshots, pluginInstallations };
-    });
+    await removePluginAdapterScope(adapterRegistryRoot, id).catch(() => {});
+    await hostState.update(() => previousState).catch(() => {});
     throw error;
   } finally {
     installingPluginIds.delete(id);
   }
 }
 
-async function validateAndCommitCandidate(stageRoot, { origin, release, expectedSha256, observedSha256, operationId, signal } = {}) {
-  const preflightRegistryRoot = await mkdtemp(path.join(os.tmpdir(), "infolens-adapter-preflight-"));
-  let validated;
-  try {
-    validated = await validatePluginPackage(stageRoot, validationRuntime, adapterScopeOptions(preflightRegistryRoot));
-  } finally {
-    await rm(preflightRegistryRoot, { recursive: true, force: true });
+async function restoreDistributionTransaction({ id, destination, backup, snapshotRoot, oldDescriptor, oldIndex, oldState, oldEnabled, candidateDescriptor, candidatePlugin, switched }) {
+  if (candidatePlugin) await deactivatePlugin(candidatePlugin).catch(() => disposePluginInstance(candidatePlugin));
+  if (candidateDescriptor) {
+    const candidateIndex = compatiblePlugins.indexOf(candidateDescriptor);
+    if (candidateIndex >= 0) compatiblePlugins.splice(candidateIndex, 1);
   }
+  if (switched) {
+    await rm(destination, { recursive: true, force: true });
+    if (backup && await access(backup).then(() => true).catch(() => false)) await rename(backup, destination);
+    if (snapshotRoot) await restoreStateSnapshot(id, snapshotRoot);
+  }
+  await hostState.update(() => oldState);
+  if (oldIndex >= 0) compatiblePlugins[oldIndex] = oldDescriptor;
+  else if (!compatiblePlugins.includes(oldDescriptor)) compatiblePlugins.push(oldDescriptor);
+  oldDescriptor.packageRoot = destination;
+  oldDescriptor.deactivated = !oldEnabled;
+  oldDescriptor.unloaded = false;
+  if (oldEnabled && !findPlugin(id)) {
+    const restored = await activatePlugin(oldDescriptor.validated, destination);
+    if (restored?.status.state === "failed") {
+      const failure = restored.status.failure;
+      throw new ContractError("DISTRIBUTION_RECOVERY_FAILED", failure?.message ?? "The previous Plugin could not be reactivated");
+    }
+  }
+}
+
+async function commitReplacementDistributionCandidate(operation, stageRoot, validated, sourceInfo) {
+  const id = validated.manifest.id;
+  assertDistributionCandidate(id, { intent: "replace", pluginId: operation.pluginId, version: validated.manifest.version, observedSha256: sourceInfo.sha256 });
+  const oldDescriptor = findCompatible(id);
+  const oldIndex = compatiblePlugins.indexOf(oldDescriptor);
+  const oldState = hostState.snapshot();
+  const oldRecord = installationRecord(id) ?? { origin: "local", version: oldDescriptor.validated.manifest.version };
+  const oldEnabled = oldState.enabledPluginIds.includes(id) && !oldDescriptor.deactivated;
+  operation.pluginId = id;
+  operation.currentVersion = oldDescriptor.validated.manifest.version;
+  operation.currentSha256 = oldRecord.observedSha256;
+  operation.candidateVersion = validated.manifest.version;
+  operation.candidateSha256 = sourceInfo.sha256;
+  if (oldRecord.version === validated.manifest.version && oldRecord.observedSha256 === sourceInfo.sha256) {
+    const result = { pluginId: id, version: validated.manifest.version, observedSha256: sourceInfo.sha256, intent: "replace", state: "already-current" };
+    await updateDistributionOperation(operation, "completed", "completed", { result });
+    return result;
+  }
+  let revision;
+  let candidateDescriptor;
+  let candidatePlugin;
+  let switched = false;
+  const destination = oldDescriptor.packageRoot;
+  const backup = path.join(distributionOperationPath(operation.operationId), "current-package");
   try {
-    assertInstallableId(validated.manifest.id, { market: origin === "market" });
-    if (origin === "market") assertMarketReleaseManifest(validated.manifest, release);
-    if (signal?.aborted) throw new ContractError("MARKET_INSTALL_CANCELLED", "Market installation was cancelled before commit");
-    const copied = await validatePluginPackage(stageRoot, validationRuntime, contractOptions);
-    return await commitPluginCandidate(stageRoot, copied, { origin, release, expectedSha256, observedSha256, operationId });
+    operation.oldInstallation = oldRecord;
+    operation.oldEnabled = oldEnabled;
+    operation.oldStatusSnapshot = oldState.statusSnapshots[id];
+    operation.paths = { ...(operation.paths ?? {}), candidatePath: stageRoot, destinationPath: destination, switchBackupPath: backup, packageCommitted: false };
+    await updateDistributionOperation(operation, "committing", "deactivating");
+    await deactivateForDistribution(id);
+    await updateDistributionOperation(operation, "committing", "snapshotting");
+    revision = await createRevisionSnapshot(id, destination, oldRecord, oldEnabled, oldState.statusSnapshots[id]);
+    operation.revision = revision.descriptor;
+    operation.paths.snapshotRoot = revision.root;
+    await updateDistributionOperation(operation, "committing", "switching");
+    await rename(destination, backup);
+    switched = true;
+    await rename(stageRoot, destination);
+    operation.paths.packageCommitted = true;
+    await updateDistributionOperation(operation, "committing", "package-switched");
+    const relocated = relocateValidated(await validatePluginPackage(destination, validationRuntime, contractOptions), destination, destination);
+    candidateDescriptor = { validated: relocated, packageRoot: destination, deactivated: !oldEnabled, unloaded: false };
+    compatiblePlugins[oldIndex] = candidateDescriptor;
+    await updateDistributionOperation(operation, "committing", "activation");
+    if (oldEnabled) {
+      candidatePlugin = await activatePlugin(relocated, destination);
+      if (candidatePlugin?.status.state === "failed") {
+        const failure = candidatePlugin.status.failure;
+        throw new ContractError(failure?.code ?? "DISTRIBUTION_ACTIVATION_FAILED", failure?.message ?? "The replacement Plugin failed during activation");
+      }
+    }
+    const installation = installationForDistribution(relocated, operation.source, sourceInfo.sha256, operation.operationId);
+    installation.previousRevision = revision.descriptor;
+    await hostState.update((state) => ({
+      ...state,
+      enabledPluginIds: oldEnabled ? [...new Set([...state.enabledPluginIds, id])] : state.enabledPluginIds.filter((pluginId) => pluginId !== id),
+      statusSnapshots: oldEnabled ? state.statusSnapshots : {
+        ...state.statusSnapshots,
+        [id]: { ...(state.statusSnapshots[id] ?? {}), state: "disabled", updatedAt: new Date().toISOString() },
+      },
+      pluginInstallations: { ...(state.pluginInstallations ?? {}), [id]: installation },
+    }));
+    const result = {
+      pluginId: id,
+      version: relocated.manifest.version,
+      observedSha256: sourceInfo.sha256,
+      previousRevision: revision.descriptor,
+      intent: "replace",
+    };
+    await updateDistributionOperation(operation, "completed", "completed", { result });
+    await rm(backup, { recursive: true, force: true }).catch(() => {});
+    await removeRevision(id, oldRecord.previousRevision).catch(() => {});
+    await garbageCollectAdapterStore(adapterRegistryRoot).catch(() => {});
+    return result;
   } catch (error) {
-    if (validated?.manifest?.id) await removePluginAdapterScope(adapterRegistryRoot, validated.manifest.id).catch(() => {});
+    try {
+      await restoreDistributionTransaction({
+        id,
+        destination,
+        backup,
+        snapshotRoot: revision?.root,
+        oldDescriptor,
+        oldIndex,
+        oldState,
+        oldEnabled,
+        candidateDescriptor,
+        candidatePlugin,
+        switched,
+      });
+      if (revision) await removeRevision(id, revision.descriptor);
+    } catch (recoveryError) {
+      const failure = new ContractError("DISTRIBUTION_RECOVERY_FAILED", "The previous Plugin could not be restored safely");
+      failure.cause = recoveryError;
+      throw failure;
+    }
     throw error;
   }
 }
 
-async function installPlugin(sourcePath) {
-  if (typeof sourcePath !== "string" || !path.isAbsolute(sourcePath)) throw new ContractError("INVALID_INSTALL_PATH", "Select an absolute local plugin folder");
-  const sourceRoot = path.resolve(sourcePath);
-  let candidateManifest;
-  try { candidateManifest = JSON.parse(await readFile(path.join(sourceRoot, "manifest.json"), "utf8")); } catch {}
-  if (typeof candidateManifest?.id === "string") assertInstallableId(candidateManifest.id);
-  const idHint = typeof candidateManifest?.id === "string" ? candidateManifest.id : "candidate";
-  const temporary = path.join(pluginsRoot, `.install-${idHint}-${Date.now()}-${randomUUID()}`);
+async function commitRollbackDistributionCandidate(operation, pluginId) {
+  const id = pluginId;
+  const oldDescriptor = findCompatible(id);
+  if (!oldDescriptor) throw new ContractError("PLUGIN_NOT_FOUND", "The Plugin to roll back is not installed and compatible");
+  const oldRecord = installationRecord(id);
+  if (!oldRecord || oldRecord.origin === "bundled") throw new ContractError("DISTRIBUTION_ROLLBACK_FORBIDDEN", "Bundled Plugins do not use personal distribution rollback");
+  const previous = oldRecord.previousRevision;
+  const previousRevision = await readCompleteRevision(id, previous);
+  const previousValidated = await preflightDistributionCandidate(previousRevision.packageRoot);
+  if (previousValidated.manifest.id !== id) throw new ContractError("DISTRIBUTION_REVISION_INVALID", "The previous revision Plugin ID does not match the installed Plugin");
+  const oldIndex = compatiblePlugins.indexOf(oldDescriptor);
+  const oldState = hostState.snapshot();
+  const oldEnabled = oldState.enabledPluginIds.includes(id) && !oldDescriptor.deactivated;
+  operation.currentVersion = oldDescriptor.validated.manifest.version;
+  operation.currentSha256 = oldRecord.observedSha256;
+  operation.candidateVersion = previousValidated.manifest.version;
+  operation.candidateSha256 = previousRevision.metadata.installation?.observedSha256;
+  operation.oldInstallation = oldRecord;
+  operation.oldEnabled = oldEnabled;
+  operation.oldStatusSnapshot = oldState.statusSnapshots[id];
+  const destination = oldDescriptor.packageRoot;
+  const operationRoot = distributionOperationPath(operation.operationId);
+  const backup = path.join(operationRoot, "current-package");
+  const candidateRoot = path.join(operationRoot, "rollback-package");
+  let currentRevision;
+  let candidateDescriptor;
+  let candidatePlugin;
+  let switched = false;
   try {
-    await cp(sourceRoot, temporary, { recursive: true, errorOnExist: true });
-    return await validateAndCommitCandidate(temporary, { origin: "local" });
+    await mkdir(operationRoot, { recursive: true });
+    await updateDistributionOperation(operation, "committing", "deactivating", { paths: { operationRoot, destinationPath: destination, switchBackupPath: backup, candidatePath: candidateRoot } });
+    await deactivateForDistribution(id);
+    await updateDistributionOperation(operation, "committing", "snapshotting");
+    currentRevision = await createRevisionSnapshot(id, destination, oldRecord, oldEnabled, oldState.statusSnapshots[id]);
+    operation.revision = currentRevision.descriptor;
+    operation.paths.snapshotRoot = currentRevision.root;
+    await copyPathIfPresent(previousRevision.packageRoot, candidateRoot);
+    await updateDistributionOperation(operation, "committing", "switching");
+    await rename(destination, backup);
+    switched = true;
+    await copyPathIfPresent(candidateRoot, destination);
+    operation.paths.packageCommitted = true;
+    await restoreStateSnapshot(id, previousRevision.root);
+    await updateDistributionOperation(operation, "committing", "package-switched");
+    const relocated = relocateValidated(await validatePluginPackage(destination, validationRuntime, contractOptions), destination, destination);
+    const enabled = Boolean(previousRevision.metadata.enabled);
+    candidateDescriptor = { validated: relocated, packageRoot: destination, deactivated: !enabled, unloaded: false };
+    compatiblePlugins[oldIndex] = candidateDescriptor;
+    await updateDistributionOperation(operation, "committing", "activation");
+    if (enabled) {
+      candidatePlugin = await activatePlugin(relocated, destination);
+      if (candidatePlugin?.status.state === "failed") {
+        const failure = candidatePlugin.status.failure;
+        throw new ContractError(failure?.code ?? "DISTRIBUTION_ACTIVATION_FAILED", failure?.message ?? "The rollback Plugin failed during activation");
+      }
+    }
+    const { previousRevision: ignored, ...previousInstallation } = previousRevision.metadata.installation ?? {};
+    const installation = { ...previousInstallation, previousRevision: currentRevision.descriptor };
+    await hostState.update((state) => ({
+      ...state,
+      enabledPluginIds: enabled ? [...new Set([...state.enabledPluginIds, id])] : state.enabledPluginIds.filter((pluginId) => pluginId !== id),
+      statusSnapshots: enabled ? state.statusSnapshots : {
+        ...state.statusSnapshots,
+        [id]: { ...(state.statusSnapshots[id] ?? {}), state: "disabled", updatedAt: new Date().toISOString() },
+      },
+      pluginInstallations: { ...(state.pluginInstallations ?? {}), [id]: installation },
+    }));
+    const result = { pluginId: id, version: relocated.manifest.version, ...(operation.candidateSha256 ? { observedSha256: operation.candidateSha256 } : {}), previousRevision: currentRevision.descriptor, intent: "rollback" };
+    await updateDistributionOperation(operation, "completed", "completed", { result });
+    await rm(backup, { recursive: true, force: true }).catch(() => {});
+    await removeRevision(id, previous);
+    await garbageCollectAdapterStore(adapterRegistryRoot).catch(() => {});
+    return result;
   } catch (error) {
-    await rm(temporary, { recursive: true, force: true });
+    try {
+      await restoreDistributionTransaction({
+        id,
+        destination,
+        backup,
+        snapshotRoot: currentRevision?.root,
+        oldDescriptor,
+        oldIndex,
+        oldState,
+        oldEnabled,
+        candidateDescriptor,
+        candidatePlugin,
+        switched,
+      });
+      if (currentRevision) await removeRevision(id, currentRevision.descriptor);
+    } catch (recoveryError) {
+      const failure = new ContractError("DISTRIBUTION_RECOVERY_FAILED", "The current Plugin could not be restored safely");
+      failure.cause = recoveryError;
+      throw failure;
+    }
     throw error;
   }
 }
 
-async function installArchive({ archivePath, expectedSha256, observedSha256, release, origin = "market", operationId, signal } = {}) {
-  if (origin !== "market" && origin !== "local") throw new ContractError("INVALID_INSTALL_ORIGIN", "Plugin archive installation has an unsupported origin");
-  if (typeof archivePath !== "string" || !path.isAbsolute(archivePath)) throw new ContractError("INVALID_PLUGIN_ARCHIVE", "Plugin archive installation requires an absolute archive path");
-  const archive = path.resolve(archivePath);
-  const managedRelation = path.relative(pluginsRoot, archive);
-  if (!managedRelation.startsWith("..") && !path.isAbsolute(managedRelation)) throw new ContractError("INVALID_PLUGIN_ARCHIVE", "Plugin archive must remain outside the managed Plugin Directory");
-  const isMarket = origin === "market";
-  const releaseArtifact = isMarket ? marketReleaseArtifact(release) : undefined;
-  const expected = isMarket ? String(expectedSha256 ?? releaseArtifact.sha256 ?? "").toLowerCase() : undefined;
-  if (isMarket && releaseArtifact.sha256 && String(releaseArtifact.sha256).toLowerCase() !== expected) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market release digest does not match the expected archive digest");
-  const observed = await sha256File(archive);
-  if (isMarket && (!/^[0-9a-f]{64}$/u.test(expected) || observed !== expected)) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market archive SHA-256 does not match the selected Registry release");
-  if (isMarket && observedSha256 && observedSha256 !== observed) throw new ContractError("MARKET_DIGEST_MISMATCH", "Market archive SHA-256 differs from the Host observation");
-  if (signal?.aborted) throw new ContractError(isMarket ? "MARKET_INSTALL_CANCELLED" : "PLUGIN_IMPORT_CANCELLED", "Plugin archive installation was cancelled before extraction");
-  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), isMarket ? "infolens-market-runtime-" : "infolens-plugin-import-"));
-  const stageRoot = path.join(temporaryRoot, "package");
+function distributionSourceFromBody(body = {}) {
+  if (body.source !== undefined) return body.source;
+  if (body.url !== undefined) return { kind: "url", url: body.url, expectedSha256: body.expectedSha256 ?? body.sha256 };
+  return { kind: "local", path: body.archivePath ?? body.path, expectedSha256: body.expectedSha256 ?? body.sha256 };
+}
+
+function assertDistributionNotCancelled(operation) {
+  if (operation.signal?.aborted) throw new ContractError("DISTRIBUTION_CANCELLED", "The distribution operation was cancelled before commit");
+}
+
+async function executeDistributionOperation(operation) {
+  const operationRoot = distributionOperationPath(operation.operationId);
+  operation.paths = { ...(operation.paths ?? {}), operationRoot };
   try {
-    await extractZip(archive, stageRoot);
-    return await validateAndCommitCandidate(stageRoot, { origin, release, expectedSha256: expected, observedSha256: observed, operationId, signal });
+    await mkdir(operationRoot, { recursive: true });
+    if (operation.intent === "rollback") {
+      if (!operation.pluginId) throw new ContractError("DISTRIBUTION_PLUGIN_ID_REQUIRED", "Rollback requires a Plugin ID");
+      assertDistributionNotCancelled(operation);
+      return await withDistributionLock(operation.pluginId, () => {
+        assertDistributionNotCancelled(operation);
+        return commitRollbackDistributionCandidate(operation, operation.pluginId);
+      });
+    }
+    const source = operation.source;
+    if (source.kind === "local" && pathIsWithin(pluginsRoot, source.path)) {
+      throw new ContractError("DISTRIBUTION_SOURCE_MANAGED", "Distribution archives must remain outside the managed Plugin Directory");
+    }
+    const sourceDestination = path.join(operationRoot, "source.zip");
+    await updateDistributionOperation(operation, "preflight", "source-transfer", { progress: { received: 0 } });
+    const sourceInfo = source.kind === "url"
+      ? await downloadDistributionSource(source, sourceDestination, {
+        signal: operation.signal,
+        onProgress: (progress) => { operation.progress = progress; void persistDistributionStatus(operation).catch(() => {}); },
+      })
+      : await stageLocalDistributionSource(source, sourceDestination, {
+        signal: operation.signal,
+        onProgress: undefined,
+      });
+    operation.observedSha256 = sourceInfo.sha256;
+    await updateDistributionOperation(operation, "preflight", "digest-verified", { progress: { received: sourceInfo.bytes, total: sourceInfo.bytes } });
+    if (operation.signal.aborted) throw new ContractError("DISTRIBUTION_CANCELLED", "The distribution operation was cancelled before commit");
+    const stageRoot = path.join(operationRoot, "candidate");
+    await updateDistributionOperation(operation, "preflight", "archive-inspection");
+    await extractZip(sourceInfo.path, stageRoot);
+    await updateDistributionOperation(operation, "preflight", "package-validation");
+    const validated = await preflightDistributionCandidate(stageRoot);
+    const id = validated.manifest.id;
+    operation.pluginId = operation.pluginId ?? id;
+    assertDistributionNotCancelled(operation);
+    assertDistributionCandidate(id, { intent: operation.intent, pluginId: operation.pluginId, version: validated.manifest.version, observedSha256: sourceInfo.sha256 });
+    return await withDistributionLock(id, () => {
+      assertDistributionNotCancelled(operation);
+      return operation.intent === "install"
+        ? commitInitialDistributionCandidate(operation, stageRoot, validated, sourceInfo)
+        : commitReplacementDistributionCandidate(operation, stageRoot, validated, sourceInfo);
+    });
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
+    await rm(operationRoot, { recursive: true, force: true });
   }
 }
 
-async function installMarketPlugin(options = {}) {
-  return installArchive({ ...options, origin: "market" });
+async function startDistributionOperation({ operationId = randomUUID(), intent = "install", pluginId, source, signature, previousOperationId } = {}) {
+  if (!["install", "replace", "rollback"].includes(intent)) throw new ContractError("DISTRIBUTION_INTENT_INVALID", "Unsupported Plugin Distribution intent");
+  if (pluginId !== undefined && !isManagedPluginId(pluginId)) throw new ContractError("DISTRIBUTION_PLUGIN_ID_INVALID", "Plugin ID is invalid");
+  if (intent === "replace" && !pluginId) throw new ContractError("DISTRIBUTION_PLUGIN_ID_REQUIRED", "Replacement requires a Plugin ID");
+  return distributionModule.submit({ operationId, intent, pluginId, source, signature, previousOperationId });
 }
 
-async function installLocalArchive(archivePath, options = {}) {
-  return installArchive({ ...options, archivePath, origin: "local" });
+async function waitForDistributionOperation(operationId) {
+  const operation = distributionOperations.get(operationId);
+  if (!operation) throw new ContractError("DISTRIBUTION_OPERATION_NOT_FOUND", "Distribution operation was not found");
+  if (operation.promise) await operation.promise.catch(() => {});
+  return publicDistributionOperation(operation);
 }
 
-async function removePlugin(identifier) {
+function cancelDistributionOperation(operationId) {
+  const operation = distributionOperations.get(operationId);
+  if (!operation || ["completed", "failed", "cancelled"].includes(operation.state)) return false;
+  if (["deactivating", "snapshotting", "switching", "package-switched", "activation", "completed"].includes(operation.phase)) return false;
+  distributionControllers.get(operationId)?.abort();
+  return true;
+}
+
+async function retryDistributionOperation(operationId) {
+  const previous = distributionOperations.get(operationId);
+  if (!previous) throw new ContractError("DISTRIBUTION_OPERATION_NOT_FOUND", "Distribution operation was not found");
+  if (!["failed", "cancelled"].includes(previous.state)) throw new ContractError("DISTRIBUTION_RETRY_INVALID", "Only failed or cancelled distribution operations can be retried");
+  if (!previous.source) throw new ContractError("DISTRIBUTION_RETRY_SOURCE_UNAVAILABLE", "The retry source is no longer available");
+  return startDistributionOperation({
+    intent: previous.intent,
+    pluginId: previous.pluginId,
+    source: previous.source,
+    previousOperationId: operationId,
+  });
+}
+
+async function recoverDistributionJournals() {
+  let entries;
+  try { entries = await readdir(distributionJournalRoot, { withFileTypes: true }); }
+  catch (error) { if (error?.code === "ENOENT") return; throw error; }
+  for (const entry of entries.filter((candidate) => candidate.isFile() && candidate.name.endsWith(".json"))) {
+    let journal;
+    try { journal = JSON.parse(await readFile(path.join(distributionJournalRoot, entry.name), "utf8")); }
+    catch { continue; }
+    if (typeof journal?.operationId !== "string" || !journal.operationId.trim()) continue;
+    if (["completed", "committed"].includes(journal.phase) || journal.state === "completed") {
+      const switchBackup = maybeManagedChildPath(distributionOperationRoot, journal.paths?.switchBackupPath, "Distribution switch backup");
+      const operationRoot = journalOperationRoot(journal);
+      if (switchBackup) await rm(switchBackup, { recursive: true, force: true }).catch(() => {});
+      if (operationRoot) await rm(operationRoot, { recursive: true, force: true }).catch(() => {});
+      await removeDistributionJournal(journal.operationId).catch(() => {});
+      continue;
+    }
+    const operation = distributionOperations.get(journal.operationId) ?? {
+      operationId: journal.operationId,
+      intent: journal.intent,
+      pluginId: journal.pluginId,
+      source: journal.source,
+      state: journal.state,
+      phase: journal.phase,
+      createdAt: journal.createdAt,
+      updatedAt: journal.updatedAt,
+    };
+    try {
+      const operationRoot = journalOperationRoot(journal);
+      const snapshotRoot = journal.paths?.snapshotRoot ? managedChildPath(distributionRevisionRoot, journal.paths.snapshotRoot, "Distribution revision snapshot") : undefined;
+      if (journal.intent === "install") {
+        if (journal.paths?.destinationPath) await rm(managedChildPath(pluginsRoot, journal.paths.destinationPath, "Distribution destination"), { recursive: true, force: true });
+        await restoreJournalHostState(journal);
+      } else {
+        const destination = managedChildPath(pluginsRoot, journal.paths?.destinationPath, "Distribution destination");
+        const backup = maybeManagedChildPath(distributionOperationRoot, journal.paths?.switchBackupPath, "Distribution switch backup");
+        const backupExists = backup
+          ? await stat(backup).then((details) => details.isDirectory()).catch((error) => { if (error?.code === "ENOENT") return false; throw error; })
+          : false;
+        const destinationDetails = await stat(destination).catch(() => undefined);
+        const preSwitchCrash = !journal.paths?.packageCommitted
+          && !backupExists
+          && ["deactivating", "snapshotting", "switching"].includes(journal.phase)
+          && destinationDetails?.isDirectory();
+        let completeSnapshot;
+        if (snapshotRoot && !preSwitchCrash) {
+          if (!isManagedPluginId(journal.pluginId)) throw new Error("replacement journal Plugin ID is invalid");
+          completeSnapshot = await readCompleteRevision(journal.pluginId, path.basename(snapshotRoot));
+          if (completeSnapshot.root !== snapshotRoot) throw new Error("replacement journal snapshot identity is invalid");
+        }
+        if (preSwitchCrash) {
+          await restoreJournalHostState(journal);
+        } else if (backupExists) {
+          await rm(destination, { recursive: true, force: true });
+          await rename(backup, destination);
+        } else if (completeSnapshot) {
+          await rm(destination, { recursive: true, force: true });
+          if (!await copyPathIfPresent(path.join(completeSnapshot.root, "package"), destination)) throw new Error("snapshot package is missing");
+        } else {
+          throw new Error("replacement journal has no safe restore point");
+        }
+        if (!preSwitchCrash && completeSnapshot) await restoreStateSnapshot(journal.pluginId, completeSnapshot.root);
+        if (!preSwitchCrash) await restoreJournalHostState(journal);
+      }
+      operation.state = "failed";
+      operation.phase = "recovered";
+      operation.error = { code: "DISTRIBUTION_RECOVERED_AFTER_CRASH", message: "An incomplete distribution operation was rolled back during Runtime startup" };
+      await persistDistributionStatus(operation);
+      if (operationRoot) await rm(operationRoot, { recursive: true, force: true }).catch(() => {});
+      await removeDistributionJournal(journal.operationId);
+    } catch (error) {
+      const id = journal.pluginId;
+      await hostState.update((state) => ({
+        ...state,
+        pluginInstallations: {
+          ...(state.pluginInstallations ?? {}),
+          ...(id ? { [id]: { ...(state.pluginInstallations?.[id] ?? { origin: "local" }), recoveryState: "unavailable" } } : {}),
+        },
+        statusSnapshots: id ? { ...state.statusSnapshots, [id]: { ...(state.statusSnapshots[id] ?? {}), state: "unavailable", failure: { code: "DISTRIBUTION_RECOVERY_AMBIGUOUS", message: "Distribution recovery requires explicit repair" }, updatedAt: new Date().toISOString() } } : state.statusSnapshots,
+      }));
+      operation.state = "failed";
+      operation.phase = "recovery";
+      operation.error = { code: "DISTRIBUTION_RECOVERY_AMBIGUOUS", message: "Distribution recovery requires explicit repair" };
+      await persistDistributionStatus(operation).catch(() => {});
+      await runtimeLogger.error("distribution-recovery-failed", { operationId: journal.operationId, pluginId: journal.pluginId, code: operation.error.code }).catch(() => {});
+    }
+  }
+}
+
+async function removeDistributionJournalsForPlugin(id) {
+  let entries;
+  try { entries = await readdir(distributionJournalRoot, { withFileTypes: true }); }
+  catch (error) { if (error?.code === "ENOENT") return; throw error; }
+  for (const entry of entries.filter((candidate) => candidate.isFile() && candidate.name.endsWith(".json"))) {
+    const filename = path.join(distributionJournalRoot, entry.name);
+    try {
+      const journal = JSON.parse(await readFile(filename, "utf8"));
+      if (journal.pluginId === id) await rm(filename, { force: true });
+    } catch (error) {
+      if (error?.code !== "ENOENT") continue;
+    }
+  }
+}
+
+async function removePluginUnsafe(identifier) {
   const descriptor = findCompatible(identifier);
   const rejection = rejectedPlugins.find((plugin) => plugin.id === identifier || plugin.package === identifier);
   if (!descriptor && !rejection) throw new ContractError("PLUGIN_NOT_FOUND", `plugin '${identifier}' is not installed`);
@@ -1424,15 +2092,20 @@ async function removePlugin(identifier) {
   const active = findPlugin(id);
   if (active) {
     const graceMs = Number(process.env.INFOLENS_DEACTIVATION_GRACE_MS) || 2_500;
+    let timedOut = false;
+    let timer;
     const settled = await Promise.race([
-      deactivatePlugin(active).then(() => true),
-      new Promise((resolve) => setTimeout(() => resolve(false), graceMs)),
+      deactivatePlugin(active, { deferRouteCleanup: true, deactivationGuard: () => !timedOut }).then((cleanup) => cleanup?.ok !== false),
+      new Promise((resolve) => { timer = setTimeout(() => { timedOut = true; resolve(false); }, graceMs); }),
     ]);
+    if (timer) clearTimeout(timer);
     if (!settled) throw new ContractError("RUNTIME_RESTART_REQUIRED", `plugin '${id}' did not deactivate within ${graceMs}ms; restart Runtime before deletion`);
   }
   await rm(packageRoot, { recursive: true, force: true });
   await rm(path.join(dataRoot, id), { recursive: true, force: true });
   await removePluginAdapterScope(adapterRegistryRoot, id);
+  await rm(path.join(distributionRevisionRoot, id), { recursive: true, force: true });
+  await removeDistributionJournalsForPlugin(id);
   if (descriptor) compatiblePlugins.splice(compatiblePlugins.indexOf(descriptor), 1);
   if (rejection) rejectedPlugins.splice(rejectedPlugins.indexOf(rejection), 1);
   await hostState.update((state) => {
@@ -1448,7 +2121,16 @@ async function removePlugin(identifier) {
       pluginInstallations,
     };
   });
+  await runtimeLogger.info("distribution-revisions-removed", { pluginId: id }).catch(() => {});
   emitStatus("removed", id);
+}
+
+async function removePlugin(identifier) {
+  const descriptor = findCompatible(identifier);
+  const rejection = rejectedPlugins.find((plugin) => plugin.id === identifier || plugin.package === identifier);
+  if (!descriptor && !rejection) throw new ContractError("PLUGIN_NOT_FOUND", `plugin '${identifier}' is not installed`);
+  const id = descriptor?.validated.manifest.id ?? rejection.id ?? rejection.package;
+  return withDistributionLock(id, () => removePluginUnsafe(identifier));
 }
 
 async function pluginDiagnostics(id) {
@@ -1502,12 +2184,15 @@ function canonicalPathname(pathname) {
     ["/batches/targets", "/runtime/batches/targets"],
     ["/batch-refresh", "/runtime/batch-refresh"],
     ["/batch-refresh/targets", "/runtime/batch-refresh/targets"],
-    ["/plugins/install", "/runtime/plugins/install"],
     ["/plugins/install-archive", "/runtime/plugins/install-archive"],
-    ["/plugins/install-market", "/runtime/plugins/install-market"],
-    ["/plugins/reconcile-market", "/runtime/plugins/reconcile-market"],
+    ["/plugins/distribution", "/runtime/plugins/distribution"],
+    ["/plugins/distribution/upload", "/runtime/plugins/distribution/upload"],
   ]);
   if (simple.has(suffix)) return simple.get(suffix);
+  const distributionOperation = suffix.match(/^\/plugins\/distribution\/operations\/([^/]+)(?:\/(cancel|retry))?$/);
+  if (distributionOperation) return `/runtime/plugins/distribution/operations/${distributionOperation[1]}${distributionOperation[2] ? `/${distributionOperation[2]}` : ""}`;
+  const pluginDistribution = suffix.match(/^\/plugins\/([^/]+)\/(replace|rollback|revisions)$/);
+  if (pluginDistribution) return `/runtime/plugins/${pluginDistribution[1]}/${pluginDistribution[2]}`;
   const batch = suffix.match(/^\/(?:batches|batch-refresh)\/([^/]+)(\/retry)?$/);
   if (batch) return `/runtime/batches/${batch[1]}${batch[2] ?? ""}`;
   const plugin = suffix.match(/^\/plugins\/([^/]+)\/(health|api|workspace)(?:\/(.*))?$/);
@@ -1635,9 +2320,10 @@ async function readOperationalLogEntries({ filters = {}, cursor, limit = 200 } =
   };
 }
 
+await loadDistributionStatuses();
+await recoverDistributionJournals();
 await batchManager.load();
 await discoverPlugins();
-await initializeMarketService();
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -1805,79 +2491,6 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (daemonMode && requestedPathname === "/api/v1/market/catalog" && request.method === "GET") {
-    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
-    json(response, 200, marketService.catalog(url.searchParams.get("query") ?? ""));
-    return;
-  }
-  if (daemonMode && requestedPathname === "/api/v1/market/refresh" && request.method === "POST") {
-    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
-    try {
-      const result = await marketService.refreshCatalog();
-      emitDaemonEvent("market-catalog-refreshed", { cachedAt: result.cachedAt });
-      json(response, 200, result);
-    } catch (error) {
-      const failure = errorDetails(error);
-      json(response, 502, { error: failure.message, code: failure.code });
-    }
-    return;
-  }
-  const marketOperationMatch = requestedPathname.match(/^\/api\/v1\/market\/operations\/([^/]+)(?:\/(cancel|retry))?$/);
-  if (daemonMode && marketOperationMatch && request.method === "GET" && !marketOperationMatch[2]) {
-    const operation = marketService?.operation(decodeURIComponent(marketOperationMatch[1]));
-    if (!operation) { json(response, 404, { error: "Market operation not found", code: "MARKET_OPERATION_NOT_FOUND" }); return; }
-    json(response, 200, operation);
-    return;
-  }
-  if (daemonMode && marketOperationMatch && marketOperationMatch[2] === "cancel" && request.method === "POST") {
-    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
-    json(response, 200, { ok: true, canceled: marketService.cancel(decodeURIComponent(marketOperationMatch[1])) });
-    return;
-  }
-  if (daemonMode && marketOperationMatch && marketOperationMatch[2] === "retry" && request.method === "POST") {
-    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
-    const operationId = decodeURIComponent(marketOperationMatch[1]);
-    const requestContext = requestAbortContext(request, response);
-    try {
-      const result = await marketService.retry(operationId, {
-        signal: requestContext.signal,
-        onProgress: (operation) => emitDaemonEvent("market-progress", operation),
-      });
-      json(response, 201, result);
-    } catch (error) {
-      const failure = errorDetails(error);
-      json(response, 400, { error: failure.message, code: failure.code, ...(error?.operationId ? { operationId: error.operationId } : {}) });
-    } finally { requestContext.cleanup(); }
-    return;
-  }
-  if (daemonMode && requestedPathname === "/api/v1/market/install" && request.method === "POST") {
-    if (!marketService) { json(response, 503, { error: "Plugin Market is unavailable", code: "MARKET_UNAVAILABLE" }); return; }
-    const operationId = requestOperationId(request) || randomUUID();
-    const requestContext = requestAbortContext(request, response);
-    try {
-      const body = await readJsonBody(request);
-      const signature = `POST ${requestedPathname}:${JSON.stringify({ pluginId: String(body.pluginId ?? ""), version: String(body.version ?? "") })}`;
-      const result = await runIdempotentOperation(operationId, signature, async () => {
-        try {
-          const installed = await marketService.install(String(body.pluginId ?? ""), String(body.version ?? ""), {
-            operationId,
-            signal: requestContext.signal,
-            onProgress: (operation) => emitDaemonEvent("market-progress", operation),
-          });
-          return { status: 201, body: installed };
-        } catch (error) {
-          const failure = errorDetails(error);
-          return { status: 400, body: { error: failure.message, code: failure.code, operationId: error?.operationId ?? operationId } };
-        }
-      });
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, result.status, result.body);
-    } catch (error) {
-      const failure = errorDetails(error);
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
-    } finally { requestContext.cleanup(); }
-    return;
-  }
-
   if (daemonMode && request.method === "GET" && !requestedPathname.startsWith("/api/v1/") && requestedPathname !== "/runtime/info" && !requestedPathname.startsWith("/runtime/") && !requestedPathname.startsWith("/plugins/")) {
     await serveHostWeb(response, requestedPathname);
     return;
@@ -2024,108 +2637,129 @@ const server = createServer(async (request, response) => {
     } catch (error) { json(response, 400, { error: errorDetails(error).message }); }
     return;
   }
-  if (url.pathname === "/runtime/plugins/reconcile-market" && request.method === "POST") {
+  const distributionOperationMatch = url.pathname.match(/^\/runtime\/plugins\/distribution\/operations\/([^/]+)(?:\/(cancel|retry))?$/);
+  if (distributionOperationMatch && request.method === "GET" && !distributionOperationMatch[2]) {
+    const operation = distributionOperations.get(decodeURIComponent(distributionOperationMatch[1]));
+    if (!operation) {
+      json(response, 404, { error: "Distribution operation was not found", code: "DISTRIBUTION_OPERATION_NOT_FOUND" });
+    } else {
+      json(response, 200, publicDistributionOperation(operation));
+    }
+    return;
+  }
+  if (distributionOperationMatch && distributionOperationMatch[2] === "cancel" && request.method === "POST") {
+    const operationId = decodeURIComponent(distributionOperationMatch[1]);
+    const canceled = cancelDistributionOperation(operationId);
+    json(response, canceled ? 202 : 409, { ok: canceled, operationId, ...(distributionOperations.get(operationId) ? { operation: publicDistributionOperation(distributionOperations.get(operationId)) } : {}) });
+    return;
+  }
+  if (distributionOperationMatch && distributionOperationMatch[2] === "retry" && request.method === "POST") {
     try {
-      const body = await readJsonBody(request);
-      const next = await reconcileMarketProvenance(body.releases);
-      json(response, 200, next);
+      const operation = await retryDistributionOperation(decodeURIComponent(distributionOperationMatch[1]));
+      json(response, 202, operation);
     } catch (error) {
       const failure = errorDetails(error);
       json(response, 400, { error: failure.message, code: failure.code });
     }
     return;
   }
-  if (url.pathname === "/runtime/browser-status" && request.method === "GET") {
-    json(response, 200, browserBridge.getStatus());
+  const revisionsMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)\/revisions$/);
+  if (revisionsMatch && request.method === "GET") {
+    const pluginId = decodeURIComponent(revisionsMatch[1]);
+    const installation = installationRecord(pluginId);
+    let rollbackAvailable = false;
+    if (installation?.previousRevision) {
+      try { await readCompleteRevision(pluginId, installation.previousRevision); rollbackAvailable = true; } catch {}
+    }
+    json(response, 200, {
+      pluginId,
+      current: installation ? structuredClone(installation) : null,
+      previous: installation?.previousRevision ?? null,
+      rollbackAvailable,
+    });
     return;
   }
-  if (url.pathname === "/runtime/browser-status/check" && request.method === "POST") {
-    try { json(response, 200, await browserBridge.check()); }
-    catch (error) { const failure = errorDetails(error); json(response, 503, { ...browserBridge.getStatus(), code: failure.code, retryable: true, action: "retry" }); }
-    return;
-  }
-  if (url.pathname === "/runtime/browser-status/reconnect" && request.method === "POST") {
-    try { json(response, 200, await browserBridge.reconnect()); }
-    catch (error) { const failure = errorDetails(error); json(response, 503, { ...browserBridge.getStatus(), code: failure.code, retryable: true, action: "retry" }); }
-    return;
-  }
-  if (url.pathname === "/runtime/plugins/install" && request.method === "POST") {
-    const operationId = requestOperationId(request) || randomUUID();
+  const pluginReplaceMatch = url.pathname.match(/^\/runtime\/plugins\/([^/]+)\/(replace|rollback)$/);
+  if (pluginReplaceMatch && request.method === "POST") {
+    const pluginId = decodeURIComponent(pluginReplaceMatch[1]);
+    const intent = pluginReplaceMatch[2];
     try {
       const body = await readJsonBody(request);
-      const signature = `POST ${url.pathname}:${JSON.stringify({ sourcePath: String(body.sourcePath ?? "") })}`;
-      const result = await runIdempotentOperation(operationId, signature, async () => {
-        await runtimeLogger.info("plugin-install-started", { operationId });
-        try {
-          const id = await installPlugin(body.sourcePath);
-          const entry = await runtimeLogger.info("plugin-install-completed", { operationId, pluginId: id });
-          return { status: 201, body: { ok: true, pluginId: id, logId: entry.id, operationId } };
-        } catch (error) {
-          const failure = errorDetails(error);
-          const entry = await runtimeLogger.error("plugin-install-failed", { ...failure, operationId });
-          return { status: failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : 400, body: { error: failure.message, code: failure.code, logId: entry.id, operationId } };
-        }
-      });
-      json(response, result.status, result.body);
+      const operationId = requestOperationId(request) || body.operationId || randomUUID();
+      const source = intent === "rollback" ? undefined : distributionSourceFromBody(body);
+      const signature = "POST " + url.pathname + ":" + JSON.stringify({ intent, pluginId, source });
+      const operation = await startDistributionOperation({ operationId, intent, pluginId, source, signature });
+      json(response, 202, operation);
     } catch (error) {
       const failure = errorDetails(error);
-      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code });
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/plugins/distribution/upload" && request.method === "POST") {
+    let operationRoot;
+    let retained = false;
+    try {
+      const intent = requestHeader(request, "x-infolens-distribution-intent") ?? "install";
+      const pluginId = requestHeader(request, "x-infolens-plugin-id")?.trim() || undefined;
+      const operationId = requestOperationId(request) || randomUUID();
+      const fileName = uploadedDistributionFileName(request);
+      const expectedSha256 = requestHeader(request, "x-infolens-expected-sha256") || undefined;
+      const signature = "POST " + url.pathname + ":" + JSON.stringify({ intent, pluginId, fileName, expectedSha256 });
+      const existing = distributionOperations.get(operationId);
+      if (existing) {
+        request.resume();
+        if (existing.signature && existing.signature !== signature) throw new ContractError("OPERATION_ID_REUSED", "Operation ID was already used for a different command");
+        json(response, 202, publicDistributionOperation(existing));
+        return;
+      }
+      operationRoot = distributionOperationPath(operationId);
+      const uploadedPath = path.join(operationRoot, "uploaded.zip");
+      await receiveDistributionUpload(request, uploadedPath);
+      const source = {
+        kind: "local",
+        path: uploadedPath,
+        fileName,
+        ...(expectedSha256 ? { expectedSha256 } : {}),
+      };
+      const operation = await startDistributionOperation({ operationId, intent, pluginId, source, signature });
+      retained = true;
+      json(response, 202, operation);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code });
+    } finally {
+      if (operationRoot && !retained) await rm(operationRoot, { recursive: true, force: true }).catch(() => {});
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/plugins/distribution" && request.method === "POST") {
+    try {
+      const body = await readJsonBody(request);
+      const intent = body.intent ?? "install";
+      const pluginId = typeof body.pluginId === "string" && body.pluginId.trim() ? body.pluginId.trim() : undefined;
+      const operationId = requestOperationId(request) || body.operationId || randomUUID();
+      const source = intent === "rollback" ? undefined : distributionSourceFromBody(body);
+      const signature = "POST " + url.pathname + ":" + JSON.stringify({ intent, pluginId, source });
+      const operation = await startDistributionOperation({ operationId, intent, pluginId, source, signature });
+      json(response, 202, operation);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code });
     }
     return;
   }
   if (url.pathname === "/runtime/plugins/install-archive" && request.method === "POST") {
-    const operationId = requestOperationId(request) || randomUUID();
-    const requestContext = requestAbortContext(request, response);
     try {
       const body = await readJsonBody(request);
-      const signature = `POST ${url.pathname}:${JSON.stringify({ archivePath: String(body.archivePath ?? "") })}`;
-      const result = await runIdempotentOperation(operationId, signature, async () => {
-        await runtimeLogger.info("plugin-import-started", { operationId });
-        try {
-          const id = await installLocalArchive(body.archivePath, { operationId, signal: requestContext.signal });
-          const entry = await runtimeLogger.info("plugin-import-completed", { operationId, pluginId: id });
-          return { status: 201, body: { ok: true, pluginId: id, logId: entry.id, operationId } };
-        } catch (error) {
-          const failure = errorDetails(error);
-          const entry = await runtimeLogger.error("plugin-import-failed", { ...failure, operationId });
-          const status = failure.code === "DUPLICATE_PLUGIN_ID" ? 409 : String(failure.code).startsWith("ARCHIVE_") ? 422 : 400;
-          return { status, body: { error: failure.message, code: failure.code, logId: entry.id, operationId } };
-        }
-      });
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, result.status, result.body);
+      const operationId = requestOperationId(request) || body.operationId || randomUUID();
+      const source = { kind: "local", path: body.archivePath ?? body.path, expectedSha256: body.expectedSha256 ?? body.sha256 };
+      const signature = "POST " + url.pathname + ":" + JSON.stringify({ source });
+      const operation = await startDistributionOperation({ operationId, intent: "install", source, signature });
+      json(response, 202, operation);
     } catch (error) {
       const failure = errorDetails(error);
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
-    } finally {
-      requestContext.cleanup();
-    }
-    return;
-  }
-  if (url.pathname === "/runtime/plugins/install-market" && request.method === "POST") {
-    const operationId = requestOperationId(request) || randomUUID();
-    const requestContext = requestAbortContext(request, response);
-    try {
-      const body = await readJsonBody(request);
-      const signature = `POST ${url.pathname}:${JSON.stringify(body)}`;
-      const result = await runIdempotentOperation(operationId, signature, async () => {
-        await runtimeLogger.info("market-install-started", { operationId });
-        try {
-          const id = await installMarketPlugin({ ...body, operationId, signal: requestContext.signal });
-          const entry = await runtimeLogger.info("market-install-completed", { operationId, pluginId: id });
-          return { status: 201, body: { ok: true, pluginId: id, logId: entry.id, operationId } };
-        } catch (error) {
-          const failure = errorDetails(error);
-          const entry = await runtimeLogger.error("market-install-failed", { ...failure, operationId });
-          const status = ["DUPLICATE_PLUGIN_ID", "MARKET_BUNDLED_CONFLICT"].includes(failure.code) ? 409 : ["MARKET_DIGEST_MISMATCH", "ARCHIVE_INVALID", "ARCHIVE_PATH_TRAVERSAL", "ARCHIVE_SYMLINK", "ARCHIVE_DUPLICATE_ENTRY"].includes(failure.code) ? 422 : 400;
-          return { status, body: { error: failure.message, code: failure.code, logId: entry.id, operationId } };
-        }
-      });
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, result.status, result.body);
-    } catch (error) {
-      const failure = errorDetails(error);
-      if (!requestContext.signal.aborted && !response.destroyed) json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code, operationId });
-    } finally {
-      requestContext.cleanup();
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { error: failure.message, code: failure.code });
     }
     return;
   }

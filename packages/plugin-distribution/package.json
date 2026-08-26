@@ -1,0 +1,13 @@
+{
+  "name": "@infolens/plugin-distribution",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./archive": "./src/archive.mjs",
+    "./artifact": "./src/artifact.mjs",
+    "./module": "./src/module.mjs",
+    "./source": "./src/source.mjs"
+  }
+}
