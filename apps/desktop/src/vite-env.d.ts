@@ -226,6 +226,93 @@ interface RuntimeInfo {
   activeBatch?: BatchSummary;
 }
 
+interface DaemonHealth {
+  state: string;
+  daemon: { state: string; loopback: boolean; version?: string };
+  pluginCount: number;
+  unavailableCount: number;
+  plugins: Array<{
+    id: string;
+    name: string;
+    state: string;
+    enabled: boolean;
+    failure?: { code?: string; message?: string };
+  }>;
+}
+
+type AutomationScheduleKind = "refresh" | "daily_digest";
+type AutomationScheduleSpec =
+  | { type: "interval"; intervalMinutes: number }
+  | { type: "daily"; time: string }
+  | { type: "weekly"; time: string; weekdays: number[] };
+
+interface AutomationSchedule {
+  scheduleId: string;
+  kind: AutomationScheduleKind;
+  name?: string;
+  pluginId?: string;
+  pluginIds?: string[];
+  spec: AutomationScheduleSpec;
+  timeZone: string;
+  recipients?: string[];
+  state: "enabled" | "paused" | "orphaned";
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  anchorAt: string;
+  nextRunAt?: string;
+  lastDueAt?: string;
+  lastRunId?: string;
+  lastPeriodKey?: string;
+  lastError?: { code?: string; message?: string; [key: string]: unknown };
+}
+
+interface AutomationRun {
+  runId: string;
+  scheduleId: string;
+  periodKey?: string;
+  trigger: "scheduled" | "manual" | "resend";
+  state: "queued" | "running" | "succeeded" | "failed" | "canceled" | "interrupted" | "skipped";
+  reason?: string;
+  skipReason?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  attempts: number;
+  snapshotId?: string;
+  deliveryId?: string;
+  delivery?: {
+    deliveryId: string;
+    state: "not-sent" | "sending" | "sent" | "failed" | "unknown";
+    attempts: number;
+    configVersion: number;
+    sentAt?: string;
+    error?: { code?: string; message?: string; [key: string]: unknown };
+  };
+  error?: { code?: string; message?: string; [key: string]: unknown };
+}
+
+interface AutomationMailSettings {
+  configured: boolean;
+  version: number;
+  updatedAt?: string;
+  hasPassword: boolean;
+  host?: string;
+  port?: number;
+  security?: "starttls" | "tls";
+  username?: string;
+  from?: string;
+}
+
+interface AutomationMailTest {
+  auditId: string;
+  configVersion: number;
+  recipients: string[];
+  state: "sending" | "sent" | "failed" | "unknown";
+  testedAt: string;
+  error?: { code?: string; message?: string };
+}
+
 interface RuntimeStatusEvent {
   status: "running" | "restarting" | "unavailable";
   message?: string;
@@ -270,6 +357,7 @@ interface LogQueryRequest {
 interface Window {
   infolens?: {
     getRuntimeInfo(): Promise<RuntimeInfo | undefined>;
+    startDaemon(): Promise<RuntimeInfo | undefined>;
     selectPluginArchive(): Promise<{ fileName: string; data: ArrayBuffer; expectedSha256?: string } | null>;
     copyText(value: string): Promise<void>;
     downloadText(value: { filename: string; text: string }): Promise<{ canceled: boolean; filename?: string }>;

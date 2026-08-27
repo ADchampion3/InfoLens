@@ -1,4 +1,4 @@
-import { AlertCircle, CircleOff, FileText, LayoutDashboard, LoaderCircle, Plug, RefreshCw, ScrollText, Search, Settings } from "lucide-react";
+import { AlertCircle, CircleOff, FileText, LayoutDashboard, LoaderCircle, Plug, RefreshCw, ScrollText, Search, Server, Settings, Timer } from "lucide-react";
 import type { HostView } from "../host-view";
 import { useLanguage } from "../i18n";
 
@@ -36,6 +36,7 @@ export function InstrumentRail({ runtime, view, onSelectPlugin, onOpenView, onOp
       </button>
       <nav className="plugin-nav" aria-label={t("Plugins")}>
         <button className={`nav-item utility ${view.kind === "overview" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "overview" })} type="button"><span className="utility-icon"><LayoutDashboard size={17} /></span><span className="nav-label">{t("Overview")}</span></button>
+        <button className={`nav-item utility ${view.kind === "daemon" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "daemon" })} type="button"><span className="utility-icon"><Server size={17} /></span><span className="nav-label">{t("Daemon")}</span></button>
         <div className="nav-caption">{t("Sources")}</div>
         {runtime?.plugins.map((plugin) => (
           <button className={`nav-item ${view.kind === "plugin" && plugin.id === view.id ? "is-selected" : ""}`} key={plugin.id} onClick={() => onSelectPlugin(plugin)} type="button">
@@ -49,6 +50,7 @@ export function InstrumentRail({ runtime, view, onSelectPlugin, onOpenView, onOp
       <nav className="utility-nav" aria-label={t("Application")}>
         <button className={`nav-item utility ${view.kind === "plugins" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "plugins" })} type="button"><span className="utility-icon"><Plug size={17} /></span><span className="nav-label">{t("Plugins")}</span></button>
         <button className={`nav-item utility ${view.kind === "daily-summary" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "daily-summary" })} type="button"><span className="utility-icon"><FileText size={17} /></span><span className="nav-label">{t("Daily Summary")}</span></button>
+        <button className={`nav-item utility ${view.kind === "automation" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "automation" })} type="button"><span className="utility-icon"><Timer size={17} /></span><span className="nav-label">{t("Automation")}</span></button>
         <button className={`nav-item utility ${view.kind === "batch" ? "is-selected" : ""}`} onClick={onOpenBatch} type="button"><span className="utility-icon"><RefreshCw size={17} /></span><span className="nav-label">{t("Batch refresh")}</span>{runtime?.activeBatch && <span className="nav-badge">{runtime.activeBatch.counts.remaining}</span>}</button>
         <button className={`nav-item utility ${view.kind === "logs" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "logs" })} type="button"><span className="utility-icon"><ScrollText size={17} /></span><span className="nav-label">{t("Logs")}</span></button>
         <button className={`nav-item utility ${view.kind === "settings" ? "is-selected" : ""}`} onClick={() => onOpenView({ kind: "settings" })} type="button"><span className="utility-icon"><Settings size={17} /></span><span className="nav-label">{t("Settings")}</span></button>

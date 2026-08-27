@@ -63,10 +63,8 @@ export async function activate(context) {
   const store = openStore(context.resolveDataPath("product-hunt.sqlite"));
   const storeFilename = context.resolveDataPath("product-hunt.sqlite");
   store.cleanupOnActivation();
-  let cancelSchedule;
   const summary = () => ({ source:"Product Hunt", collection:"Today's Top Launches", products:store.list(), settings:store.settings(), ...store.metadata() });
   const updateHealth = () => { const data=summary(); context.setHealth({state:"ready",badge:data.dependencyState==="connected"?String(data.products.filter((item)=>!item.read).length):"!",lastSuccessfulRefresh:data.lastSuccessfulRefresh,dependencyState:data.dependencyState??"unknown",dependencyWarning:data.dependencyState!=="connected"}); };
-  const configureSchedule = () => { cancelSchedule?.(); cancelSchedule=undefined; const settings=store.settings(); if(settings.policy==="fixed") cancelSchedule=context.schedule("refresh",{intervalMs:settings.intervalMinutes*60_000,reason:"schedule",coalesceKey:"collection"}); };
   context.task("refresh",async(_,task)=>{
     try {
       const products=validateCollection(await context.opencli.run("topLaunches",["--limit=20"],task.signal));
@@ -83,7 +81,7 @@ export async function activate(context) {
   context.route("POST","/refresh",()=>store.settings().policy==="disabled"?{ok:false,disabled:true,...summary()}:context.enqueue("refresh",undefined,{reason:"manual",coalesceKey:"collection"}));
   context.route("POST","/read",({url})=>{store.markRead(url.searchParams.get("url"),url.searchParams.get("read")!=="false");updateHealth();return summary();});
   context.route("GET","/settings",()=>store.settings());
-  context.route("POST","/settings",({url})=>{const policy=url.searchParams.get("policy");const intervalMinutes=Number(url.searchParams.get("intervalMinutes")??60);const retentionDays=Number(url.searchParams.get("retentionDays")??store.settings().retentionDays);if(!POLICIES.has(policy)||!INTERVALS.has(intervalMinutes)||!RETENTION_DAYS.has(retentionDays))throw new Error("Unsupported refresh setting");store.saveSettings({policy,intervalMinutes,retentionDays},{acknowledgeRetentionCleanup:url.searchParams.get("acknowledgeRetentionCleanup")==="true"});configureSchedule();return store.settings();});
+  context.route("POST","/settings",({url})=>{const policy=url.searchParams.get("policy");const intervalMinutes=Number(url.searchParams.get("intervalMinutes")??60);const retentionDays=Number(url.searchParams.get("retentionDays")??store.settings().retentionDays);if(!POLICIES.has(policy)||!INTERVALS.has(intervalMinutes)||!RETENTION_DAYS.has(retentionDays))throw new Error("Unsupported refresh setting");store.saveSettings({policy,intervalMinutes,retentionDays},{acknowledgeRetentionCleanup:url.searchParams.get("acknowledgeRetentionCleanup")==="true"});return store.settings();});
   context.route("GET","/history",({url})=>store.snapshots({limit:url.searchParams.get("limit"),offset:url.searchParams.get("offset")}));
   context.route("GET","/history/snapshot",({url})=>store.snapshot(url.searchParams.get("id"))??{error:"Snapshot not found"});
   context.route("GET","/export",({url})=>{
@@ -91,5 +89,5 @@ export async function activate(context) {
     const exportedAt=new Date().toISOString();
     return downloadableResponse({filenameBase:`product-hunt-history-${exportedAt.slice(0,10)}`,format,body:createExport(context.resolveDataPath("product-hunt.sqlite"),{pluginId:"product-hunt",pluginVersion:"0.2.0",format,exportedAt})});
   });
-  configureSchedule(); updateHealth(); return {async deactivate(){cancelSchedule?.();store.close();}};
+  updateHealth(); return {async deactivate(){store.close();}};
 }

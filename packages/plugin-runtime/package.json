@@ -18,6 +18,9 @@
     "./adapter-scope": "./src/adapter-scope.mjs",
     "./workspace-diagnostics": "./src/workspace-diagnostics.mjs",
     "./daily-summary": "./src/daily-summary.mjs",
+    "./daily-summary-renderer": "./src/daily-summary-renderer.mjs",
+    "./mail": "./src/mail.mjs",
+    "./scheduler": "./src/scheduler.mjs",
     "./server": "./src/server.mjs",
     "./daemon-state": "./src/daemon-state.mjs",
     "./package.json": "./package.json"

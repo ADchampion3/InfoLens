@@ -18,6 +18,8 @@ import { InstrumentRail, Lifecycle, sourceInitial } from "./components/Instrumen
 import { CommandPalette } from "./components/CommandPalette";
 import { OverviewView } from "./components/OverviewView";
 import { BridgePanel } from "./components/BridgePanel";
+import { AutomationPage } from "./automation";
+import { DaemonPage } from "./daemon";
 import type { CommandItem } from "./components/CommandPalette";
 import { readJsonResponse, runtimeRequest, runtimeUpload } from "./runtime-api";
 import { useTheme } from "./useTheme";
@@ -44,6 +46,14 @@ async function getRuntimeInfo(): Promise<RuntimeInfo> {
   const info = await readJsonResponse<RuntimeInfo>(infoResponse, "Plugin services are unavailable.");
   if (!infoResponse.ok) throw new Error("Plugin services are unavailable.");
   return info;
+}
+
+async function getDaemonHealth(info: RuntimeInfo): Promise<DaemonHealth | undefined> {
+  if (!info.daemon) return undefined;
+  const response = await fetch(`${info.origin}/api/v1/health`, { credentials: "include" });
+  const health = await readJsonResponse<DaemonHealth>(response, "Daemon health is unavailable.");
+  if (!response.ok) throw new Error("Daemon health is unavailable.");
+  return health;
 }
 
 function browserStatusFromError(error: unknown): BrowserStatus | undefined {
@@ -750,6 +760,9 @@ export function App() {
   const [status, setStatus] = useState<Status>("loading");
   const [message, setMessage] = useState(() => t("Starting plugin services..."));
   const [runtime, setRuntime] = useState<RuntimeInfo>();
+  const [daemonHealth, setDaemonHealth] = useState<DaemonHealth>();
+  const [daemonCheckedAt, setDaemonCheckedAt] = useState<string>();
+  const [daemonAction, setDaemonAction] = useState<"start" | "refresh">();
   const [view, setView] = useState<HostView>({ kind: "overview" });
   const [dailySummarySelection, setDailySummarySelection] = useState<Set<string>>();
   const [batchId, setBatchId] = useState<string>();
@@ -770,8 +783,57 @@ export function App() {
   const refreshInfo = async () => {
     const info = await getRuntimeInfo();
     setRuntime(info);
+    try {
+      const health = await getDaemonHealth(info);
+      setDaemonHealth(health);
+      setDaemonCheckedAt(health ? new Date().toISOString() : undefined);
+    } catch {
+      setDaemonHealth(undefined);
+      setDaemonCheckedAt(undefined);
+    }
     setStatus("ready");
     return info;
+  };
+
+  const startDaemon = async () => {
+    setDaemonAction("start");
+    setRuntimeRestarting(true);
+    try {
+      const info = window.infolens?.startDaemon ? await window.infolens.startDaemon() : await getRuntimeInfo();
+      if (!info) throw new Error(t("Plugin services did not start."));
+      setRuntime(info);
+      const health = await getDaemonHealth(info);
+      setDaemonHealth(health);
+      setDaemonCheckedAt(health ? new Date().toISOString() : undefined);
+      setStatus("ready");
+      setMessage(t("Plugin services are ready."));
+      setRuntimeRestarting(false);
+      showNotice(t("Daemon is ready."));
+    } catch (error) {
+      setRuntime(undefined);
+      setDaemonHealth(undefined);
+      setDaemonCheckedAt(undefined);
+      setRuntimeRestarting(false);
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : t("Plugin services did not start."));
+    } finally {
+      setDaemonAction(undefined);
+    }
+  };
+
+  const refreshDaemon = async () => {
+    setDaemonAction("refresh");
+    try {
+      await refreshInfo();
+      setRuntimeRestarting(false);
+    } catch (error) {
+      setDaemonHealth(undefined);
+      setDaemonCheckedAt(undefined);
+      setMessage(error instanceof Error ? error.message : t("Daemon health is unavailable."));
+      setStatus("error");
+    } finally {
+      setDaemonAction(undefined);
+    }
   };
 
   const showNotice = (notice: ToastNotice | string) => {
@@ -787,6 +849,8 @@ export function App() {
       setView({ kind: "overview" });
       setManagedKey(info.plugins[0]?.id ?? info.rejectedPlugins[0]?.package);
     }).catch((error: unknown) => {
+      setDaemonHealth(undefined);
+      setDaemonCheckedAt(undefined);
       setMessage(error instanceof Error ? t(error.message) : t("Plugin services did not start."));
       setStatus("error");
     });
@@ -855,6 +919,8 @@ export function App() {
       });
     } else {
       setRuntimeRestarting(true);
+      setDaemonHealth(undefined);
+      setDaemonCheckedAt(undefined);
       setDailySummarySelection(undefined);
       if (event.message) setMessage(event.message);
     }
@@ -1097,8 +1163,10 @@ export function App() {
   const commands = useMemo<CommandItem[]>(() => {
     const goTo: CommandItem[] = [
       { id: "view-overview", group: t("Go to"), label: t("Overview"), action: () => setView({ kind: "overview" }) },
+      { id: "view-daemon", group: t("Go to"), label: t("Daemon"), action: () => setView({ kind: "daemon" }) },
       { id: "view-plugins", group: t("Go to"), label: t("Plugins"), action: () => setView({ kind: "plugins" }) },
       { id: "view-daily-summary", group: t("Go to"), label: t("Daily Summary"), action: () => setView({ kind: "daily-summary" }) },
+      { id: "view-automation", group: t("Go to"), label: t("Automation"), action: () => setView({ kind: "automation" }) },
       { id: "view-batch", group: t("Go to"), label: t("Batch refresh"), action: () => void openBatchRefresh() },
       { id: "view-logs", group: t("Go to"), label: t("Logs"), action: () => setView({ kind: "logs" }) },
       { id: "view-settings", group: t("Go to"), label: t("Settings"), action: () => setView({ kind: "settings" }) },
@@ -1129,8 +1197,9 @@ export function App() {
       <main className="main-area">
         {runtimeRestarting && <div className="restart-bar" role="status"><LoaderCircle className="spinner" size={15} /> {t("Restarting plugin services...")}</div>}
         {view.kind === "logs" && <LogsView runtime={runtime} filters={logFilters} setFilters={setLogFilters} focusEntryId={focusedLogId} onNotice={showNotice} />}
-        {view.kind !== "logs" && status === "loading" && <div className="system-state" role="status"><LoaderCircle className="spinner" size={24} /><p>{message}</p></div>}
-        {view.kind !== "logs" && status === "error" && <div className="system-state system-state--error" role="alert"><h1>{t("Plugin services unavailable")}</h1><p>{message}</p></div>}
+        {view.kind !== "logs" && view.kind !== "daemon" && status === "loading" && <div className="system-state" role="status"><LoaderCircle className="spinner" size={24} /><p>{message}</p></div>}
+        {view.kind !== "logs" && view.kind !== "daemon" && status === "error" && <div className="system-state system-state--error" role="alert"><h1>{t("Plugin services unavailable")}</h1><p>{message}</p></div>}
+        {view.kind === "daemon" && <DaemonPage connectionState={status} message={message} runtime={runtime} health={daemonHealth} checkedAt={daemonCheckedAt} action={daemonAction} canStart={Boolean(window.infolens?.startDaemon)} onRefresh={() => void refreshDaemon()} onStart={() => void startDaemon()} onOpenAutomation={() => setView({ kind: "automation" })} />}
         {status === "ready" && view.kind === "plugin" && selected && selected.state === "disabled" && (
           <div className="system-state"><CircleOff size={28} /><h1>{selected.name} {t("is disabled")}</h1><button className="primary-button" onClick={() => runtime && mutate(() => runtimeRequest(runtime, `/api/v1/plugins/${selected.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: true }) }), t("{name} enabled", { name: selected.name }))}>{t("Enable in Plugins")}</button></div>
         )}
@@ -1138,6 +1207,7 @@ export function App() {
         {status === "ready" && view.kind === "overview" && runtime && <OverviewView runtime={runtime} onOpenPlugin={(plugin) => void selectPlugin(plugin)} onOpenBatch={() => void openBatchRefresh()} onOpenDailySummary={() => setView({ kind: "daily-summary" })} onOpenSettings={() => setView({ kind: "settings" })} />}
         {status === "ready" && view.kind === "batch" && runtime && <BatchRefreshView runtime={runtime} initialBatchId={batchId} onBatchIdChange={setBatchId} onBatchStarted={observeBatch} onOpenLogs={openBatchLogs} />}
         {status === "ready" && !runtimeRestarting && view.kind === "daily-summary" && runtime && <DailySummaryView runtime={runtime} onOpenBatch={openBatchRefresh} onNotice={showNotice} selectedPluginIds={dailySummarySelection} onSelectionChange={setDailySummarySelection} />}
+        {status === "ready" && !runtimeRestarting && view.kind === "automation" && runtime && <AutomationPage runtime={runtime} onNotice={showNotice} />}
         {status === "ready" && view.kind === "plugins" && runtime && (
           <section className="host-page plugin-manager">
             <header className="page-header"><div><h1>{t("Plugins")}</h1><p>{t("Installed packages and distribution controls")}</p></div><div className="page-header-actions"><button type="button" className="primary-button" onClick={importArchive}><FileArchive size={17} />{t("Import ZIP")}</button><button type="button" onClick={() => void installFromUrl()}><ExternalLink size={17} />{t("Install URL")}</button></div></header>

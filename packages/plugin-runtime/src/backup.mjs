@@ -14,6 +14,7 @@ function contained(root, target) {
 function forbidden(relative) {
   const normalized = relative.replaceAll("\\", "/").toLowerCase();
   return normalized === "credentials.json"
+    || normalized === "mail-secrets.json"
     || normalized === "daemon.json"
     || normalized === "daemon.lock"
     || normalized.startsWith("logs/")
@@ -52,7 +53,7 @@ function objectValue(value, relative) {
 
 function validateHostState(value, relative) {
   const state = objectValue(value, relative);
-  if (state.version !== undefined && state.version !== 2) throw invalidState(relative, "unsupported version");
+  if (state.version !== undefined && ![2, 3].includes(state.version)) throw invalidState(relative, "unsupported version");
   if (state.enabledPluginIds !== undefined && (!Array.isArray(state.enabledPluginIds) || state.enabledPluginIds.some((id) => typeof id !== "string"))) {
     throw invalidState(relative, "enabledPluginIds must be an array of strings");
   }
@@ -137,6 +138,7 @@ export async function createBackup({ paths, outputPath, metadata = {} }) {
   };
   await include(paths.hostStatePath, "host-state.json");
   await include(paths.batchStatePath, "task-state.json");
+  await include(paths.schedulerDatabasePath, "scheduler.sqlite");
   if (await stat(paths.taskRecordsRoot).then(() => true).catch(() => false)) {
     for (const filename of await walk(paths.taskRecordsRoot)) {
       files.push(encodedFile(`task-records/${contained(paths.taskRecordsRoot, filename)}`, await readFile(filename)));
@@ -154,7 +156,7 @@ export async function createBackup({ paths, outputPath, metadata = {} }) {
     createdAt: new Date().toISOString(),
     metadata: { hostVersion: metadata.hostVersion, pluginIds: metadata.pluginIds ?? [] },
     files,
-    excluded: ["credentials.json", "daemon.json", "daemon.lock", "logs", "plugins", "opencli-adapters", "caches", "browser profiles"],
+    excluded: ["credentials.json", "mail-secrets.json", "daemon.json", "daemon.lock", "logs", "plugins", "opencli-adapters", "caches", "browser profiles"],
   };
   const validated = validateBackup(value);
   const destination = path.resolve(outputPath);
@@ -188,6 +190,7 @@ export async function restoreBackup({ paths, sourcePath, backup, validateOnly = 
       { relative: "task-records", target: paths.taskRecordsRoot },
       { relative: "host-state.json", target: paths.hostStatePath },
       { relative: "task-state.json", target: paths.batchStatePath },
+      { relative: "scheduler.sqlite", target: paths.schedulerDatabasePath },
     ];
     await mkdir(rollbackRoot, { recursive: true });
     const moved = [];

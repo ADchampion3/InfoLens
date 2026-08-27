@@ -48,17 +48,27 @@ export function localDayKey(value, timeZone) {
   return values.year && values.month && values.day ? `${values.year}-${values.month}-${values.day}` : undefined;
 }
 
-export function createDailySummaryContext({ now = new Date(), timeZone } = {}) {
+export function createDailySummaryContext({ now = new Date(), timeZone, localDate, windowStart, windowEnd } = {}) {
   const generatedAt = now instanceof Date ? now : new Date(now);
   if (!Number.isFinite(generatedAt.valueOf())) throw new TypeError("Daily Summary generation time is invalid");
   const resolvedTimeZone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   if (typeof resolvedTimeZone !== "string" || !resolvedTimeZone.trim() || !localDayKey(generatedAt, resolvedTimeZone)) {
     throw new TypeError("Daily Summary time zone is invalid");
   }
+  const resolvedLocalDate = localDate ?? localDayKey(generatedAt, resolvedTimeZone);
+  if (typeof resolvedLocalDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(resolvedLocalDate)) {
+    throw new TypeError("Daily Summary local date is invalid");
+  }
+  const localDateValue = new Date(resolvedLocalDate + "T00:00:00.000Z");
+  if (!Number.isFinite(localDateValue.valueOf()) || localDateValue.toISOString().slice(0, 10) !== resolvedLocalDate) {
+    throw new TypeError("Daily Summary local date is invalid");
+  }
   return Object.freeze({
-    localDate: localDayKey(generatedAt, resolvedTimeZone),
+    localDate: resolvedLocalDate,
     timeZone: resolvedTimeZone,
     generatedAt: generatedAt.toISOString(),
+    ...(windowStart ? { windowStart: String(windowStart) } : {}),
+    ...(windowEnd ? { windowEnd: String(windowEnd) } : {}),
   });
 }
 
@@ -130,11 +140,13 @@ function safeUnavailable() {
   return { state: "unavailable", reason: "Daily Summary data is unavailable" };
 }
 
-export async function aggregateDailySummary(plugins, { now, timeZone, signal } = {}) {
+export async function aggregateDailySummary(plugins, { now, timeZone, localDate, windowStart, windowEnd, pluginIds, signal } = {}) {
   if (!Array.isArray(plugins)) throw new TypeError("Daily Summary requires an ordered Plugin list");
-  const shared = createDailySummaryContext({ now, timeZone });
+  const selectedIds = Array.isArray(pluginIds) ? new Set(pluginIds) : undefined;
+  const orderedPlugins = selectedIds ? plugins.filter((plugin) => selectedIds.has(plugin.pluginId)) : plugins;
+  const shared = createDailySummaryContext({ now, timeZone, localDate, windowStart, windowEnd });
   const requestSignal = signal ?? new AbortController().signal;
-  const results = await Promise.all(plugins.map(async (plugin) => {
+  const results = await Promise.all(orderedPlugins.map(async (plugin) => {
     const pluginId = plugin.pluginId;
     if (typeof pluginId !== "string" || !pluginId.trim()) throw new TypeError("Daily Summary Plugin requires pluginId");
     const base = {

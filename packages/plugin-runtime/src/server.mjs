@@ -19,6 +19,9 @@ import { refreshInputKey, sanitizeRefreshOptions } from "./refresh-options.mjs";
 import { BatchManager, BATCH_TERMINAL_STATES } from "./batch-manager.mjs";
 import { garbageCollectAdapterStore, preparePluginAdapterScope, removePluginAdapterScope } from "./adapter-scope.mjs";
 import { aggregateDailySummary } from "./daily-summary.mjs";
+import { renderFactsHtml, renderFactsMarkdown } from "./daily-summary-renderer.mjs";
+import { MailSecretStore, normalizeMailRecipients, normalizeMailSettings, publicMailSettings, sendSmtpMail } from "./mail.mjs";
+import { Scheduler, SCHEDULER_RETRY, localDateKey, localDateTimeToInstant } from "./scheduler.mjs";
 import { extractZip } from "@infolens/plugin-distribution/archive";
 import { PluginDistributionModule } from "@infolens/plugin-distribution/module";
 import { DEFAULT_SOURCE_LIMITS, DistributionError, downloadDistributionSource, normalizeDistributionFileName, stageLocalDistributionSource } from "@infolens/plugin-distribution/source";
@@ -42,6 +45,8 @@ const daemonRoot = path.resolve(process.env.INFOLENS_DAEMON_DATA_ROOT ?? path.jo
 const configuredDaemonPaths = daemonPaths(daemonRoot, process.env);
 const pluginsRoot = path.resolve(process.env.INFOLENS_PLUGINS_ROOT ?? (daemonMode ? configuredDaemonPaths.pluginsRoot : path.join(projectRoot, "plugins")));
 const dataRoot = path.resolve(process.env.INFOLENS_PLUGIN_DATA_ROOT ?? (daemonMode ? configuredDaemonPaths.pluginDataRoot : path.join(projectRoot, ".infolens-data", "plugins")));
+const schedulerDatabasePath = path.resolve(process.env.INFOLENS_SCHEDULER_DATABASE_PATH ?? (daemonMode ? configuredDaemonPaths.schedulerDatabasePath : path.join(path.dirname(dataRoot), "scheduler.sqlite")));
+const mailSecretPath = path.resolve(process.env.INFOLENS_MAIL_SECRET_PATH ?? (daemonMode ? configuredDaemonPaths.mailSecretPath : path.join(path.dirname(dataRoot), "mail-secrets.json")));
 const diagnosticMode = process.env.INFOLENS_RUNTIME_DIAGNOSTIC === "1";
 const diagnosticPluginId = process.env.INFOLENS_DIAGNOSTIC_PLUGIN_ID;
 const diagnosticKeepAlive = diagnosticMode ? setInterval(() => {}, 1_000) : undefined;
@@ -142,6 +147,8 @@ let operationRecordsWrite = Promise.resolve();
 const hostState = new HostStateStore(hostStatePath);
 await hostState.load();
 let batchManager;
+let scheduler;
+const mailSecretStore = new MailSecretStore(mailSecretPath);
 const distributionLocks = new Map();
 const distributionJournals = new Map();
 const distributionModule = new PluginDistributionModule({
@@ -759,7 +766,7 @@ async function activatePlugin(validated, packageRoot, { diagnostic = diagnosticM
       setPluginStatus(plugin, "running");
     }
     emitStatus(type, manifest.id, { ...safeDetails, logId: entry.id });
-  }, { diagnostic, registrations: plugin.registrations, statePath: daemonMode ? path.join(configuredDaemonPaths.taskRecordsRoot, `${manifest.id}.json`) : undefined });
+  }, { diagnostic, registrations: plugin.registrations, statePath: daemonMode ? path.join(configuredDaemonPaths.taskRecordsRoot, `${manifest.id}.json`) : undefined, enableSchedules: false });
   plugin.taskManager = taskManager;
   activePlugins.push(plugin);
   await logger.info("plugin-activation-started", { operationId: activationOperationId });
@@ -1019,11 +1026,20 @@ function dailySummaryPlugin(descriptor) {
   };
 }
 
-async function dailySummaryAggregate(signal) {
-  const now = dailySummaryNow ? new Date(dailySummaryNow) : new Date();
+async function dailySummaryAggregate(signal, options = {}) {
+  const now = options.now ?? (dailySummaryNow ? new Date(dailySummaryNow) : new Date());
   return aggregateDailySummary(
-    compatiblePlugins.filter((descriptor) => !descriptor.deactivated).map((descriptor) => dailySummaryPlugin(descriptor)),
-    { now, timeZone: dailySummaryTimeZone, signal },
+    (options.includeDisabled ? compatiblePlugins : compatiblePlugins.filter((descriptor) => !descriptor.deactivated)).map((descriptor) => dailySummaryPlugin(descriptor)),
+    {
+      now,
+      timeZone: options.timeZone ?? dailySummaryTimeZone,
+      localDate: options.localDate,
+      windowStart: options.windowStart,
+      windowEnd: options.windowEnd,
+      pluginIds: options.pluginIds,
+      includeDisabled: options.includeDisabled,
+      signal,
+    },
   );
 }
 
@@ -1143,6 +1159,251 @@ batchManager = new BatchManager({
   sessionId: daemonMode ? undefined : applicationSessionId,
   onEvent: (event, details) => emitBatchEvent(event, details),
 });
+
+function schedulerPluginState(pluginId) {
+  const descriptor = findCompatible(pluginId);
+  const plugin = findPlugin(pluginId);
+  const enabled = Boolean(plugin && descriptor && !descriptor.deactivated && hostState.snapshot().enabledPluginIds.includes(pluginId));
+  const active = Boolean(plugin && plugin.lifecycle && plugin.status.state !== "failed");
+  return {
+    installed: Boolean(descriptor),
+    enabled,
+    active,
+    ...(plugin?.status?.failure ? { error: plugin.status.failure } : {}),
+  };
+}
+
+function nextLocalDate(localDate) {
+  const value = new Date(localDate + "T00:00:00.000Z");
+  value.setUTCDate(value.getUTCDate() + 1);
+  return value.toISOString().slice(0, 10);
+}
+
+async function waitForRefreshCommit(plugin, signal) {
+  if (signal.aborted) {
+    const error = new Error("Daily digest was canceled");
+    error.code = "SCHEDULER_CANCELED";
+    throw error;
+  }
+  const pending = [
+    ...plugin.taskManager.pendingPromises("refresh"),
+    ...scheduler.activeRefreshPromises(plugin.manifest.id),
+  ];
+  if (!pending.length) return;
+  const deadlineMs = 60_000;
+  let timer;
+  let abort;
+  const deadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error("Daily digest waited too long for the refresh to commit");
+      error.code = "DIGEST_REFRESH_DEADLINE";
+      error.retryable = true;
+      reject(error);
+    }, deadlineMs);
+  });
+  const canceled = new Promise((resolve, reject) => {
+    abort = () => {
+      const error = new Error("Daily digest was canceled");
+      error.code = "SCHEDULER_CANCELED";
+      reject(error);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    await Promise.race([Promise.allSettled(pending), deadline, canceled]);
+  } catch (error) {
+    if (error?.code === "DIGEST_REFRESH_DEADLINE" || error?.code === "SCHEDULER_CANCELED") throw error;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
+  }
+}
+
+async function executeScheduledRefresh({ schedule, signal }) {
+  const plugin = findPlugin(schedule.pluginId);
+  if (!plugin) return { ok: false, status: "skipped", skipReason: "PLUGIN_UNAVAILABLE" };
+  const operation = plugin.taskManager.enqueueDetailed("refresh", undefined, {
+    reason: "schedule",
+    coalesceKey: "collection",
+  });
+  const result = await operation.promise;
+  return {
+    ...(result && typeof result === "object" ? result : {}),
+    ok: result?.ok !== false,
+    operationId: operation.operationId,
+  };
+}
+
+async function executeScheduledDigest({ schedule, run, periodKey, sourceRun, signal, resend }) {
+  const currentRun = scheduler.getRun(run.runId) ?? run;
+  let snapshot = currentRun.snapshotId ? scheduler.getSnapshot(currentRun.snapshotId) : undefined;
+  if (resend && sourceRun?.snapshotId) snapshot = scheduler.getSnapshot(sourceRun.snapshotId);
+  const generatedAt = new Date();
+  const currentLocalDate = localDateKey(generatedAt, schedule.timeZone);
+  const previousLocalDateValue = new Date(currentLocalDate + "T00:00:00.000Z");
+  previousLocalDateValue.setUTCDate(previousLocalDateValue.getUTCDate() - 1);
+  const localDate = snapshot?.localDate
+    ?? periodKey
+    ?? previousLocalDateValue.toISOString().slice(0, 10);
+  if (!snapshot) {
+    for (const pluginId of schedule.pluginIds) {
+      const plugin = findPlugin(pluginId);
+      if (plugin) await waitForRefreshCommit(plugin, signal);
+    }
+    const windowStart = localDateTimeToInstant(localDate, "00:00", schedule.timeZone);
+    const windowEnd = localDateTimeToInstant(nextLocalDate(localDate), "00:00", schedule.timeZone);
+    const aggregate = await dailySummaryAggregate(signal, {
+      now: generatedAt,
+      timeZone: schedule.timeZone,
+      localDate,
+      windowStart: windowStart.toISOString(),
+      windowEnd: windowEnd.toISOString(),
+      pluginIds: schedule.pluginIds,
+      includeDisabled: true,
+    });
+    const markdown = renderFactsMarkdown(aggregate, schedule.pluginIds);
+    snapshot = scheduler.store.saveSnapshot({
+      runId: currentRun.runId,
+      scheduleId: schedule.scheduleId,
+      localDate,
+      timeZone: schedule.timeZone,
+      aggregate,
+      markdown,
+    });
+  }
+  const aggregate = snapshot.aggregate;
+  const sourceSuccesses = (aggregate.plugins ?? []).filter((plugin) => ["ready", "no-data"].includes(plugin.status));
+  if (!sourceSuccesses.length) {
+    const error = new Error("All Daily Summary sources failed");
+    error.code = "DIGEST_ALL_SOURCES_FAILED";
+    throw error;
+  }
+  const recordCount = sourceSuccesses.reduce((total, plugin) => total + (plugin.context?.records?.length ?? 0), 0);
+  if (!recordCount) return { ok: true, status: "skipped", skipReason: "NO_DATA", snapshotId: snapshot.snapshotId };
+  const partial = (aggregate.plugins ?? []).some((plugin) => !["ready", "no-data"].includes(plugin.status));
+  const settings = scheduler.getMailSettings();
+  if (!settings.config) {
+    const error = new Error("Mail settings are not configured");
+    error.code = "MAIL_NOT_CONFIGURED";
+    throw error;
+  }
+  const password = await mailSecretStore.read();
+  if (!password) {
+    const error = new Error("SMTP password is not configured");
+    error.code = "MAIL_SECRET_MISSING";
+    throw error;
+  }
+  const recipients = normalizeMailRecipients(schedule.recipients);
+  const subject = "Infolens Daily Summary " + localDate + (partial ? " (partial)" : "");
+  let delivery = currentRun.deliveryId ? scheduler.getDelivery(currentRun.deliveryId) : undefined;
+  if (delivery?.state === "sent") return { ok: true, status: partial ? "partial" : "sent", snapshotId: snapshot.snapshotId, deliveryId: delivery.deliveryId, partial };
+  if (delivery?.state === "unknown") {
+    const error = new Error("SMTP delivery state is unknown; use manual resend");
+    error.code = "DELIVERY_UNKNOWN";
+    throw error;
+  }
+  if (!delivery) {
+    delivery = scheduler.store.createDelivery({
+      runId: currentRun.runId,
+      scheduleId: schedule.scheduleId,
+      periodKey: periodKey ?? localDate,
+      recipients,
+      subject,
+      textBody: snapshot.markdown,
+      htmlBody: renderFactsHtml(snapshot.markdown),
+      configVersion: settings.version,
+    });
+  }
+  scheduler.store.updateDelivery(delivery.deliveryId, {
+    state: "sending",
+    attempts: delivery.attempts + 1,
+  });
+  try {
+    await sendSmtpMail(settings.config, password, {
+      from: settings.config.from,
+      recipients,
+      subject,
+      textBody: snapshot.markdown,
+      htmlBody: renderFactsHtml(snapshot.markdown),
+    });
+  } catch (error) {
+    scheduler.store.updateDelivery(delivery.deliveryId, {
+      state: error?.uncertain ? "unknown" : "failed",
+      error: { code: error?.code ?? "SMTP_FAILED", message: String(error?.message ?? error) },
+    });
+    if (error?.uncertain) error.retryable = false;
+    throw error;
+  }
+  scheduler.store.updateDelivery(delivery.deliveryId, { state: "sent", sentAt: new Date().toISOString(), error: null });
+  return { ok: true, status: partial ? "partial" : "sent", snapshotId: snapshot.snapshotId, deliveryId: delivery.deliveryId, partial };
+}
+
+function publicMailTest(audit) {
+  return {
+    ...audit,
+    recipients: audit.recipients.map((value) => {
+      const [local, domain] = value.split("@");
+      return (local?.slice(0, 1) ?? "") + "***@" + domain;
+    }),
+  };
+}
+
+async function executeMailTest(body) {
+  const settings = scheduler.getMailSettings();
+  if (!settings.config) {
+    const error = new Error("Mail settings are not configured");
+    error.code = "MAIL_NOT_CONFIGURED";
+    throw error;
+  }
+  const password = await mailSecretStore.read();
+  if (!password) {
+    const error = new Error("SMTP password is not configured");
+    error.code = "MAIL_SECRET_MISSING";
+    throw error;
+  }
+  const recipients = normalizeMailRecipients(body.recipients ?? body.to);
+  const audit = scheduler.store.createMailTestAudit({ configVersion: settings.version, recipients });
+  try {
+    await sendSmtpMail(settings.config, password, {
+      from: settings.config.from,
+      recipients,
+      subject: "Infolens SMTP test",
+      textBody: "This is an Infolens SMTP configuration test.",
+      htmlBody: "<p>This is an Infolens SMTP configuration test.</p>",
+    });
+    return publicMailTest(scheduler.store.updateMailTestAudit(audit.auditId, { state: "sent" }));
+  } catch (error) {
+    const state = error?.uncertain ? "unknown" : "failed";
+    return publicMailTest(scheduler.store.updateMailTestAudit(audit.auditId, {
+      state,
+      error: { code: error?.code ?? "SMTP_FAILED", message: String(error?.message ?? error) },
+    }));
+  }
+}
+
+function createScheduler() {
+  return new Scheduler({
+    filename: schedulerDatabasePath,
+    resolvePlugin: async (pluginId) => schedulerPluginState(pluginId),
+    executeRefresh: executeScheduledRefresh,
+    executeDigest: executeScheduledDigest,
+    retry: SCHEDULER_RETRY,
+    onEvent: async (event, details) => {
+      emitDaemonEvent("scheduler-" + event, details);
+      await runtimeLogger.info("scheduler-" + event, details).catch(() => {});
+    },
+  });
+}
+
+function reconcileSchedulerPlugins() {
+  for (const schedule of scheduler.list()) {
+    const ids = schedule.kind === "refresh" ? [schedule.pluginId] : schedule.pluginIds;
+    if (ids.some((pluginId) => !findCompatible(pluginId))) {
+      for (const pluginId of ids.filter((id) => !findCompatible(id))) scheduler.store.markSchedulesOrphaned(pluginId);
+    }
+  }
+  scheduler.store.restoreOrphanedSchedules(compatiblePlugins.map((descriptor) => descriptor.validated.manifest.id));
+}
 
 async function deactivatePlugin(plugin, options = {}) {
   const deactivationGuard = typeof options.deactivationGuard === "function" ? options.deactivationGuard : () => true;
@@ -2087,6 +2348,7 @@ async function removePluginUnsafe(identifier) {
   if (!descriptor && !rejection) throw new ContractError("PLUGIN_NOT_FOUND", `plugin '${identifier}' is not installed`);
   const id = descriptor?.validated.manifest.id ?? rejection.id ?? rejection.package;
   const packageRoot = descriptor?.packageRoot ?? rejection.packagePath;
+  scheduler.store.markSchedulesOrphaned(id);
   const relativePackage = path.relative(pluginsRoot, packageRoot);
   if (relativePackage.startsWith("..") || path.isAbsolute(relativePackage)) throw new Error("Refusing to remove a package outside the managed plugin directory");
   const active = findPlugin(id);
@@ -2175,6 +2437,9 @@ function canonicalPathname(pathname) {
     ["/tasks", "/runtime/tasks"],
     ["/events", "/runtime/events"],
     ["/daily-summary", "/runtime/daily-summary"],
+    ["/schedules", "/runtime/schedules"],
+    ["/mail-settings", "/runtime/mail-settings"],
+    ["/mail-test", "/runtime/mail-test"],
     ["/host/state", "/runtime/host-state"],
     ["/browser-status", "/runtime/browser-status"],
     ["/browser-status/check", "/runtime/browser-status/check"],
@@ -2189,6 +2454,7 @@ function canonicalPathname(pathname) {
     ["/plugins/distribution/upload", "/runtime/plugins/distribution/upload"],
   ]);
   if (simple.has(suffix)) return simple.get(suffix);
+  if (suffix.startsWith("/schedules/")) return "/runtime" + suffix;
   const distributionOperation = suffix.match(/^\/plugins\/distribution\/operations\/([^/]+)(?:\/(cancel|retry))?$/);
   if (distributionOperation) return `/runtime/plugins/distribution/operations/${distributionOperation[1]}${distributionOperation[2] ? `/${distributionOperation[2]}` : ""}`;
   const pluginDistribution = suffix.match(/^\/plugins\/([^/]+)\/(replace|rollback|revisions)$/);
@@ -2323,7 +2589,11 @@ async function readOperationalLogEntries({ filters = {}, cursor, limit = 200 } =
 await loadDistributionStatuses();
 await recoverDistributionJournals();
 await batchManager.load();
+scheduler = createScheduler();
+await scheduler.load();
 await discoverPlugins();
+reconcileSchedulerPlugins();
+scheduler.start();
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -2442,9 +2712,12 @@ const server = createServer(async (request, response) => {
       await restoreBackup({ paths: configuredDaemonPaths, sourcePath: source, validateOnly: true });
       await hostState.flush();
       await batchManager.interruptActive("BACKUP_RESTORE");
+      await scheduler.stop({ waitForRuns: false, close: false });
       restoreQuiesced = true;
       for (const plugin of [...activePlugins]) await deactivatePlugin(plugin, { preserveInterrupted: daemonMode });
+      await scheduler.stop({ waitForRuns: true, close: true });
       const result = await restoreBackup({ paths: configuredDaemonPaths, sourcePath: source });
+      scheduler.reopen();
       await hostState.load();
       await batchManager.load();
       batchManager.resumeAfterRestore();
@@ -2455,6 +2728,8 @@ const server = createServer(async (request, response) => {
         descriptor.unloaded = false;
         if (enabledPluginIds.has(id) && !findPlugin(id)) await activatePlugin(descriptor.validated, descriptor.packageRoot);
       }
+      reconcileSchedulerPlugins();
+      scheduler.start();
       await runtimeLogger.info("backup-restored", { fileCount: result.fileCount });
       json(response, 200, result);
     } catch (error) {
@@ -2469,6 +2744,9 @@ const server = createServer(async (request, response) => {
             descriptor.unloaded = false;
             if (previousEnabledPluginIds.has(id) && !findPlugin(id)) await activatePlugin(descriptor.validated, descriptor.packageRoot);
           }
+          scheduler.reopen();
+          reconcileSchedulerPlugins();
+          scheduler.start();
         } catch (recoveryError) {
           await runtimeLogger.error("backup-restore-recovery-failed", errorDetails(recoveryError)).catch(() => {});
         }
@@ -2556,10 +2834,193 @@ const server = createServer(async (request, response) => {
     json(response, 200, snapshot);
     return;
   }
+  if (url.pathname === "/runtime/schedules" && request.method === "GET") {
+    json(response, 200, {
+      schedules: scheduler.list(),
+      defaultTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+      mail: publicMailSettings(scheduler.getMailSettings(), await mailSecretStore.hasSecret()),
+    });
+    return;
+  }
+  if (url.pathname === "/runtime/schedules" && request.method === "POST") {
+    const operationId = requestOperationId(request) || randomUUID();
+    try {
+      const body = await readJsonBody(request);
+      const signature = "POST " + url.pathname + ":" + JSON.stringify(body);
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        try {
+          return { status: 201, body: { schedule: scheduler.create(body), operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return { status: ["SCHEDULE_VERSION_CONFLICT", "REFRESH_SCHEDULE_EXISTS"].includes(failure.code) ? 409 : 400, body: { ...failure, ...(error.current ? { current: error.current } : {}), operationId } };
+        }
+      });
+      json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { ...failure, operationId });
+    }
+    return;
+  }
+  const scheduleRunsMatch = url.pathname.match(/^\/runtime\/schedules\/([^/]+)\/runs$/u);
+  if (scheduleRunsMatch && request.method === "GET") {
+    try {
+      json(response, 200, { runs: scheduler.listRuns(decodeURIComponent(scheduleRunsMatch[1]), url.searchParams.get("limit") ?? undefined) });
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "SCHEDULE_NOT_FOUND" ? 404 : 400, failure);
+    }
+    return;
+  }
+  const scheduleResendMatch = url.pathname.match(/^\/runtime\/schedules\/([^/]+)\/runs\/([^/]+)\/resend$/u);
+  if (scheduleResendMatch && request.method === "POST") {
+    const operationId = requestOperationId(request) || randomUUID();
+    try {
+      const result = await runIdempotentOperation(operationId, "POST " + url.pathname, async () => {
+        try {
+          const run = await scheduler.resend(decodeURIComponent(scheduleResendMatch[1]), decodeURIComponent(scheduleResendMatch[2]));
+          return { status: 202, body: { run, operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return { status: ["SCHEDULE_NOT_FOUND", "RUN_NOT_FOUND"].includes(failure.code) ? 404 : 400, body: { ...failure, operationId } };
+        }
+      });
+      json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { ...failure, operationId });
+    }
+    return;
+  }
+  const scheduleRunMatch = url.pathname.match(/^\/runtime\/schedules\/([^/]+)\/run$/u);
+  if (scheduleRunMatch && request.method === "POST") {
+    const operationId = requestOperationId(request) || randomUUID();
+    try {
+      const result = await runIdempotentOperation(operationId, "POST " + url.pathname, async () => {
+        try {
+          const run = await scheduler.runNow(decodeURIComponent(scheduleRunMatch[1]));
+          return { status: 202, body: { run, operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return { status: failure.code === "SCHEDULE_NOT_FOUND" ? 404 : 400, body: { ...failure, operationId } };
+        }
+      });
+      json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { ...failure, operationId });
+    }
+    return;
+  }
+  const scheduleMatch = url.pathname.match(/^\/runtime\/schedules\/([^/]+)$/u);
+  if (scheduleMatch && request.method === "GET") {
+    const schedule = scheduler.get(decodeURIComponent(scheduleMatch[1]));
+    if (!schedule) json(response, 404, { error: "Schedule was not found", code: "SCHEDULE_NOT_FOUND" });
+    else json(response, 200, { schedule });
+    return;
+  }
+  if (scheduleMatch && request.method === "PATCH") {
+    const operationId = requestOperationId(request) || randomUUID();
+    try {
+      const body = await readJsonBody(request);
+      const expectedVersion = Number(body.version ?? body.expectedVersion);
+      const signature = "PATCH " + url.pathname + ":" + JSON.stringify({ ...body, version: expectedVersion });
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        try {
+          const schedule = scheduler.update(decodeURIComponent(scheduleMatch[1]), body, { expectedVersion });
+          return { status: 200, body: { schedule, operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return { status: ["SCHEDULE_NOT_FOUND"].includes(failure.code) ? 404 : ["SCHEDULE_VERSION_CONFLICT", "REFRESH_SCHEDULE_EXISTS"].includes(failure.code) ? 409 : 400, body: { ...failure, ...(error.current ? { current: error.current } : {}), operationId } };
+        }
+      });
+      json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { ...failure, operationId });
+    }
+    return;
+  }
+  if (scheduleMatch && request.method === "DELETE") {
+    const operationId = requestOperationId(request) || randomUUID();
+    try {
+      const result = await runIdempotentOperation(operationId, "DELETE " + url.pathname, async () => {
+        try {
+          scheduler.delete(decodeURIComponent(scheduleMatch[1]));
+          return { status: 200, body: { ok: true, operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return { status: failure.code === "SCHEDULE_NOT_FOUND" ? 404 : 400, body: { ...failure, operationId } };
+        }
+      });
+      json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { ...failure, operationId });
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/mail-settings" && request.method === "GET") {
+    json(response, 200, { mail: publicMailSettings(scheduler.getMailSettings(), await mailSecretStore.hasSecret()) });
+    return;
+  }
+  if (url.pathname === "/runtime/mail-settings" && ["POST", "PUT"].includes(request.method ?? "")) {
+    const operationId = requestOperationId(request) || randomUUID();
+    try {
+      const body = await readJsonBody(request);
+      const passwordFingerprint = body.password ? createHash("sha256").update(String(body.password)).digest("hex") : "";
+      const signature = request.method + " " + url.pathname + ":" + JSON.stringify({ ...body, password: passwordFingerprint });
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        try {
+          const config = normalizeMailSettings(body);
+          const settings = scheduler.saveMailSettings(config, { expectedVersion: body.version === undefined ? undefined : Number(body.version) });
+          if (body.password) await mailSecretStore.save(String(body.password));
+          if (body.clearPassword === true) await mailSecretStore.clear();
+          return { status: 200, body: { mail: publicMailSettings(settings, await mailSecretStore.hasSecret()), operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return { status: failure.code === "MAIL_SETTINGS_VERSION_CONFLICT" ? 409 : 400, body: { ...failure, ...(error.current ? { current: publicMailSettings(error.current, false) } : {}), operationId } };
+        }
+      });
+      json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { ...failure, operationId });
+    }
+    return;
+  }
+  if (url.pathname === "/runtime/mail-test" && request.method === "POST") {
+    const operationId = requestOperationId(request) || randomUUID();
+    try {
+      const body = await readJsonBody(request);
+      const recipients = normalizeMailRecipients(body.recipients ?? body.to);
+      const signature = "POST " + url.pathname + ":" + JSON.stringify({ recipients, version: scheduler.getMailSettings().version });
+      const result = await runIdempotentOperation(operationId, signature, async () => {
+        try {
+          return { status: 200, body: { mailTest: await executeMailTest({ ...body, recipients }), operationId } };
+        } catch (error) {
+          const failure = errorDetails(error);
+          return { status: 400, body: { ...failure, operationId } };
+        }
+      });
+      json(response, result.status, result.body);
+    } catch (error) {
+      const failure = errorDetails(error);
+      json(response, failure.code === "OPERATION_ID_REUSED" ? 409 : 400, { ...failure, operationId });
+    }
+    return;
+  }
   if (url.pathname === "/runtime/daily-summary" && request.method === "GET") {
     const requestContext = requestAbortContext(request, response);
     try {
-      const aggregate = await dailySummaryAggregate(requestContext.signal);
+      const requestedPluginIds = url.searchParams.getAll("pluginId").filter(Boolean);
+      const aggregate = await dailySummaryAggregate(requestContext.signal, {
+        localDate: url.searchParams.get("localDate") || undefined,
+        timeZone: url.searchParams.get("timeZone") || undefined,
+        windowStart: url.searchParams.get("windowStart") || undefined,
+        windowEnd: url.searchParams.get("windowEnd") || undefined,
+        pluginIds: requestedPluginIds.length ? requestedPluginIds : undefined,
+      });
       if (!requestContext.signal.aborted && !response.destroyed) json(response, 200, aggregate);
     } catch {
       if (!requestContext.signal.aborted && !response.destroyed) json(response, 503, { error: "Daily Summary is unavailable", code: "DAILY_SUMMARY_UNAVAILABLE" });
@@ -2992,9 +3453,11 @@ async function shutdown(reason = "RUNTIME_RESTARTED") {
   process.stdin.removeAllListeners("data");
   process.stdin.destroy?.();
   const diagnosticPlugin = diagnosticMode ? activePlugins.find((plugin) => plugin.manifest.id === diagnosticPluginId) : undefined;
+  await scheduler.stop({ waitForRuns: false, close: false });
   await batchManager.interruptActive(reason);
   browserBridge.stop();
   for (const plugin of [...activePlugins]) await plugin.taskManager.stop({ preserveInterrupted: daemonMode });
+  await scheduler.stop({ waitForRuns: true, close: true });
   taskQueue.stop();
   for (const stream of eventStreams) stream.destroy();
   eventStreams.clear();

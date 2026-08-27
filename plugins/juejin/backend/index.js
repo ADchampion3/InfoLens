@@ -128,17 +128,10 @@ export async function activate(context) {
   const store = openStore(context.resolveDataPath("juejin.sqlite"));
   const storeFilename = context.resolveDataPath("juejin.sqlite");
   store.cleanupOnActivation();
-  let cancelSchedule;
   const summary = () => ({ source: "掘金", collection: "热门文章", articles: store.list(), settings: store.settings(), ...store.metadata() });
   const updateHealth = () => {
     const data = summary();
     context.setHealth({ state: "ready", badge: String(data.articles.filter((article) => !article.read).length), lastSuccessfulRefresh: data.lastSuccessfulRefresh, dependencyState: "not-required", dependencyWarning: false });
-  };
-  const configureSchedule = () => {
-    cancelSchedule?.();
-    cancelSchedule = undefined;
-    const settings = store.settings();
-    if (settings.policy === "fixed") cancelSchedule = context.schedule("refresh", { intervalMs: settings.intervalMinutes * 60_000, reason: "schedule", coalesceKey: "collection" });
   };
   const refreshOptions = () => {
     const settings = store.settings();
@@ -189,7 +182,6 @@ export async function activate(context) {
     const limit = normalizeLimit(url.searchParams.get("limit"), current.limit);
     if (!POLICIES.has(policy) || !INTERVALS.has(intervalMinutes) || !RETENTION_DAYS.has(retentionDays)) throw new Error("Unsupported refresh setting");
     store.saveSettings({ policy, intervalMinutes, retentionDays, category, limit }, { acknowledgeRetentionCleanup: url.searchParams.get("acknowledgeRetentionCleanup") === "true" });
-    configureSchedule();
     return store.settings();
   });
   context.route("GET", "/history", ({ url }) => store.snapshots({ limit: url.searchParams.get("limit"), offset: url.searchParams.get("offset") }));
@@ -205,7 +197,6 @@ export async function activate(context) {
       body: createExport(storeFilename, { pluginId: "juejin", pluginVersion: PLUGIN_VERSION, format, exportedAt, date }),
     });
   });
-  configureSchedule();
   updateHealth();
-  return { async deactivate() { cancelSchedule?.(); store.close(); } };
+  return { async deactivate() { store.close(); } };
 }

@@ -319,6 +319,13 @@ ipcMain.handle("runtime:get-info", async () => {
     return runtimeInfo;
   }
 });
+ipcMain.handle("runtime:start", async () => {
+  const info = await startRuntime();
+  runtimeInfo = info;
+  if (info?.origin) startDaemonMonitor(info.origin);
+  publishRuntimeStatus("running", { info });
+  return info;
+});
 ipcMain.handle("plugin:select-archive", async () => {
   if (process.env.INFOLENS_TEST_CONTROL === "1" && process.env.INFOLENS_TEST_IMPORT_ARCHIVE_PATH) {
     const archivePath = path.resolve(process.env.INFOLENS_TEST_IMPORT_ARCHIVE_PATH);

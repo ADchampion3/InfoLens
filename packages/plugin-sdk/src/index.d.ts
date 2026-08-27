@@ -121,6 +121,8 @@ export interface DailySummaryProviderInput {
   readonly localDate: string;
   readonly timeZone: string;
   readonly generatedAt: string;
+  readonly windowStart?: string;
+  readonly windowEnd?: string;
   readonly signal: AbortSignal;
 }
 

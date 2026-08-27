@@ -149,7 +149,7 @@ export class SharedTaskQueue {
 }
 
 export class PluginTaskManager {
-  constructor(pluginId, queue, onEvent, { diagnostic = false, registrations = { tasks: [], schedules: [] }, statePath } = {}) {
+  constructor(pluginId, queue, onEvent, { diagnostic = false, registrations = { tasks: [], schedules: [] }, statePath, enableSchedules = true } = {}) {
     this.pluginId = pluginId;
     this.queue = queue;
     this.onEvent = onEvent;
@@ -162,6 +162,7 @@ export class PluginTaskManager {
     this.records = [];
     this.interruptedOperations = new Set();
     this.statePath = statePath;
+    this.enableSchedules = enableSchedules;
     this.writes = Promise.resolve();
     this.stopped = false;
   }
@@ -323,6 +324,17 @@ export class PluginTaskManager {
     return this.pending.has(`${name}:${coalesceKey}`);
   }
 
+  pendingPromise(name, coalesceKey = "default") {
+    return this.pending.get(`${name}:${coalesceKey}`)?.promise;
+  }
+
+  pendingPromises(name) {
+    const prefix = `${name}:`;
+    return [...this.pending.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, entry]) => entry.promise);
+  }
+
   schedule(name, options) {
     if (!this.handlers.has(name) || typeof name !== "string") {
       const error = new Error(`Schedule '${String(name)}' references an unregistered task`);
@@ -340,6 +352,7 @@ export class PluginTaskManager {
       runImmediately: Boolean(options.runImmediately),
       ...(options.reason ? { reason: options.reason } : {}),
     });
+    if (!this.enableSchedules) return () => {};
     if (this.diagnostic) return () => {};
     const enqueue = () => this.enqueue(name, options.input, { reason: options.reason ?? "schedule", coalesceKey: options.coalesceKey, retry: options.retry }).catch(() => {});
     const timer = setInterval(enqueue, options.intervalMs);

@@ -79,7 +79,6 @@ export async function activate(context) {
   const store = openStore(context.resolveDataPath("hacker-news.sqlite"));
   const storeFilename = context.resolveDataPath("hacker-news.sqlite");
   store.cleanupOnActivation();
-  let cancelSchedule;
   const summary = () => {
     const stories = store.list();
     const metadata = store.metadata();
@@ -88,17 +87,6 @@ export async function activate(context) {
   const updateHealth = () => {
     const data = summary();
     context.setHealth({ state: "ready", badge: String(data.stories.filter((story) => !story.read).length), lastSuccessfulRefresh: data.lastSuccessfulRefresh });
-  };
-  const configureSchedule = () => {
-    cancelSchedule?.();
-    cancelSchedule = undefined;
-    const settings = store.settings();
-    if (settings.policy === "fixed") {
-      const lastSuccessfulRefresh = Date.parse(store.metadata().lastSuccessfulRefresh ?? "");
-      const intervalMs = settings.intervalMinutes * 60_000;
-      const runImmediately = !Number.isFinite(lastSuccessfulRefresh) || Date.now() - lastSuccessfulRefresh >= intervalMs;
-      cancelSchedule = context.schedule("refresh", { intervalMs, runImmediately, reason: "schedule", retry: REFRESH_RETRY });
-    }
   };
 
   context.task("refresh", async (_, task) => {
@@ -129,7 +117,6 @@ export async function activate(context) {
     const retentionDays = Number(url.searchParams.get("retentionDays") ?? store.settings().retentionDays);
     if (!POLICIES.has(policy) || !INTERVALS.has(intervalMinutes) || !RETENTION_DAYS.has(retentionDays)) throw new Error("Unsupported refresh setting");
     store.saveSettings({ policy, intervalMinutes, retentionDays }, { acknowledgeRetentionCleanup: url.searchParams.get("acknowledgeRetentionCleanup") === "true" });
-    configureSchedule();
     return store.settings();
   });
   context.route("GET", "/history", ({ url }) => store.snapshots({ limit: url.searchParams.get("limit"), offset: url.searchParams.get("offset") }));
@@ -143,7 +130,6 @@ export async function activate(context) {
       body: createExport(context.resolveDataPath("hacker-news.sqlite"), { pluginId: "hn", pluginVersion: PLUGIN_VERSION, format, exportedAt }),
     });
   });
-  configureSchedule();
   updateHealth();
-  return { async deactivate() { cancelSchedule?.(); store.close(); } };
+  return { async deactivate() { store.close(); } };
 }

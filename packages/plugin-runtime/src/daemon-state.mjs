@@ -48,6 +48,8 @@ export function daemonPaths(root = defaultDaemonDataRoot(), environment = proces
     pluginDataRoot: resolved(environment.INFOLENS_PLUGIN_DATA_ROOT || path.join(dataRoot, "plugin-data")),
     hostStatePath: resolved(environment.INFOLENS_HOST_STATE_PATH || path.join(dataRoot, "host-state.json")),
     batchStatePath: resolved(environment.INFOLENS_BATCH_STATE_PATH || path.join(dataRoot, "task-state.json")),
+    schedulerDatabasePath: resolved(environment.INFOLENS_SCHEDULER_DATABASE_PATH || path.join(dataRoot, "scheduler.sqlite")),
+    mailSecretPath: resolved(environment.INFOLENS_MAIL_SECRET_PATH || path.join(dataRoot, "mail-secrets.json")),
     taskRecordsRoot: resolved(environment.INFOLENS_TASK_RECORDS_ROOT || path.join(dataRoot, "task-records")),
     adapterRegistryRoot: resolved(environment.INFOLENS_ADAPTER_REGISTRY_ROOT || path.join(dataRoot, "opencli-adapters")),
     distributionRoot: resolved(environment.INFOLENS_DISTRIBUTION_ROOT || path.join(dataRoot, "plugin-distribution")),

@@ -132,7 +132,6 @@ export async function activate(context) {
   const store = openStore(context.resolveDataPath("github-trending.sqlite"));
   const storeFilename = context.resolveDataPath("github-trending.sqlite");
   store.cleanupOnActivation();
-  let cancelSchedule;
   const summary = () => ({ source: "GitHub Trending", repositories: store.list(), settings: store.settings(), view: store.view(), ...store.metadata() });
   const refreshOptions = () => {
     const view = store.view();
@@ -148,7 +147,6 @@ export async function activate(context) {
   };
   context.setRefreshOptions(refreshOptions);
   const updateHealth = () => { const data = summary(); context.setHealth({ state: "ready", badge: String(data.repositories.filter((repo) => !repo.read).length), lastSuccessfulRefresh: data.lastSuccessfulRefresh }); };
-  const configureSchedule = () => { cancelSchedule?.(); cancelSchedule = undefined; const settings = store.settings(); if (settings.policy === "fixed") cancelSchedule = context.schedule("refresh", { intervalMs: settings.intervalMinutes * 60_000, reason: "schedule" }); };
   context.task("refresh", async (input, task) => {
     try {
       const view = normalizeView(input, store.view());
@@ -189,7 +187,7 @@ export async function activate(context) {
     }
   });
   context.route("GET", "/settings", () => store.settings());
-  context.route("POST", "/settings", ({ url }) => { const policy=url.searchParams.get("policy"); const intervalMinutes=Number(url.searchParams.get("intervalMinutes") ?? 60); const retentionDays=Number(url.searchParams.get("retentionDays")??store.settings().retentionDays); if(!POLICIES.has(policy)||!INTERVALS.has(intervalMinutes)||!RETENTION_DAYS.has(retentionDays)) throw new Error("Unsupported refresh setting"); store.saveSettings({policy,intervalMinutes,retentionDays},{acknowledgeRetentionCleanup:url.searchParams.get("acknowledgeRetentionCleanup")==="true"}); configureSchedule(); return store.settings(); });
+  context.route("POST", "/settings", ({ url }) => { const policy=url.searchParams.get("policy"); const intervalMinutes=Number(url.searchParams.get("intervalMinutes") ?? 60); const retentionDays=Number(url.searchParams.get("retentionDays")??store.settings().retentionDays); if(!POLICIES.has(policy)||!INTERVALS.has(intervalMinutes)||!RETENTION_DAYS.has(retentionDays)) throw new Error("Unsupported refresh setting"); store.saveSettings({policy,intervalMinutes,retentionDays},{acknowledgeRetentionCleanup:url.searchParams.get("acknowledgeRetentionCleanup")==="true"}); return store.settings(); });
   context.route("POST", "/view", ({ url }) => { store.saveView(normalizeView({ period: url.searchParams.get("period"), language: url.searchParams.get("language") ?? "all" }, store.view())); return summary(); });
   context.route("GET", "/history", ({url}) => store.snapshots({limit:url.searchParams.get("limit"),offset:url.searchParams.get("offset")}));
   context.route("GET", "/history/snapshot", ({url}) => store.snapshot(url.searchParams.get("id"))??{error:"Snapshot not found"});
@@ -204,6 +202,6 @@ export async function activate(context) {
       body: createExport(context.resolveDataPath("github-trending.sqlite"), { pluginId: "github-trending", pluginVersion: "0.3.0", format, exportedAt, date }),
     });
   });
-  configureSchedule(); updateHealth();
-  return { async deactivate() { cancelSchedule?.(); store.close(); } };
+  updateHealth();
+  return { async deactivate() { store.close(); } };
 }
